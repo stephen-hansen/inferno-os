@@ -1,10 +1,10 @@
-# Video output for Doom: a Tk window with a raw framebuffer
-# blitted via Draw->Image.writepixels.
+# Video output for Doom: blit an RGB framebuffer straight onto the
+# emu screen image (Display.image), the same direct-draw path wish.b
+# uses.  No Tk in the pixel path; input can be layered on later.
 #
-# The framebuffer fb is RGB24 (3 bytes/pixel, blue-green-red byte
-# order per pixel as required by writepixels on an RGB24 image;
-# see image(6): "r8g8b8 pixels have byte ordering blue, green,
-# and red").
+# fb is XRGB32 (4 bytes/pixel, x8r8g8b8: little-endian byte order
+# blue, green, red, x — matching the screen's native depth; emu's
+# win-x11a forces 32bpp).
 
 Video: module {
 
@@ -12,20 +12,18 @@ Video: module {
 
 	Context: adt {
 		display:	ref Draw->Display;
-		t:	ref Tk->Toplevel;
-		img:	ref Draw->Image;
-		fb:	array of byte;	# width*height*3, BGR order
+		fb:	array of byte;	# width*height*4, BGRX order
 		width:	int;
 		height:	int;
 
-		# blit fb to the window image and process pending Tk events
+		# blit fb to the top-left of the screen
 		present:	fn(c: self ref Context);
 
-		# tear down the window
+		# paint the screen area black
 		close:	fn(c: self ref Context);
 	};
 
-	# open a window; returns (ctx, nil) or (nil, error)
+	# open a display; returns (ctx, nil) or (nil, error)
 	open:	fn(width, height: int): (ref Context, string);
 
 };

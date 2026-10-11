@@ -26,7 +26,8 @@ Wad: module {
 		# the engine loads map geometry one lump at a time)
 		read:	fn(w: self ref File, i: int): (array of byte, string);
 
-		# find a lump by name (case sensitive, stored uppercase);
+		# find a lump by name (case insensitive, like vanilla
+		# W_CheckNumForName; last match in the directory wins);
 		# returns index or -1
 		find:	fn(w: self ref File, name: string): int;
 	};

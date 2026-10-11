@@ -5,8 +5,6 @@ include "sys.m";
 include "draw.m";
 	draw: Draw;
 	Display, Image, Rect: import draw;
-include "tk.m";
-	tk: Tk;
 include "video.m";
 
 open(width, height: int): (ref Context, string)
@@ -15,42 +13,28 @@ open(width, height: int): (ref Context, string)
 		sys = load Sys Sys->PATH;
 	if (draw == nil)
 		draw = load Draw Draw->PATH;
-	if (tk == nil)
-		tk = load Tk Tk->PATH;
 
 	display := Display.allocate(nil);
 	if (display == nil)
 		return (nil, sys->sprint("can't allocate Display: %r"));
 
-	t := tk->toplevel(display, "");
-	if (t == nil)
-		return (nil, sys->sprint("can't create toplevel: %r"));
+	fb := array[width * height * 4] of byte;
 
-	tk->cmd(t, "canvas .c -width " + string width + " -height " + string height);
-	tk->cmd(t, "pack .c");
-	tk->cmd(t, "update");
-
-	img := display.newimage(Rect((0, 0), (width, height)), Draw->RGB24, 0, Draw->Black);
-	if (img == nil)
-		return (nil, sys->sprint("can't create framebuffer image: %r"));
-
-	tk->putimage(t, ".c", img, nil);
-	tk->cmd(t, ".c dirty");
-	tk->cmd(t, "update");
-
-	fb := array[width * height * 3] of byte;
-
-	return (ref Context(display, t, img, fb, width, height), nil);
+	return (ref Context(display, fb, width, height), nil);
 }
 
 Context.present(c: self ref Context)
 {
-	c.img.writepixels(c.img.r, c.fb);
-	tk->cmd(c.t, ".c dirty");
-	tk->cmd(c.t, "update");
+	o := c.display.image.r.min;
+	r := Rect((o.x, o.y), (o.x + c.width, o.y + c.height));
+	n := c.display.image.writepixels(r, c.fb);
+	if (n < 0)
+		sys->print("present: writepixels failed: %r\n");
 }
 
 Context.close(c: self ref Context)
 {
-	tk->cmd(c.t, ". destroy");
+	o := c.display.image.r.min;
+	r := Rect((o.x, o.y), (o.x + c.width, o.y + c.height));
+	c.display.image.writepixels(r, array[c.width * c.height * 4] of byte);
 }

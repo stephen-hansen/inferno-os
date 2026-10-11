@@ -7,17 +7,23 @@ in Limbo.  Reference spec: doomgeneric's 5-function platform seam
 the seam to Inferno and translate the engine body C -> Limbo.
 
 Platform services available in-tree (verified):
-  blit      Draw->Image.writepixels(dst, r, data), module/draw.m:190
-  window    tkclient->toplevel + display.newimage, appl/wm/drawmux/dmview.b
+  blit      Draw->Image.writepixels(dst, r, data), module/draw.m:190;
+            data must match the screen's native format — hosted emu
+            is 32bpp XRGB32 (emu/port/win-x11a.c forces depth 32)
+  screen    Display.allocate(nil) then draw/writepixels on
+            display.image (appl/cmd/wish.b path); no Tk, no wm needed
   clock     Sys->millisec(), Sys->sleep(), module/sys.m:141,153
-  keys      Tk bind -> channel (module/tk.m)
+  keys      /dev/keyboard + /dev/pointer readers
+            (appl/cmd/wish.b spawn pattern)
   audio     /dev/audio + /dev/audioctl, enc pcm, rate 11025
             (emu/port/audio-tbls.c — exactly Doom's SFX rate)
 
 Layout
 ------
   wad.m/wad.b      WAD container loader (module, reusable)
-  video.m/video.b  Tk window + RGB24 framebuffer blit (module)
+  video.m/video.b  XRGB32 framebuffer -> emu screen blit (module)
+  rend.m/rend.b    renderer: palette, colormap, flats, textures,
+                   vanilla column/span drawers (module)
   doom.b           main command; grows with each milestone
   doom1.wad        shareware IWAD (data, place in $ROOT or pass path)
   PLAN             this file
@@ -25,18 +31,22 @@ Layout
 Milestones (each independently testable)
 ----------------------------------------
   [x] 1  WAD loader + directory dump + lump read     (doom -d)
-  [x] 2  video path: Tk window + 320x200 framebuffer,
-         blit a test pattern via writepixels; measure fps
-         (doom -t: xor-plasma, 125 fps at 320x200 RGB24 —
-         3.5x the 35 Hz tick rate; native size, no scaling)
-  [ ] 3  renderer: COLORMAP + PLAYPAL, flats, walls
-         (column renderer into preallocated byte array,
-         one writepixels per frame)
+  [x] 2  video path: 320x200 framebuffer blitted onto the emu
+         screen via writepixels; measure fps
+         (doom -t: xor-plasma, ~101 fps at 320x200 XRGB32;
+         screen is win-x11a's forced 32bpp, so the framebuffer
+         is XRGB32 BGRX, not RGB24 — RGB24 writes fail with
+         "loadimage: insufficient data")
+  [x] 3  renderer: COLORMAP + PLAYPAL, flats, walls
+         (doom -r: vanilla R_DrawColumn/R_DrawSpan, eager
+         texture compositing from patches, 49 fps full-screen
+         STARTAN3 wall + FLOOR4_8 floor with light gradients)
   [ ] 4  map load: LINEDEFS/SECTORS/SIDEDEFS/VERTEXES,
          geometry structs as Limbo adts
   [ ] 5  game tics: player movement, mobj state tables,
          Doom's tick loop (35Hz) driven from Sys->millisec
-  [ ] 6  input: Tk bind for keys/mouse -> event chan
+  [ ] 6  input: /dev/keyboard + /dev/pointer -> event chan
+         (wish.b spawn-reader pattern; Tk bind optional later)
   [ ] 7  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback
@@ -53,8 +63,18 @@ Porting notes (C -> Limbo idioms)
 - strings: C char* lump names -> Limbo string, compare with ==
 - Limbo `for` has no C-style single-condition form; use `for(;;)`
   with break, or `for(i := 0; i < n; i++)`
-- calling an adt's methods from another module needs
-  `Context: import video;` alongside the module load
+- `for (i := 0; ...)` declares i in the ENCLOSING block, not the
+  for statement: two loops in one function cannot both use
+  `i :=`; declare once, reassign with `=` in later loops
+- adt method dispatch across modules needs BOTH the type import
+  (`File: import wad;`) AND that module variable load-ed in the
+  calling module — otherwise "module not loaded" at call time
+- W_CheckNumForName is case-insensitive and searches the lump
+  directory backwards (last match wins); wad.b find matches that
+- COLORMAP row 0 is not a strict identity: 7 colors are remapped
+  even at full light (vanilla quirk, not a loader bug)
+- Limbo has no int64: FixedMul is done in 16-bit halves (rend.b)
+  for an exact 64-bit intermediate
 
 Licensing
 ---------

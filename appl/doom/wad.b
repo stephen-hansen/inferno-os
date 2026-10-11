@@ -96,10 +96,35 @@ File.read(w: self ref File, i: int): (array of byte, string)
 	return (b, nil);
 }
 
+# case-insensitive 8-char compare, vanilla W_CheckNumForName style
+eq8(a, b: string): int
+{
+	na := len a;
+	nb := len b;
+	if (na > 8)
+		na = 8;
+	if (nb > 8)
+		nb = 8;
+	if (na != nb)
+		return 0;
+	for (i := 0; i < na; i++) {
+		ca := int a[i];
+		cb := int b[i];
+		if (ca >= 16r61 && ca <= 16r7a)
+			ca -= 16r20;
+		if (cb >= 16r61 && cb <= 16r7a)
+			cb -= 16r20;
+		if (ca != cb)
+			return 0;
+	}
+	return 1;
+}
+
+# last match wins, as vanilla searches the directory backwards
 File.find(w: self ref File, name: string): int
 {
-	for (i := 0; i < w.numlumps; i++)
-		if (w.lumps[i].name == name)
+	for (i := w.numlumps - 1; i >= 0; i--)
+		if (eq8(w.lumps[i].name, name))
 			return i;
 	return -1;
 }
