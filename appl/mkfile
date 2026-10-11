@@ -7,6 +7,7 @@ DIRS=\
 	cmd\
 	collab\
 	demo\
+	doom\
 	ebook\
 	grid\
 	lib\

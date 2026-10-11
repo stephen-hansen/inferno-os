@@ -1,0 +1,16 @@
+<../../mkconfig
+
+TARG=\
+	wad.dis\
+	doom.dis\
+
+MODULES=\
+	wad.m\
+
+SYSMODULES=\
+	sys.m\
+	draw.m\
+
+DISBIN=$ROOT/dis/doom
+
+<$ROOT/mkfiles/mkdis

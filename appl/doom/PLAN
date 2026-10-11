@@ -1,0 +1,57 @@
+Doom for Inferno — build plan
+=============================
+
+Goal: run shareware Doom (doom1.wad) under hosted emu, engine rewritten
+in Limbo.  Reference spec: doomgeneric's 5-function platform seam
+(DG_Init, DG_DrawFrame, DG_SleepMs, DG_GetTicksMs, DG_GetKey) — we port
+the seam to Inferno and translate the engine body C -> Limbo.
+
+Platform services available in-tree (verified):
+  blit      Draw->Image.writepixels(dst, r, data), module/draw.m:190
+  window    tkclient->toplevel + display.newimage, appl/wm/drawmux/dmview.b
+  clock     Sys->millisec(), Sys->sleep(), module/sys.m:141,153
+  keys      Tk bind -> channel (module/tk.m)
+  audio     /dev/audio + /dev/audioctl, enc pcm, rate 11025
+            (emu/port/audio-tbls.c — exactly Doom's SFX rate)
+
+Layout
+------
+  wad.m/wad.b      WAD container loader (module, reusable)
+  doom.b           main command; grows with each milestone
+  doom1.wad        shareware IWAD (data, place in $ROOT or pass path)
+  PLAN             this file
+
+Milestones (each independently testable)
+----------------------------------------
+  [x] 1  WAD loader + directory dump + lump read     (doom -d)
+  [ ] 2  video path: Tk window + 320x200 framebuffer,
+         blit a test pattern via writepixels; measure fps
+  [ ] 3  renderer: COLORMAP + PLAYPAL, flats, walls
+         (column renderer into preallocated byte array,
+         one writepixels per frame)
+  [ ] 4  map load: LINEDEFS/SECTORS/SIDEDEFS/VERTEXES,
+         geometry structs as Limbo adts
+  [ ] 5  game tics: player movement, mobj state tables,
+         Doom's tick loop (35Hz) driven from Sys->millisec
+  [ ] 6  input: Tk bind for keys/mouse -> event chan
+  [ ] 7  SFX: Doom mixer (8 x 8-bit unsigned channels)
+         -> /dev/audioctl "enc pcm" "rate 11025"
+  [ ] 8  polish: menus, status bar, demo playback
+
+Porting notes (C -> Limbo idioms)
+---------------------------------
+- ints are 32-bit signed: WAD LE decoding done byte-wise in wad.b;
+  C casts like (int)(x >> 24) need care with sign extension
+- C unions -> tagged pick adts; struct tables -> arrays of adts/refs
+- GC is the enemy: preallocate framebuffer, mix buffer, mobj pools;
+  never allocate in per-column / per-pixel loops
+- Doom state tables (mobjstate_t[], states[], flags[]) map
+  mechanically onto Limbo arrays; see doomdef.h / info.c
+- strings: C char* lump names -> Limbo string, compare with ==
+
+Licensing
+---------
+Engine reference: doomgeneric (GPL-2), id's original linuxdoom-1.10
+(non-commercial).  Our Limbo translation is a derivative work: keep
+GPL-2 notices when publishing.  doom1.wad is freely redistributable
+shareware.
