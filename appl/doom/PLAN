@@ -17,6 +17,7 @@ Platform services available in-tree (verified):
 Layout
 ------
   wad.m/wad.b      WAD container loader (module, reusable)
+  video.m/video.b  Tk window + RGB24 framebuffer blit (module)
   doom.b           main command; grows with each milestone
   doom1.wad        shareware IWAD (data, place in $ROOT or pass path)
   PLAN             this file
@@ -24,8 +25,10 @@ Layout
 Milestones (each independently testable)
 ----------------------------------------
   [x] 1  WAD loader + directory dump + lump read     (doom -d)
-  [ ] 2  video path: Tk window + 320x200 framebuffer,
+  [x] 2  video path: Tk window + 320x200 framebuffer,
          blit a test pattern via writepixels; measure fps
+         (doom -t: xor-plasma, 125 fps at 320x200 RGB24 —
+         3.5x the 35 Hz tick rate; native size, no scaling)
   [ ] 3  renderer: COLORMAP + PLAYPAL, flats, walls
          (column renderer into preallocated byte array,
          one writepixels per frame)
@@ -48,6 +51,10 @@ Porting notes (C -> Limbo idioms)
 - Doom state tables (mobjstate_t[], states[], flags[]) map
   mechanically onto Limbo arrays; see doomdef.h / info.c
 - strings: C char* lump names -> Limbo string, compare with ==
+- Limbo `for` has no C-style single-condition form; use `for(;;)`
+  with break, or `for(i := 0; i < n; i++)`
+- calling an adt's methods from another module needs
+  `Context: import video;` alongside the module load
 
 Licensing
 ---------

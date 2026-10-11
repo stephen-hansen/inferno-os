@@ -2,14 +2,17 @@
 
 TARG=\
 	wad.dis\
+	video.dis\
 	doom.dis\
 
 MODULES=\
 	wad.m\
+	video.m\
 
 SYSMODULES=\
 	sys.m\
 	draw.m\
+	tk.m\
 
 DISBIN=$ROOT/dis/doom
 
