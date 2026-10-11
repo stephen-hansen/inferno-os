@@ -63,3 +63,7 @@ y.debug
 /[A-Z]*/*/bin/
 !/[A-Z]*/*/bin/mk
 !/[A-Z]*/*/bin/mkext
+
+# My adds
+mkconfig
+Linux/386/bin
