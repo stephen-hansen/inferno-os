@@ -12,6 +12,9 @@ include "video.m";
 include "rend.m";
 	rend: Rend;
 	Renderer: import rend;
+include "map.m";
+	map: Map;
+	Level: import map;
 
 Doom: module
 {
@@ -39,16 +42,20 @@ init(nil: ref Draw->Context, args: list of string)
 	dump := 0;
 	test := 0;
 	rt := 0;
+	mt := 0;
 	for (;;) {
 		if (args == nil ||
-		    (hd args != "-d" && hd args != "-t" && hd args != "-r"))
+		    (hd args != "-d" && hd args != "-t" &&
+		     hd args != "-r" && hd args != "-m"))
 			break;
 		if (hd args == "-d")
 			dump = 1;
 		else if (hd args == "-t")
 			test = 1;
-		else
+		else if (hd args == "-r")
 			rt = 1;
+		else
+			mt = 1;
 		args = tl args;
 	}
 	path := WADPATH;
@@ -72,6 +79,10 @@ init(nil: ref Draw->Context, args: list of string)
 
 	if (rt) {
 		rendertest(path);
+		return;
+	}
+	if (mt) {
+		maptest(path);
 		return;
 	}
 
@@ -271,9 +282,64 @@ rendertest(path: string)
 	w.close();
 }
 
+maptest(path: string)
+{
+	map = load Map Map->PATH;
+	if (map == nil)
+		map = load Map "map.dis";
+	if (map == nil)
+		fail(sys->sprint("can't load Map module: %r"));
+
+	(w, err) := wad->open(path);
+	if (w == nil)
+		fail(err);
+
+	(l, merr) := map->open(w, "E1M1");
+	if (l == nil)
+		fail(merr);
+
+	sys->print("maptest: %s: %d vertices, %d linedefs, %d sidedefs, %d sectors, %d things\n",
+		l.name, len l.vertices, len l.lines, len l.sides,
+		len l.sectors, len l.things);
+
+	v0 := l.vertices[0];
+	sys->print("  vertex 0: %d,%d\n", v0.x >> 16, v0.y >> 16);
+
+	s0 := l.sectors[0];
+	sys->print("  sector 0: floor %d ceil %d, %s/%s, light %d\n",
+		s0.floorheight >> 16, s0.ceilingheight >> 16,
+		s0.floortexture, s0.ceilingtexture, s0.lightlevel);
+
+	sd0 := l.sides[0];
+	sys->print("  side 0: mid %s, sector light %d\n",
+		sd0.midtexture, sd0.sector.lightlevel);
+
+	ln0 := l.lines[0];
+	back := "none";
+	if (ln0.sides[1] != nil)
+		back = "yes";
+	sys->print("  line 0: v%d->v%d dx %d dy %d, flags 0x%x, back side %s\n",
+		ln0.v1, ln0.v2, ln0.dx >> 16, ln0.dy >> 16, ln0.flags, back);
+
+	two := 0;
+	for (i := 0; i < len l.lines; i++)
+		if (l.lines[i].sides[1] != nil)
+			two++;
+	sys->print("  two-sided lines: %d\n", two);
+
+	for (i = 0; i < len l.things; i++) {
+		t := l.things[i];
+		if (t.typ == 1)
+			sys->print("  player 1 start: %d,%d angle %d\n",
+				t.x >> 16, t.y >> 16, t.angle);
+	}
+
+	w.close();
+}
+
 usage()
 {
-	sys->fprint(sys->fildes(2), "usage: doom [-d] [-t] [-r] [doom.wad]\n");
+	sys->fprint(sys->fildes(2), "usage: doom [-d] [-t] [-r] [-m] [doom.wad]\n");
 	raise "fail:usage";
 }
 

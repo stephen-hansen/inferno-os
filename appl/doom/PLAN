@@ -24,6 +24,8 @@ Layout
   video.m/video.b  XRGB32 framebuffer -> emu screen blit (module)
   rend.m/rend.b    renderer: palette, colormap, flats, textures,
                    vanilla column/span drawers (module)
+  map.m/map.b      map geometry: vertices, sectors, sides, lines,
+                   things as adts; shared ref Sectors (module)
   doom.b           main command; grows with each milestone
   doom1.wad        shareware IWAD (data, place in $ROOT or pass path)
   PLAN             this file
@@ -41,8 +43,12 @@ Milestones (each independently testable)
          (doom -r: vanilla R_DrawColumn/R_DrawSpan, eager
          texture compositing from patches, 49 fps full-screen
          STARTAN3 wall + FLOOR4_8 floor with light gradients)
-  [ ] 4  map load: LINEDEFS/SECTORS/SIDEDEFS/VERTEXES,
-         geometry structs as Limbo adts
+   [x] 4  map load: LINEDEFS/SECTORS/SIDEDEFS/VERTEXES,
+          geometry structs as Limbo adts
+          (doom -m: map.m/map.b Level adt, shared ref Sectors so
+          movers can mutate heights; E1M1 checks all match vanilla:
+          467 v / 475 l / 648 s / 85 sec / 138 things, two-sided
+          173, player1 1056,-3616 angle 90)
   [ ] 5  game tics: player movement, mobj state tables,
          Doom's tick loop (35Hz) driven from Sys->millisec
   [ ] 6  input: /dev/keyboard + /dev/pointer -> event chan
@@ -75,6 +81,9 @@ Porting notes (C -> Limbo idioms)
   even at full light (vanilla quirk, not a loader bug)
 - Limbo has no int64: FixedMul is done in 16-bit halves (rend.b)
   for an exact 64-bit intermediate
+- Limbo reserved words bite struct field names and module members:
+  `type` (Thing field) -> renamed `typ`; `load` (Map member) ->
+  renamed `open` (matches wad/video naming anyway)
 
 Licensing
 ---------

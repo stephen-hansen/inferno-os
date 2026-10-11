@@ -4,12 +4,14 @@ TARG=\
 	wad.dis\
 	video.dis\
 	rend.dis\
+	map.dis\
 	doom.dis\
 
 MODULES=\
 	wad.m\
 	video.m\
 	rend.m\
+	map.m\
 
 SYSMODULES=\
 	sys.m\
