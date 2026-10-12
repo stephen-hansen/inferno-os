@@ -62,13 +62,24 @@ Milestones (each independently testable)
          `A, B, C,` lists into one declaration ending at the next
          `: con value` — all SPR_/S_/MT_ constants evaluated to 1
          until geninfo.py was fixed to emit `: con iota;`)
-  [x] 6  input: /dev/keyboard + /dev/pointer -> event chan
-         (wish.b spawn-reader pattern; Tk bind optional later)
-         - keyboard reader spawns on /dev/keyboard, decodes UTF-8
-           (sys->utfbytes), sends rune to chan of int
-         - main loop uses `alt` on tick chan (35Hz timerproc) or
-           keych; key state array with decay (KEYHELD=3 tics)
-         - Spec-range keys (Up=0xe012 etc) need NKEYS=16rE100
+  [x] 6  input: /dev/scancode raw keycodes -> event chan
+         (rewritten: /dev/keyboard had no key-up, relied on X
+         auto-repeat + a hold-decay hack — stuttered between
+         repeats, leaked movement after release, felt buffered)
+         - kbdreader opens /dev/scancode: raw X11 keycodes,
+           press=code, release=code|0x80 (emu win-x11a.c xkeyboard
+           gkscanq path; opening /dev/scancode routes ALL key
+           events there — /dev/keyboard goes silent)
+         - keysym() maps evdev+8 keycodes (Esc=9, W=25, A=38,
+           S=39, D=40, Space=65, arrows=111/113/114/116,
+           LCtrl=37, RCtrl=105) to keystate indices; unknown
+           codes ignored
+         - keystate is 0/1 (true down/up), NO decay
+         - main loop: key events ONLY update keystate and
+           `continue`; tics come SOLELY from the tick timer —
+           key-driven tics made the game surge at auto-repeat
+           rate and stutter between repeats (the "not smooth"
+           bug); key-to-motion latency = one tic max (28ms)
          - keyboard.m is header-only: define Esc/Up/Down/Left/
            Right/LCtrl/RCtrl constants inline in doom.b
          - floor renders correctly via drawspan + convert + present
@@ -172,6 +183,20 @@ Porting notes (C -> Limbo idioms)
 - `emu ... -p` = walltest autopilot: turn 24x15deg in place at
   spawn (tight closet = near-clip/edge stress), then walk forward;
   pauses 700ms per turn step for screenshots, self-exits after
+- input latency rules (keyboard lag fix):
+  * /dev/keyboard has NO key-up (press-only runes); holding a key
+    depends on X auto-repeat (initial ~500ms delay, gaps between
+    repeats) + a hold-decay counter — all feel buffered.  Use
+    /dev/scancode for true down/up (release = keycode|0x80)
+  * key events must NEVER advance game tics — only the tick timer
+    does.  A fall-through after every alt case made held keys
+    surge the game at repeat rate (turning bursty, "not smooth")
+  * XTEST injection for automated key testing: gcc xinj.c -lX11
+    libXtst.so.6 (no header — declare XTestFakeKeyEvent yourself);
+    first keys after window map may miss (focus), retry after
+    focus settles
+- Limbo has no if-expression usable as a call argument:
+  `f(if (c) "a" else "b")` is a syntax error — bind a var first
 
 Licensing
 ---------

@@ -467,7 +467,6 @@ gametest(path: string)
 
 # key-state bits indexed by kbdm-> constants / ASCII
 NKEYS:	con 16rE100;	# enough for Spec|0x10+8 View keys
-KEYHELD:	con 3;		# tics a key stays "held" after last event (auto-repeat)
 
 # keyboard key constants (from module/keyboard.m, header-only)
 Spec:	con 16rE000;
@@ -480,6 +479,23 @@ Left:	con KView|4;
 Right:	con KView|5;
 LCtrl:	con KShift|2;
 RCtrl:	con KShift|3;
+
+# X11 evdev keycodes (/dev/scancode, +8: press=code, release=code|0x80)
+XK_Esc:	con 9;
+XK_Q:	con 24;
+XK_W:	con 25;
+XK_E:	con 26;
+XK_LCtrl:	con 37;
+XK_A:	con 38;
+XK_S:	con 39;
+XK_D:	con 40;
+XK_Space:	con 65;
+XK_RCtrl:	con 105;
+XK_Up:	con 111;
+XK_Left:	con 113;
+XK_Right:	con 114;
+XK_Down:	con 116;
+
 keystate:	array of int;
 keych:		chan of int;
 
@@ -574,24 +590,31 @@ play(path: string, autopilot: int)
 	tic := 0;
 	quit := 0;
 	for (; !quit;) {
-		# wait for tick or key; decay held keys each tic
+		# key events only update keystate; tics come SOLELY from the
+		# tick timer (key-driven tics made the game surge at
+		# auto-repeat rate and stutter between repeats)
+		dotic := 0;
 		alt {
-		<-tick =>
-			# decay key states
-			for (ki := 0; ki < NKEYS; ki++)
-				if (keystate[ki] > 0)
-					keystate[ki]--;
-			tic++;
 		k := <-keych =>
 			if (k == Esc) {
 				quit = 1;
 				break;
 			}
-			if (k >= 0 && k < NKEYS)
-				keystate[k] = KEYHELD;
+			if ((k & 16r10000) != 0) {	# release
+				k &= ~16r10000;
+				if (k >= 0 && k < NKEYS)
+					keystate[k] = 0;
+			} else if (k >= 0 && k < NKEYS)
+				keystate[k] = 1;
+		<-tick =>
+			dotic = 1;
 		}
 		if (quit)
 			break;
+		if (!dotic)
+			continue;
+
+		tic++;
 
 		# build ticcmd from key state
 		fm := 0;
@@ -676,25 +699,69 @@ walltest(rr: ref Renderer, v: ref Context, mo: ref Mobj)
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
 }
 
+# map raw X11 evdev keycode to our keystate index; -1 = ignore
+keysym(code: int): int
+{
+	case code {
+	XK_Esc =>
+		return Esc;
+	XK_Q =>
+		return 'q';
+	XK_W =>
+		return 'w';
+	XK_E =>
+		return 'e';
+	XK_LCtrl =>
+		return LCtrl;
+	XK_A =>
+		return 'a';
+	XK_S =>
+		return 's';
+	XK_D =>
+		return 'd';
+	XK_Space =>
+		return ' ';
+	XK_RCtrl =>
+		return RCtrl;
+	XK_Up =>
+		return Up;
+	XK_Down =>
+		return Down;
+	XK_Left =>
+		return Left;
+	XK_Right =>
+		return Right;
+	* =>
+		return -1;
+	}
+}
+
+# /dev/scancode: raw X11 keycodes, press=code, release=code|0x80.
+# true key-up events (unlike /dev/keyboard's press-only runes, which
+# relied on X auto-repeat + a hold-decay hack that leaked movement
+# after release and stuttered between repeats).  opening /dev/scancode
+# makes emu route ALL key events here (xkeyboard: gkscanq path).
 kbdreader(ch: chan of int)
 {
-	dfd := sys->open("/dev/keyboard", sys->OREAD);
+	dfd := sys->open("/dev/scancode", sys->OREAD);
 	if (dfd == nil) {
-		sys->print("kbdreader: can't open /dev/keyboard: %r\n");
+		sys->print("kbdreader: can't open /dev/scancode: %r\n");
 		return;
 	}
-	buf := array[10] of byte;
-	i := 0;
+	buf := array[64] of byte;
 	for (;;) {
-		n := sys->read(dfd, buf[i:], len buf - i);
+		n := sys->read(dfd, buf, len buf);
 		if (n < 1)
 			break;
-		i += n;
-		while (i > 0 && (nutf := sys->utfbytes(buf, i)) > 0) {
-			s := string buf[0:nutf];
-			ch <-= int s[0];
-			buf[0:] = buf[nutf:i];
-			i -= nutf;
+		for (i := 0; i < n; i++) {
+			b := int buf[i];
+			k := keysym(b & 16r7f);
+			if (k < 0)
+				continue;
+			if ((b & 16r80) != 0)	# release
+				ch <-= k | 16r10000;
+			else
+				ch <-= k;
 		}
 	}
 }
