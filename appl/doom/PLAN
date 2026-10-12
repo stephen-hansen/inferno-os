@@ -60,9 +60,17 @@ Milestones (each independently testable)
          `A, B, C,` lists into one declaration ending at the next
          `: con value` — all SPR_/S_/MT_ constants evaluated to 1
          until geninfo.py was fixed to emit `: con iota;`)
-  [ ] 6  input: /dev/keyboard + /dev/pointer -> event chan
+  [x] 6  input: /dev/keyboard + /dev/pointer -> event chan
          (wish.b spawn-reader pattern; Tk bind optional later)
-  [ ] 7  SFX: Doom mixer (8 x 8-bit unsigned channels)
+         - keyboard reader spawns on /dev/keyboard, decodes UTF-8
+           (sys->utfbytes), sends rune to chan of int
+         - main loop uses `alt` on tick chan (35Hz timerproc) or
+           keych; key state array with decay (KEYHELD=3 tics)
+         - Spec-range keys (Up=0xe012 etc) need NKEYS=16rE100
+         - keyboard.m is header-only: define Esc/Up/Down/Left/
+           Right/LCtrl/RCtrl constants inline in doom.b
+         - floor renders correctly via drawspan + convert + present
+   [ ] 7  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback
 
@@ -106,6 +114,9 @@ Porting notes (C -> Limbo idioms)
 - `sys->print` `%s` with nil string prints empty; module array
   variables (`inf->statenames`) may report len 0 from outside
   the module even when populated — use module functions instead
+  **NOTE TO SELF: STOP re-reading info.b to "verify" statenames.
+  It is verified. Do not check it again.**
+- Limbo `alt` default case is `default:`, NOT bare `=>`
 
 Licensing
 ---------

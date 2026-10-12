@@ -1,9 +1,9 @@
 implement Doom;
 
-include "sys.m";
+	include "sys.m";
 	sys: Sys;
-include "draw.m";
-include "wad.m";
+	include "draw.m";
+	include "wad.m";
 	wad: Wad;
 	File: import wad;
 include "video.m";
@@ -125,6 +125,9 @@ init(nil: ref Draw->Context, args: list of string)
 	checkread(w, "PLAYPAL", 768*14);
 	checkread(w, "E1M1", -1);
 	w.close();
+
+	# no flags: interactive play
+	play(path);
 }
 
 checkread(w: ref Wad->File, name: string, expect: int)
@@ -455,6 +458,204 @@ gametest(path: string)
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle), mo.health,
 		game->nummobjs());
 	w.close();
+}
+
+# key-state bits indexed by kbdm-> constants / ASCII
+NKEYS:	con 16rE100;	# enough for Spec|0x10+8 View keys
+KEYHELD:	con 3;		# tics a key stays "held" after last event (auto-repeat)
+
+# keyboard key constants (from module/keyboard.m, header-only)
+Spec:	con 16rE000;
+KShift:	con Spec|16r00;
+View:	con Spec|16r10;
+Esc:	con 16r1b;
+Up:	con View|2;
+Down:	con View|3;
+Left:	con View|4;
+Right:	con View|5;
+LCtrl:	con KShift|2;
+RCtrl:	con KShift|3;
+keystate:	array of int;
+keych:		chan of int;
+
+play(path: string)
+{
+	game = load Game Game->PATH;
+	if (game == nil)
+		game = load Game "game.dis";
+	if (game == nil)
+		fail(sys->sprint("can't load Game module: %r"));
+	err := game->init();
+	if (err != nil)
+		fail(err);
+
+	inf = load Info Info->PATH;
+	if (inf == nil)
+		inf = load Info "info.dis";
+	if (inf == nil)
+		fail(sys->sprint("can't load Info module: %r"));
+
+	rend = load Rend Rend->PATH;
+	if (rend == nil)
+		rend = load Rend "rend.dis";
+	if (rend == nil)
+		fail(sys->sprint("can't load Rend module: %r"));
+
+	video = load Video Video->PATH;
+	if (video == nil)
+		video = load Video "video.dis";
+	if (video == nil)
+		fail(sys->sprint("can't load Video module: %r"));
+
+	map = load Map Map->PATH;
+	if (map == nil)
+		map = load Map "map.dis";
+	if (map == nil)
+		fail(sys->sprint("can't load Map module: %r"));
+
+	(w, werr) := wad->open(path);
+	if (w == nil)
+		fail(werr);
+
+	rr := ref Renderer;
+	err = rr.init(w, vid_w, vid_h);
+	if (err != nil)
+		fail(err);
+
+	(l, merr) := map->open(w, "E1M1");
+	if (l == nil)
+		fail(merr);
+
+	err = game->setuplevel(l, game->SK_MEDIUM);
+	if (err != nil)
+		fail(err);
+
+	(v, verr) := video->open(vid_w, vid_h);
+	if (v == nil)
+		fail(verr);
+
+	keystate = array[NKEYS] of int;
+	keych = chan of int;
+	spawn kbdreader(keych);
+
+	p := game->consoleplayer();
+	if (p == nil || p.mo == nil)
+		fail("no player 1 after setuplevel");
+	mo := p.mo;
+	sys->print("play: E1M1 skill medium: arrows/wasd move, space=use, esc=quit\n");
+	sys->print("  player at %d,%d angle %d deg\n",
+		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
+
+	TICMS := 1000 / 35;
+	tick := chan of int;
+	spawn timerproc(tick, TICMS);
+	tic := 0;
+	quit := 0;
+	for (; !quit;) {
+		# wait for tick or key; decay held keys each tic
+		alt {
+		<-tick =>
+			# decay key states
+			for (ki := 0; ki < NKEYS; ki++)
+				if (keystate[ki] > 0)
+					keystate[ki]--;
+			tic++;
+		k := <-keych =>
+			if (k == Esc) {
+				quit = 1;
+				break;
+			}
+			if (k >= 0 && k < NKEYS)
+				keystate[k] = KEYHELD;
+		}
+		if (quit)
+			break;
+
+		# build ticcmd from key state
+		fm := 0;
+		sm := 0;
+		at := 0;
+		btn := 0;
+		if (keystate[Up] || keystate['w'])
+			fm += 50;
+		if (keystate[Down] || keystate['s'])
+			fm -= 50;
+		if (keystate[Left])
+			at += 1280;		# turn left (BAM, ~22.5 deg/tic)
+		if (keystate[Right])
+			at -= 1280;
+		if (keystate['a'] && !keystate[Left])
+			sm -= 25;
+		if (keystate['d'] && !keystate[Right])
+			sm += 25;
+		if (keystate['q'])
+			sm -= 25;
+		if (keystate['e'])
+			sm += 25;
+		if (keystate[' '])
+			btn |= 1;		# BT_USE
+		if (keystate[LCtrl] || keystate[RCtrl])
+			btn |= 2;		# BT_ATTACK
+
+		game->setcmd(fm, sm, at, btn);
+		game->ticker();
+
+		# render: clear to dark, draw floor plane, convert, present
+		rr.clear(0);
+		floorfl := rr.flat("FLOOR4_8");
+		if (floorfl != nil) {
+			for (y := rr.centery; y < vid_h; y++) {
+				light := 8 + ((y - rr.centery) * 20) / (vid_h - rr.centery);
+				rr.drawspan(y, 0, vid_w - 1, light, floorfl,
+					0, y << 16, 1 << 16, 0);
+			}
+		}
+		rr.convert(v.fb);
+		v.present();
+
+		if (tic % 70 == 0) {
+			p = game->consoleplayer();
+			if (p != nil && p.mo != nil)
+				mo = p.mo;
+			sys->print("t=%d pos %d,%d angle %d deg health %d\n",
+				tic, mo.x >> 16, mo.y >> 16,
+				bamdegrees(mo.angle), mo.health);
+		}
+	}
+	v.close();
+	w.close();
+	sys->print("play: quit at t=%d\n", tic);
+}
+
+kbdreader(ch: chan of int)
+{
+	dfd := sys->open("/dev/keyboard", sys->OREAD);
+	if (dfd == nil) {
+		sys->print("kbdreader: can't open /dev/keyboard: %r\n");
+		return;
+	}
+	buf := array[10] of byte;
+	i := 0;
+	for (;;) {
+		n := sys->read(dfd, buf[i:], len buf - i);
+		if (n < 1)
+			break;
+		i += n;
+		while (i > 0 && (nutf := sys->utfbytes(buf, i)) > 0) {
+			s := string buf[0:nutf];
+			ch <-= int s[0];
+			buf[0:] = buf[nutf:i];
+			i -= nutf;
+		}
+	}
+}
+
+timerproc(ch: chan of int, ms: int)
+{
+	for (;;) {
+		sys->sleep(ms);
+		ch <-= 1;
+	}
 }
 
 fail(s: string)
