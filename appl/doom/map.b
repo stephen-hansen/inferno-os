@@ -5,6 +5,8 @@ include "sys.m";
 include "wad.m";
 	wad: Wad;
 	File: import wad;
+include "rend.m";
+	rend: Rend;
 include "map.m";
 
 le16(b: array of byte, o: int): int
@@ -13,6 +15,11 @@ le16(b: array of byte, o: int): int
 	if (v >= 16r8000)		# vanilla SHORT(): sign extend
 		v -= 16r10000;
 	return v;
+}
+
+le16u(b: array of byte, o: int): int
+{
+	return int b[o] | int b[o+1] << 8;	# unsigned (node children)
 }
 
 name8(b: array of byte, o: int): string
@@ -39,6 +46,13 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 		if (wad == nil)
 			return (nil, "can't load Wad module");
 	}
+	if (rend == nil) {		# pointonside uses fixedmul
+		rend = load Rend Rend->PATH;
+		if (rend == nil)
+			rend = load Rend "rend.dis";
+		if (rend == nil)
+			return (nil, "can't load Rend module");
+	}
 
 	m := w.find(mapname);
 	if (m < 0)
@@ -58,7 +72,7 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 		i++;
 	}
 
-	l := ref Level(mapname, nil, nil, nil, nil, nil);
+	l := ref Level(mapname, nil, nil, nil, nil, nil, nil, nil, nil);
 	b := array[0] of byte;
 	err := "";
 
@@ -194,5 +208,138 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 	}
 	l.things = things;
 
+	# SEGS (m+5): 12-byte records
+	(b, err) = w.read(m+5);
+	if (b == nil)
+		return (nil, err);
+	if (len b % 12 != 0)
+		return (nil, "SEGS size not a multiple of 12");
+	nsgtot := len b / 12;
+	segs := array[nsgtot] of Seg;
+	for (i = 0; i < nsgtot; i++) {
+		o := 12 * i;
+		segs[i] = Seg(le16(b, o), le16(b, o+2),
+			le16(b, o+4), le16(b, o+6), le16(b, o+8),
+			le16(b, o+10));
+	}
+	l.segs = segs;
+
+	# SSECTORS (m+6): 4-byte records; sector from first seg
+	(b, err) = w.read(m+6);
+	if (b == nil)
+		return (nil, err);
+	if (len b % 4 != 0)
+		return (nil, "SSECTORS size not a multiple of 4");
+	nss := len b / 4;
+	subsectors := array[nss] of Subsector;
+	for (i = 0; i < nss; i++) {
+		o := 4 * i;
+		nsg := le16u(b, o);
+		fsg := le16u(b, o+2);
+		subsectors[i] = Subsector(nsg, fsg, nil);
+	}
+	for (i = 0; i < nss; i++) {
+		fsg := subsectors[i].firstseg;
+		if (fsg < 0 || fsg >= nsgtot)
+			return (nil, sys->sprint("subsector %d: firstseg %d out of range", i, fsg));
+		sg := segs[fsg];
+		if (sg.linedef < 0 || sg.linedef >= nl)
+			return (nil, sys->sprint("seg %d: linedef %d out of range", fsg, sg.linedef));
+		ld := lines[sg.linedef];
+		if (sg.side != 0 && sg.side != 1)
+			return (nil, sys->sprint("seg %d: side %d not 0/1", fsg, sg.side));
+		if (ld.sides[sg.side] == nil)
+			return (nil, sys->sprint("seg %d: side %d missing on linedef %d",
+				fsg, sg.side, sg.linedef));
+		subsectors[i].sector = ld.sides[sg.side].sector;
+	}
+	l.subsectors = subsectors;
+
+	# NODES (m+7): 28-byte records; coords stored <<16 to fixed
+	(b, err) = w.read(m+7);
+	if (b == nil)
+		return (nil, err);
+	if (len b % 28 != 0)
+		return (nil, "NODES size not a multiple of 28");
+	nn := len b / 28;
+	nodes := array[nn] of Node;
+	for (i = 0; i < nn; i++) {
+		o := 28 * i;
+		bbox := array[2] of array of int;
+		for (j := 0; j < 2; j++) {
+			bo := o + 8 + j * 8;
+			bbox[j] = array[4] of int;
+			bbox[j][0] = le16(b, bo) << 16;		# BOXTOP
+			bbox[j][1] = le16(b, bo+2) << 16;	# BOXBOTTOM
+			bbox[j][2] = le16(b, bo+4) << 16;	# BOXLEFT
+			bbox[j][3] = le16(b, bo+6) << 16;	# BOXRIGHT
+		}
+		ch := array[2] of int;
+		ch[0] = le16u(b, o+24);
+		ch[1] = le16u(b, o+26);
+		nodes[i] = Node(le16(b, o) << 16, le16(b, o+2) << 16,
+			le16(b, o+4) << 16, le16(b, o+6) << 16, bbox, ch);
+	}
+	l.nodes = nodes;
+
 	return (l, nil);
+}
+
+# vanilla R_PointOnSide: 0 front, 1 back.  node.x/y/dx/dy are
+# 16.16 fixed; sign-bit trick first, then FixedMul fallback.
+# node indices are used so the arrays need not be re-fetched.
+pointonside(l: ref Level, x, y, n: int): int
+{
+	if (rend == nil) {
+		rend = load Rend Rend->PATH;
+		if (rend == nil)
+			rend = load Rend "rend.dis";
+	}
+	nd := l.nodes[n];
+	dx := 0;
+	dy := 0;
+	if (nd.dx == 0) {
+		if (x <= nd.x)
+			return nd.dy > 0;	# Limbo relational yields int 0/1
+		return nd.dy < 0;
+	}
+	if (nd.dy == 0) {
+		if (y <= nd.y)
+			return nd.dx < 0;
+		return nd.dx > 0;
+	}
+
+	dx = x - nd.x;
+	dy = y - nd.y;
+
+	# quick decide by sign bits (vanilla (a^b^c^d)&0x80000000)
+	if (((nd.dy ^ nd.dx) ^ (dx ^ dy)) & ~2147483647) {
+		if ((nd.dy ^ dx) & ~2147483647)
+			return 1;
+		return 0;
+	}
+
+	left := rend->fixedmul(nd.dy >> 16, dx);
+	right := rend->fixedmul(dy, nd.dx >> 16);
+	if (right < left)
+		return 0;
+	return 1;
+}
+
+Level.pointsubsector(l: self ref Level, x, y: int): ref Subsector
+{
+	if (len l.nodes == 0) {
+		if (len l.subsectors == 0)
+			return nil;
+		return ref l.subsectors[0];
+	}
+	nodenum := len l.nodes - 1;
+	while ((nodenum & NF_SUBSECTOR) == 0) {
+		side := pointonside(l, x, y, nodenum);
+		nodenum = l.nodes[nodenum].children[side];
+	}
+	i := nodenum & ~NF_SUBSECTOR;
+	if (i < 0 || i >= len l.subsectors)
+		return nil;
+	return ref l.subsectors[i];
 }

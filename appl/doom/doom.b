@@ -15,6 +15,13 @@ include "rend.m";
 include "map.m";
 	map: Map;
 	Level: import map;
+include "info.m";
+	inf: Info;
+	MobjInfo: import inf;
+include "game.m";
+	game: Game;
+	Player: import game;
+	Mobj: import game;
 
 Doom: module
 {
@@ -43,10 +50,12 @@ init(nil: ref Draw->Context, args: list of string)
 	test := 0;
 	rt := 0;
 	mt := 0;
+	gt := 0;
 	for (;;) {
 		if (args == nil ||
 		    (hd args != "-d" && hd args != "-t" &&
-		     hd args != "-r" && hd args != "-m"))
+		     hd args != "-r" && hd args != "-m" &&
+		     hd args != "-g"))
 			break;
 		if (hd args == "-d")
 			dump = 1;
@@ -54,8 +63,10 @@ init(nil: ref Draw->Context, args: list of string)
 			test = 1;
 		else if (hd args == "-r")
 			rt = 1;
-		else
+		else if (hd args == "-m")
 			mt = 1;
+		else
+			gt = 1;
 		args = tl args;
 	}
 	path := WADPATH;
@@ -83,6 +94,10 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 	if (mt) {
 		maptest(path);
+		return;
+	}
+	if (gt) {
+		gametest(path);
 		return;
 	}
 
@@ -339,8 +354,107 @@ maptest(path: string)
 
 usage()
 {
-	sys->fprint(sys->fildes(2), "usage: doom [-d] [-t] [-r] [-m] [doom.wad]\n");
+	sys->fprint(sys->fildes(2), "usage: doom [-d] [-t] [-r] [-m] [-g] [doom.wad]\n");
 	raise "fail:usage";
+}
+
+# BAM angle to whole degrees (unsigned 32-bit interpretation)
+bamdegrees(angle: int): int
+{
+	ua := big angle;
+	if (ua < big 0)
+		ua = ua + big 16r100000000;
+	return int (ua * big 360 / big 16r100000000);
+}
+
+gametest(path: string)
+{
+	game = load Game Game->PATH;
+	if (game == nil)
+		game = load Game "game.dis";
+	if (game == nil)
+		fail(sys->sprint("can't load Game module: %r"));
+	err := game->init();
+	if (err != nil)
+		fail(err);
+
+	# game->init already built the Info tables; grab the same instance
+	inf = load Info Info->PATH;
+	if (inf == nil)
+		inf = load Info "info.dis";
+	if (inf == nil)
+		fail(sys->sprint("can't load Info module: %r"));
+
+	(w, werr) := wad->open(path);
+	if (w == nil)
+		fail(werr);
+
+	map = load Map Map->PATH;
+	if (map == nil)
+		map = load Map "map.dis";
+	if (map == nil)
+		fail(sys->sprint("can't load Map module: %r"));
+
+	(l, merr) := map->open(w, "E1M1");
+	if (l == nil)
+		fail(merr);
+
+	err = game->setuplevel(l, game->SK_MEDIUM);
+	if (err != nil)
+		fail(err);
+
+	p := game->consoleplayer();
+	if (p == nil || p.mo == nil)
+		fail("no player 1 after setuplevel");
+	mo := p.mo;
+	sys->print("gametest: E1M1 skill medium: %d mobjs, %d kills, %d items\n",
+		game->nummobjs(), game->totalkills, game->totalitems);
+	sys->print("  player: %d,%d,%d angle %d deg, health %d, state %d, z %d\n",
+		mo.x >> 16, mo.y >> 16, mo.z >> 16, bamdegrees(mo.angle),
+		mo.health, mo.state, mo.z >> 16);
+	sys->print("  viewz %d, floorz %d, ceilingz %d\n",
+		p.viewz >> 16, mo.floorz >> 16, mo.ceilingz >> 16);
+
+	# scripted tics: 1s run north, 0.5s turn left 90 deg in place,
+	# 1s run west, 0.5s stop
+	total := 105;
+	start := sys->millisec();
+	for (t := 0; t < total; t++) {
+		fm := 0;
+		sm := 0;
+		at := 0;
+		if (t < 35) {
+			fm = 50;		# run forward (max)
+		} else if (t < 51) {
+			at = 1024;		# 16 * (1024<<16) = ANG90 left
+		} else if (t < 86) {
+			fm = 50;
+		}
+		game->setcmd(fm, sm, at, 0);
+		game->ticker();
+
+		# pace to 35Hz from t0
+		deadline := start + (t + 1) * 1000 / 35;
+		now := sys->millisec();
+		if (deadline > now)
+			sys->sleep(deadline - now);
+
+		if ((t + 1) % 35 == 0) {
+			sys->print("  t=%d pos %d,%d,%d angle %d deg, mom %d,%d, state %s\n",
+				t + 1, mo.x >> 16, mo.y >> 16, mo.z >> 16,
+				bamdegrees(mo.angle), mo.momx >> 16, mo.momy >> 16,
+				inf->statename(mo.state));
+		}
+	}
+	elapsed := sys->millisec() - start;
+	if (elapsed <= 0)
+		elapsed = 1;
+	sys->print("gametest: %d tics in %d ms = %d tics/sec (want ~35)\n",
+		total, elapsed, total * 1000 / elapsed);
+	sys->print("  final pos %d,%d angle %d deg, health %d, mobjs %d\n",
+		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle), mo.health,
+		game->nummobjs());
+	w.close();
 }
 
 fail(s: string)

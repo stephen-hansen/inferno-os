@@ -49,8 +49,17 @@ Milestones (each independently testable)
           movers can mutate heights; E1M1 checks all match vanilla:
           467 v / 475 l / 648 s / 85 sec / 138 things, two-sided
           173, player1 1056,-3616 angle 90)
-  [ ] 5  game tics: player movement, mobj state tables,
+  [x] 5  game tics: player movement, mobj state tables,
          Doom's tick loop (35Hz) driven from Sys->millisec
+         (doom -g: gametest runs 105 tics at exactly 35 tics/sec;
+         spawn 1056,-3616 angle 90 health 100 state 149 S_PLAY;
+         95 mobjs / 6 kills / 37 items on E1M1 skill medium;
+         brute-force collision over 475 lines + all mobjs;
+         geninfo.py generates info.m/info.b from info.c/info.h;
+         fixed bare-identifier enum bug: Limbo merges consecutive
+         `A, B, C,` lists into one declaration ending at the next
+         `: con value` — all SPR_/S_/MT_ constants evaluated to 1
+         until geninfo.py was fixed to emit `: con iota;`)
   [ ] 6  input: /dev/keyboard + /dev/pointer -> event chan
          (wish.b spawn-reader pattern; Tk bind optional later)
   [ ] 7  SFX: Doom mixer (8 x 8-bit unsigned channels)
@@ -84,6 +93,19 @@ Porting notes (C -> Limbo idioms)
 - Limbo reserved words bite struct field names and module members:
   `type` (Thing field) -> renamed `typ`; `load` (Map member) ->
   renamed `open` (matches wad/video naming anyway)
+- Limbo merges consecutive bare identifier lists into ONE
+  declaration ending at the next `: con value`: `A, B, C,\n D, E,\n
+  FOO: con 1;` makes ALL of A..E equal 1.  Enum lists MUST end
+  with `: con iota;` on the final name (geninfo.py bug fixed)
+- `load` is cached by PATH: `load Map Map->PATH` from different
+  .b files returns the same module instance; importing a module
+  (`import Foo`) forces a runtime load at the importer's load
+  time, so `Foo->CONST` fails if Foo isn't loaded yet
+- emu "[X] Broken: \"module not loaded\"" = exModule from a nil
+  module variable (emu/port/dis.c:956, libinterp/raise.c)
+- `sys->print` `%s` with nil string prints empty; module array
+  variables (`inf->statenames`) may report len 0 from outside
+  the module even when populated — use module functions instead
 
 Licensing
 ---------

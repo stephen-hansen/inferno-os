@@ -5,6 +5,8 @@ TARG=\
 	video.dis\
 	rend.dis\
 	map.dis\
+	info.dis\
+	game.dis\
 	doom.dis\
 
 MODULES=\
@@ -12,6 +14,8 @@ MODULES=\
 	video.m\
 	rend.m\
 	map.m\
+	info.m\
+	game.m\
 
 SYSMODULES=\
 	sys.m\
