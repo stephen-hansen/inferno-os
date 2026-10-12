@@ -142,6 +142,36 @@ Porting notes (C -> Limbo idioms)
 - portal occlusion must CLAMP cclip/fclip to [0..h]: projy returns
   extreme values for near-camera geometry, and one unclamped write
   inverts the visible region (yt > yb) for the rest of the frame
+- Limbo `<<`/`>>` and `*`/`/` share precedence but the SHIFT RHS
+  extends over the multiplicative expression: `a << 16 / b` parses
+  as `a << (16 / b)` (type clash int/big).  Always parenthesize:
+  `(a << 16) / b`.  Mixed big/int arithmetic is also a type clash:
+  `big(x) * 16r10000` errors — wrap BOTH sides in big()
+- 16.16 overflow audit rules for the renderer (edge warping bugs):
+  * screen-x frac MUST span the ORIGINAL projected endpoints
+    (possibly |x|~millions for near-clipped walls); clamping x to
+    the screen first and interpolating from the clamped basis
+    makes screen-edge columns use the near endpoint's scale
+    (640 px/unit) — the "warp at left/right edges" bug
+  * `(-d << 16)` overflows for far-behind endpoints; use big()
+  * fixedmul(dz, scale)>>16 overflows for close walls
+    (dz ~200 units * scale ~640 px/unit); y-math uses
+    big(dz)*big(scale)>>32 everywhere
+  * R_PointOnSide: fixedmul(dy, dx) overflows for map-scale 16.16
+    coords (ah*bh<<16); compare big cross-products instead
+  * scale (proportional to 1/depth) IS exactly linear in screen x
+    (vanilla steps rw_scale the same way); texture u is MOBIUS in
+    screen x — vanilla gets it right via finetangent per column;
+    we interpolate u/depth and 1/depth (both linear in x) and
+    divide
+- NEVER chain `ps aux | grep ... | xargs kill` for emu cleanup —
+  it hangs and eats the whole command timeout.  Launch every emu
+  as `timeout N ./emu ...` so it self-terminates; window id via
+  `DISPLAY=:0 xwininfo -root -tree | grep -i inferno` (usually
+  0x600001); capture with `DISPLAY=:0 import -window <id>`
+- `emu ... -p` = walltest autopilot: turn 24x15deg in place at
+  spawn (tight closet = near-clip/edge stress), then walk forward;
+  pauses 700ms per turn step for screenshots, self-exits after
 
 Licensing
 ---------

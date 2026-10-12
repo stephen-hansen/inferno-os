@@ -92,8 +92,10 @@ pointonside(x, y: int, nd: Map->Node): int
 	}
 	dx := x - nd.x;
 	dy := y - nd.y;
-	left := rend->fixedmul(nd.dy, dx);
-	right := rend->fixedmul(dy, nd.dx);
+	# cross-product comparison; fixedmul overflows for large
+	# 16.16 coords (ah*bh<<16), so compare full products in big
+	left := big(nd.dy) * big(dx);
+	right := big(dy) * big(nd.dx);
 	if (right < left)
 		return 0;
 	return 1;
@@ -220,49 +222,35 @@ addline(segnum: int)
 	u1 = seg.offset;
 	u2 = seg.offset + linelen;
 
-	# clip endpoints behind the near plane
+	# clip endpoints behind the near plane.
+	# interpolation is in wall-parameter space (affine) so linear
+	# frac is exact here; frac itself needs big: (-d1)<<16
+	# overflows int32 for far-behind endpoints (16.16 << 16).
 	if (d1 <= 0) {
-		# interpolate: t = d1 / (d1 - d2), new point = v1 + t*(v2-v1)
-		# since d1 <= 0 < d2 (we already handled both <= 0)
 		if (d2 <= 0)
 			return;
-		# ratio = d1 / (d1 - d2) is negative, we want the clip point
-		# t = 0 - d1 = -d1 (distance from v1 to near plane)
-		# total = d2 - d1
-		# fraction along v1->v2 = -d1 / (d2 - d1)
-		frac := (-d1 << 16) / (d2 - d1);	# 16.16
+		frac := int((big(-d1) << 16) / big(d2 - d1));	# 16.16
 		l1 = l1 + rend->fixedmul(l2 - l1, frac);
 		d1 = FRACUNIT / 4;	# small positive depth
 		u1 = u1 + rend->fixedmul(u2 - u1, frac);
-		x1 = projx(l1, d1);
-		z1t = ceilz;
-		z1b = floorz;
-	} else {
-		x1 = projx(l1, d1);
-		z1t = ceilz;
-		z1b = floorz;
-	}
-
-	if (d2 <= 0) {
-		frac := (-d2 << 16) / (d1 - d2);
+	} else if (d2 <= 0) {
+		frac := int((big(-d2) << 16) / big(d1 - d2));	# 16.16
 		l2 = l2 + rend->fixedmul(l1 - l2, frac);
 		d2 = FRACUNIT / 4;
 		u2 = u2 + rend->fixedmul(u1 - u2, frac);
-		x2 = projx(l2, d2);
-		z2t = ceilz;
-		z2b = floorz;
-	} else {
-		x2 = projx(l2, d2);
-		z2t = ceilz;
-		z2b = floorz;
 	}
+	x1 = projx(l1, d1);
+	x2 = projx(l2, d2);
+	z1t = ceilz;
+	z1b = floorz;
+	z2t = ceilz;
+	z2b = floorz;
 
 	# ensure x1 <= x2 (swap if needed)
 	sx := 0;
 	sd_ := 0;
 	sl := 0;
 	su := 0;
-	st := 0;
 	if (x1 > x2) {
 		sx = x1;
 		x1 = x2;
@@ -276,27 +264,31 @@ addline(segnum: int)
 		su = u1;
 		u1 = u2;
 		u2 = su;
-		st = z1t;
-		z1t = z2t;
-		z2t = st;
-		st = z1b;
-		z1b = z2b;
-		z2b = st;
 	}
+	# keep ORIGINAL projected x for the interpolation basis.
+	# screen-x scale/u fractions must span the true endpoint
+	# positions (possibly far offscreen); clamping x1/x2 first
+	# and interpolating from the clamped values warps scale/u
+	# at the screen edges (near-clipped endpoints project to
+	# |x| ~ millions, depth=0.25 scale = 640px/unit).
+	ox1 := x1;
+	ox2 := x2;
 
-	# clip to screen bounds
-	if (x2 < 0 || x1 >= w)
+	# clip loop bounds to screen
+	if (ox2 < 0 || ox1 >= w)
 		return;
-	if (x1 < 0)
-		x1 = 0;
-	if (x2 >= w)
-		x2 = w - 1;
+	lx1 := ox1;
+	if (lx1 < 0)
+		lx1 = 0;
+	lx2 := ox2;
+	if (lx2 >= w)
+		lx2 = w - 1;
 
 	# choose texture
 	texname := sd.midtexture;
 	if (back != nil) {
 		# two-sided: draw upper and lower, skip middle
-		drawtwosided(sd, back, x1, x2, d1, d2, l1, l2, u1, u2,
+		drawtwosided(sd, lx1, lx2, ox1, ox2, d1, d2, u1, u2,
 			ceilz, floorz, back.ceilingheight, back.floorheight);
 		return;
 	}
@@ -326,20 +318,31 @@ addline(segnum: int)
 		dd2 = FRACUNIT / 4;
 	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd1));
 	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd2));
+	# u is linear in wall-parameter, MOBIUS in screen x (vanilla
+	# gets this right via finetangent per column).  u/depth and
+	# 1/depth are both linear in screen x, so interp those and
+	# divide.  big: u1<<16 overflows int32 (u up to 4000 units).
+	ud1 := int((big(u1) << 16) / big(dd1));	# u/depth, 16.16
+	ud2 := int((big(u2) << 16) / big(dd2));
+	id1 := int(16r100000000 / big(dd1));	# 1/depth, 16.16
+	id2 := int(16r100000000 / big(dd2));
 
-	# draw columns x1..x2
+	# draw columns lx1..lx2; frac spans the ORIGINAL x span
+	tspan := ox2 - ox1;
 	nsegs++;
-	for (x := x1; x <= x2; x++) {
-		# interpolate scale and u at this column
-		# t = (x - x1) / (x2 - x1) in 16.16
-		tspan := x2 - x1;
+	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
 		if (tspan > 0)
-			frac = ((x - x1) << 16) / tspan;
+			frac = int((big(x - ox1) << 16) / big(tspan));
 		scale := s1 + rend->fixedmul(s2 - s1, frac);
-		u := u1 + rend->fixedmul(u2 - u1, frac);
 		if (scale <= 0)
 			continue;
+
+		ud := ud1 + rend->fixedmul(ud2 - ud1, frac);
+		id := id1 + rend->fixedmul(id2 - id1, frac);
+		if (id <= 0)
+			continue;
+		u := int((big(ud) << 16) / big(id));
 
 		yt := r.centery - int(big(z1t + rend->fixedmul(z2t - z1t, frac) - vz) * big(scale) >> 32);
 		yb := r.centery - int(big(z1b + rend->fixedmul(z2b - z1b, frac) - vz) * big(scale) >> 32);
@@ -376,8 +379,8 @@ addline(segnum: int)
 }
 
 # two-sided line: draw upper and lower textures where heights differ
-drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
-	x1, x2, d1, d2, l1, l2, u1, u2: int,
+drawtwosided(sd: ref Map->Side,
+	lx1, lx2, ox1, ox2, d1, d2, u1, u2: int,
 	fceilz, ffloorz, bceilz, bfloorz: int)
 {
 	nsegs++;
@@ -389,15 +392,25 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 		dd2 = FRACUNIT / 4;
 	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd1));
 	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd2));
-	for (x := x1; x <= x2; x++) {
-		tspan := x2 - x1;
+	# perspective-correct u via u/depth and 1/depth (linear in x)
+	ud1 := int((big(u1) << 16) / big(dd1));
+	ud2 := int((big(u2) << 16) / big(dd2));
+	id1 := int(16r100000000 / big(dd1));
+	id2 := int(16r100000000 / big(dd2));
+	tspan := ox2 - ox1;
+	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
 		if (tspan > 0)
-			frac = ((x - x1) << 16) / tspan;
+			frac = int((big(x - ox1) << 16) / big(tspan));
 		scale := s1 + rend->fixedmul(s2 - s1, frac);
-		u := u1 + rend->fixedmul(u2 - u1, frac);
 		if (scale <= 0)
 			continue;
+		ud := ud1 + rend->fixedmul(ud2 - ud1, frac);
+		id := id1 + rend->fixedmul(id2 - id1, frac);
+		if (id <= 0)
+			continue;
+		u := int((big(ud) << 16) / big(id));
+		col := u >> 16;
 
 		cclip := solid[2*x];
 		fclip := solid[2*x+1];
@@ -422,8 +435,7 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 				if (yb >= fclip) yb = fclip - 1;
 				if (yb >= h) yb = h - 1;
 				if (yt <= yb) {
-					col := u >> 16;
-					# upper texture is anchored at the top:
+					# upper texture anchored at the top:
 					# texture row 0 at fceilz going down
 					tmid := fceilz - vz;
 					rend->rdrawcolumn(r,x, yt, yb, light, tex, col, tmid, iscale);
@@ -437,14 +449,15 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 		if (bfloorz > ffloorz && sd.bottomtexture != "" && sd.bottomtexture != "-") {
 			tex := rend->rtexture(r,sd.bottomtexture);
 			if (tex != nil) {
-				yt := r.centery - (rend->fixedmul(bfloorz - vz, scale) >> 16);
-				yb := r.centery - (rend->fixedmul(ffloorz - vz, scale) >> 16);
+				# big: fixedmul(dz, scale)>>16 overflows for
+				# close walls (dz ~200 units * scale 640px/u)
+				yt := r.centery - int(big(bfloorz - vz) * big(scale) >> 32);
+				yb := r.centery - int(big(ffloorz - vz) * big(scale) >> 32);
 				if (yt < cclip) yt = cclip;
 				if (yt < 0) yt = 0;
 				if (yb >= fclip) yb = fclip - 1;
 				if (yb >= h) yb = h - 1;
 				if (yt <= yb) {
-					col := u >> 16;
 					# lower texture anchored at bottom:
 					# texture row 0 at bfloorz going down... vanilla
 					# uses (bfloorz - viewz) but offset by texture height
@@ -458,7 +471,7 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 
 		# portal: if back ceiling < front ceiling, occlude upper
 		if (bceilz < fceilz) {
-			yb := r.centery - (rend->fixedmul(bceilz - vz, scale) >> 16);
+			yb := r.centery - int(big(bceilz - vz) * big(scale) >> 32);
 			yb1 := yb + 1;
 			if (yb1 < 0)
 				yb1 = 0;
@@ -469,7 +482,7 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 		}
 		# portal: if back floor > front floor, occlude lower
 		if (bfloorz > ffloorz) {
-			yt := r.centery - (rend->fixedmul(bfloorz - vz, scale) >> 16);
+			yt := r.centery - int(big(bfloorz - vz) * big(scale) >> 32);
 			if (yt < 0)
 				yt = 0;
 			if (yt > h)

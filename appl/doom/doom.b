@@ -53,11 +53,12 @@ init(nil: ref Draw->Context, args: list of string)
 	rt := 0;
 	mt := 0;
 	gt := 0;
+	pt := 0;
 	for (;;) {
 		if (args == nil ||
 		    (hd args != "-d" && hd args != "-t" &&
 		     hd args != "-r" && hd args != "-m" &&
-		     hd args != "-g"))
+		     hd args != "-g" && hd args != "-p"))
 			break;
 		if (hd args == "-d")
 			dump = 1;
@@ -67,6 +68,8 @@ init(nil: ref Draw->Context, args: list of string)
 			rt = 1;
 		else if (hd args == "-m")
 			mt = 1;
+		else if (hd args == "-p")
+			pt = 1;
 		else
 			gt = 1;
 		args = tl args;
@@ -128,8 +131,8 @@ init(nil: ref Draw->Context, args: list of string)
 	checkread(w, "E1M1", -1);
 	w.close();
 
-	# no flags: interactive play
-	play(path);
+	# no flags: interactive play; -p: wall-hug autopilot (screenshot test)
+	play(path, pt);
 }
 
 checkread(w: ref Wad->File, name: string, expect: int)
@@ -480,7 +483,7 @@ RCtrl:	con KShift|3;
 keystate:	array of int;
 keych:		chan of int;
 
-play(path: string)
+play(path: string, autopilot: int)
 {
 	game = load Game Game->PATH;
 	if (game == nil)
@@ -558,6 +561,13 @@ play(path: string)
 	sys->print("  player at %d,%d angle %d deg\n",
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
 
+	if (autopilot) {
+		walltest(rr, v, mo);
+		v.close();
+		w.close();
+		return;
+	}
+
 	TICMS := 1000 / 35;
 	tick := chan of int;
 	spawn timerproc(tick, TICMS);
@@ -631,6 +641,39 @@ play(path: string)
 	v.close();
 	w.close();
 	sys->print("play: quit at t=%d\n", tic);
+}
+
+# autopilot screenshot test: turn in place at spawn first (tight
+# closet, walls close on all sides = near-plane/edge stress), then
+# run forward; pause per turn step for external screenshots
+walltest(rr: ref Renderer, v: ref Context, mo: ref Mobj)
+{
+	sys->print("walltest: turning in place 24 x 15 deg at spawn...\n");
+	turn := 2730;		# 2730<<16 ~ 15 deg BAM
+	for (s := 0; s < 24; s++) {
+		game->setcmd(0, 0, turn, 0);
+		game->ticker();
+		game->setview();
+		view->render(game->viewx, game->viewy, game->viewz,
+			game->viewangle, game->viewcos, game->viewsin);
+		rr.convert(v.fb);
+		v.present();
+		sys->print("  step %2d angle %d deg\n", s + 1, bamdegrees(mo.angle));
+		sys->sleep(700);
+	}
+	sys->print("walltest: running forward 35 tics...\n");
+	for (t := 0; t < 35; t++) {
+		game->setcmd(50, 0, 0, 0);
+		game->ticker();
+		game->setview();
+		view->render(game->viewx, game->viewy, game->viewz,
+			game->viewangle, game->viewcos, game->viewsin);
+		rr.convert(v.fb);
+		v.present();
+		sys->sleep(1000 / 35);
+	}
+	sys->print("walltest: done, final pos %d,%d angle %d deg\n",
+		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
 }
 
 kbdreader(ch: chan of int)
