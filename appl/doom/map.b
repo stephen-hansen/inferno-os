@@ -181,8 +181,8 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 			bbox[2] = verts[v2].x;
 			bbox[3] = verts[v1].x;
 		}
-		fs := ref Sector;
-		bs := ref Sector;
+		fs: ref Sector;
+		bs: ref Sector;
 		if (sd[0] != nil)
 			fs = sd[0].sector;
 		if (sd[1] != nil)

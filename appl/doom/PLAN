@@ -26,6 +26,8 @@ Layout
                    vanilla column/span drawers (module)
   map.m/map.b      map geometry: vertices, sectors, sides, lines,
                    things as adts; shared ref Sectors (module)
+  view.m/view.b    world-view renderer: BSP walk, seg clip, wall
+                   columns, two-sided upper/lower (module)
   doom.b           main command; grows with each milestone
   doom1.wad        shareware IWAD (data, place in $ROOT or pass path)
   PLAN             this file
@@ -70,7 +72,16 @@ Milestones (each independently testable)
          - keyboard.m is header-only: define Esc/Up/Down/Left/
            Right/LCtrl/RCtrl constants inline in doom.b
          - floor renders correctly via drawspan + convert + present
-   [ ] 7  SFX: Doom mixer (8 x 8-bit unsigned channels)
+   [~] 7  world view: BSP walk -> seg clip -> wall columns DONE;
+          floor/ceiling spans still TODO (r_plane.c)
+          viewx/viewy/viewz/viewangle from console player;
+          occlusion array (solid[] / ceilingclip/floorclip);
+          projection: screenx = centerx - left*proj/depth;
+          depth = dx*cos+dy*sin, left = dy*cos-dx*sin;
+          view.m/view.b module; walls render textured (320 cols/frame);
+          two-sided lines: upper/lower textures + portal occlusion
+          with clamping; one-sided: midtexture columns
+   [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback
 
@@ -116,7 +127,21 @@ Porting notes (C -> Limbo idioms)
   the module even when populated — use module functions instead
   **NOTE TO SELF: STOP re-reading info.b to "verify" statenames.
   It is verified. Do not check it again.**
-- Limbo `alt` default case is `default:`, NOT bare `=>`
+- Limbo `alt` has NO `default:` and NO bare `=>` fallback — it
+  always blocks until one case is ready; use a timer channel
+  as one alternative; `break` inside an `alt` case is a syntax
+  error (restructure with flags)
+- Limbo `ref Adt` as an EXPRESSION allocates a new zeroed instance
+  (like C's `new`), NOT nil.  `bs := ref Sector;` creates an empty
+  Sector, so `if (bs != nil)` is ALWAYS true — use `bs: ref Sector;`
+  (declaration, no `:=`) to get nil.  This bug made every linedef
+  look two-sided, silently skipping all midtextures
+- module-level `sys: Sys;` is nil until loaded; a module that
+  includes sys.m but never `load Sys` will crash with "module not
+  loaded" on the first `sys->print` — load it in init()
+- portal occlusion must CLAMP cclip/fclip to [0..h]: projy returns
+  extreme values for near-camera geometry, and one unclamped write
+  inverts the visible region (yt > yb) for the rest of the frame
 
 Licensing
 ---------

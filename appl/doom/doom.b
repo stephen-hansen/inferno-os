@@ -12,6 +12,8 @@ include "video.m";
 include "rend.m";
 	rend: Rend;
 	Renderer: import rend;
+include "view.m";
+	view: View;
 include "map.m";
 	map: Map;
 	Level: import map;
@@ -467,12 +469,12 @@ KEYHELD:	con 3;		# tics a key stays "held" after last event (auto-repeat)
 # keyboard key constants (from module/keyboard.m, header-only)
 Spec:	con 16rE000;
 KShift:	con Spec|16r00;
-View:	con Spec|16r10;
+KView:	con Spec|16r10;
 Esc:	con 16r1b;
-Up:	con View|2;
-Down:	con View|3;
-Left:	con View|4;
-Right:	con View|5;
+Up:	con KView|2;
+Down:	con KView|3;
+Left:	con KView|4;
+Right:	con KView|5;
 LCtrl:	con KShift|2;
 RCtrl:	con KShift|3;
 keystate:	array of int;
@@ -525,6 +527,16 @@ play(path: string)
 	(l, merr) := map->open(w, "E1M1");
 	if (l == nil)
 		fail(merr);
+
+	# load world view renderer
+	view = load View View->PATH;
+	if (view == nil)
+		view = load View "view.dis";
+	if (view == nil)
+		fail(sys->sprint("can't load View module: %r"));
+	err = view->init(rr, l, vid_w, vid_h);
+	if (err != nil)
+		fail(err);
 
 	err = game->setuplevel(l, game->SK_MEDIUM);
 	if (err != nil)
@@ -600,16 +612,10 @@ play(path: string)
 		game->setcmd(fm, sm, at, btn);
 		game->ticker();
 
-		# render: clear to dark, draw floor plane, convert, present
-		rr.clear(0);
-		floorfl := rr.flat("FLOOR4_8");
-		if (floorfl != nil) {
-			for (y := rr.centery; y < vid_h; y++) {
-				light := 8 + ((y - rr.centery) * 20) / (vid_h - rr.centery);
-				rr.drawspan(y, 0, vid_w - 1, light, floorfl,
-					0, y << 16, 1 << 16, 0);
-			}
-		}
+		# render: update view from player, walk BSP, present
+		game->setview();
+		view->render(game->viewx, game->viewy, game->viewz,
+			game->viewangle, game->viewcos, game->viewsin);
 		rr.convert(v.fb);
 		v.present();
 

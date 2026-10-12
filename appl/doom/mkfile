@@ -7,6 +7,7 @@ TARG=\
 	map.dis\
 	info.dis\
 	game.dis\
+	view.dis\
 	doom.dis\
 
 MODULES=\
@@ -16,6 +17,7 @@ MODULES=\
 	map.m\
 	info.m\
 	game.m\
+	view.m\
 
 SYSMODULES=\
 	sys.m\

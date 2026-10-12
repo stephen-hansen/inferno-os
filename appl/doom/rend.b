@@ -299,9 +299,9 @@ Renderer.clear(r: self ref Renderer, color: int)
 		r.fb8[i] = c;
 }
 
-# vanilla R_DrawColumn.  The source index masks with 127 exactly as
-# the C does; the engine keeps frac inside texture bounds so the mask
-# only matters for the 128-tall case.
+# vanilla R_DrawColumn.  Row wraps by tex.height (vanilla &127 works
+# only for 128-tall textures; shorter ones need a real modulo or the
+# last column reads past the composite).
 Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 		tex: ref Texture, col, texturemid, iscale: int)
 {
@@ -309,12 +309,19 @@ Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 	if (count < 0)
 		return;
 	cm := light * 256;
-	src := (col & tex.mask) * tex.height;
+	c := col % tex.width;
+	if (c < 0)
+		c += tex.width;
+	src := c * tex.height;
 	dest := yl * r.w + x;
 	fracstep := iscale;
 	frac := texturemid + (yl - r.centery) * fracstep;
+	th := tex.height;
 	for (i := 0; i <= count; i++) {
-		r.fb8[dest] = r.colormap[cm + int tex.data[src + ((frac >> 16) & 127)]];
+		row := (frac >> 16) % th;
+		if (row < 0)
+			row += th;
+		r.fb8[dest] = r.colormap[cm + int tex.data[src + row]];
 		dest += r.w;
 		frac += fracstep;
 	}
@@ -352,4 +359,21 @@ Renderer.convert(r: self ref Renderer, dst: array of byte)
 		dst[j+3] = byte 0;
 		j += 4;
 	}
+}
+
+# module-level wrappers for callers that don't import Renderer
+rclear(r: ref Renderer, color: int)
+{
+	r.clear(color);
+}
+
+rtexture(r: ref Renderer, name: string): ref Texture
+{
+	return r.texture(name);
+}
+
+rdrawcolumn(r: ref Renderer, x, yl, yh, light: int,
+	tex: ref Texture, col, texturemid, iscale: int)
+{
+	r.drawcolumn(x, yl, yh, light, tex, col, texturemid, iscale);
 }

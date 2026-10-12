@@ -823,6 +823,23 @@ setcmd(forwardmove, sidemove, angleturn, buttons: int)
 	players[0].cmd = Ticcmd(forwardmove, sidemove, angleturn, buttons);
 }
 
+setview()
+{
+	p := players[0];
+	if (p == nil || p.mo == nil)
+		return;
+	viewx = p.mo.x;
+	viewy = p.mo.y;
+	viewz = p.viewz;
+	viewangle = p.mo.angle;
+	# viewcos = cos(viewangle) = sin(viewangle + ANG90);
+	# viewsin = sin(viewangle)
+	a := (viewangle >> ANGLETOFINESHIFT) & FINEMASK;
+	viewsin = inf->finesine[a];
+	viewcos = inf->finesine[(a + 2048) & FINEMASK];
+	validcount++;
+}
+
 nummobjs(): int
 {
 	return len mobjs;

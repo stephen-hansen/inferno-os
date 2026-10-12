@@ -134,6 +134,15 @@ Game: module {
 	gameskill:	int;
 	totalkills, totalitems:	int;
 
+	# --- view state (updated each frame by the renderer caller) ---
+	viewx, viewy, viewz:	int;	# 16.16 camera position
+	viewangle:	int;		# BAM
+	viewcos, viewsin:	int;	# 16.16, derived from viewangle
+	validcount:	int;		# wall mark counter
+	centerx, centery:	int;	# screen center, set by renderer
+	projection:	int;	# 16.16 focal length (= centerx for 90deg)
+	solid:	array of int;	# occlusion: top/bottom clip per column [w*2]
+
 	# build Info tables and reset world state; call once at startup
 	init:	fn(): string;
 
@@ -149,6 +158,11 @@ Game: module {
 
 	# set the console player's ticcmd (signed char / short ranges)
 	setcmd:	fn(forwardmove, sidemove, angleturn, buttons: int);
+
+	# copy console player's mobj pos/angle into viewx/viewy/viewz/
+	# viewangle and recompute viewcos/viewsin; call once per frame
+	# before rendering
+	setview:	fn();
 
 	# introspection for tests
 	nummobjs:	fn(): int;
