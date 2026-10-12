@@ -146,15 +146,15 @@ toworld(x, y: int): (int, int)
 # uses big: lateral*proj overflows int32 for distant vertices
 projx(lateral, depth: int): int
 {
-	if (depth <= FRACUNIT / 4)
-		return 16r7fffffff;	# behind or too close
+	if (depth <= 0)
+		return 16r7fffffff;	# behind
 	return (w / 2) - int(big(lateral) * big(proj) / big(depth));
 }
 
 # screen y from world z and depth: centery - (z-viewz)*proj/depth
 projy(z, depth: int): int
 {
-	if (depth <= FRACUNIT / 4)
+	if (depth <= 0)
 		return 16r7fffffff;
 	dz := z - vz;
 	return r.centery - int(big(dz) * big(proj) / big(depth));
@@ -313,22 +313,36 @@ addline(segnum: int)
 	if (light > 31)
 		light = 31;
 
+	# perspective-correct: scale (px per world unit, 16.16) is linear
+	# in screen x; depth is derived per column.  Vanilla steps
+	# rw_scale linearly (r_segs.c).  Linear depth bends wall edges.
+	# clamp depth so scale stays in int32 (near-plane clip can leave
+	# tiny positive depths)
+	dd1 := d1;
+	dd2 := d2;
+	if (dd1 < FRACUNIT / 4)
+		dd1 = FRACUNIT / 4;
+	if (dd2 < FRACUNIT / 4)
+		dd2 = FRACUNIT / 4;
+	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd1));
+	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd2));
+
 	# draw columns x1..x2
 	nsegs++;
 	for (x := x1; x <= x2; x++) {
-		# interpolate depth and u at this column
+		# interpolate scale and u at this column
 		# t = (x - x1) / (x2 - x1) in 16.16
 		tspan := x2 - x1;
 		frac := 0;
 		if (tspan > 0)
 			frac = ((x - x1) << 16) / tspan;
-		depth := d1 + rend->fixedmul(d2 - d1, frac);
+		scale := s1 + rend->fixedmul(s2 - s1, frac);
 		u := u1 + rend->fixedmul(u2 - u1, frac);
-		if (depth <= FRACUNIT / 4)
+		if (scale <= 0)
 			continue;
 
-		yt := projy(z1t + rend->fixedmul(z2t - z1t, frac), depth);
-		yb := projy(z1b + rend->fixedmul(z2b - z1b, frac), depth);
+		yt := r.centery - int(big(z1t + rend->fixedmul(z2t - z1t, frac) - vz) * big(scale) >> 32);
+		yb := r.centery - int(big(z1b + rend->fixedmul(z2b - z1b, frac) - vz) * big(scale) >> 32);
 		if (yt > yb)
 			continue;
 
@@ -348,18 +362,10 @@ addline(segnum: int)
 
 		# texture mapping
 		col := u >> 16;
-		# scale: 16.16 texture units per screen pixel
-		# iscale = depth / proj (depth is 16.16 world units, proj is pixels)
-		iscale := depth / proj;
-		# texturemid: z at centery, relative to viewz
-		# at y=centery, frac_t = 0, z = z1 + (z2-z1)*0.5... actually
-		# texturemid = (z_top - viewz) scaled to 16.16 texture units
-		# texture top maps to yt, so texturemid = (z_top - viewz) * scale
-		# But vanilla uses: texturemid = (z_top - viewz) in world 16.16
-		# then frac = texturemid + (y - centery) * iscale
+		# iscale: 16.16 texture units per screen pixel = 2^32/scale
+		iscale := int(16r100000000 / big(scale));
+		# texturemid: world z above eye, 16.16 texels (1 texel = 1 unit)
 		tmid := z1t + rend->fixedmul(z2t - z1t, frac) - vz;
-		# scale tmid to texture space: world 16.16 -> tex 16.16
-		# texture is drawn at 1:1 world scale, so tmid stays as-is
 		rend->rdrawcolumn(r,x, yt, yb, light, tex, col, tmid, iscale);
 		ncolumns++;
 
@@ -375,14 +381,22 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 	fceilz, ffloorz, bceilz, bfloorz: int)
 {
 	nsegs++;
+	dd1 := d1;
+	dd2 := d2;
+	if (dd1 < FRACUNIT / 4)
+		dd1 = FRACUNIT / 4;
+	if (dd2 < FRACUNIT / 4)
+		dd2 = FRACUNIT / 4;
+	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd1));
+	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd2));
 	for (x := x1; x <= x2; x++) {
 		tspan := x2 - x1;
 		frac := 0;
 		if (tspan > 0)
 			frac = ((x - x1) << 16) / tspan;
-		depth := d1 + rend->fixedmul(d2 - d1, frac);
+		scale := s1 + rend->fixedmul(s2 - s1, frac);
 		u := u1 + rend->fixedmul(u2 - u1, frac);
-		if (depth <= FRACUNIT / 4)
+		if (scale <= 0)
 			continue;
 
 		cclip := solid[2*x];
@@ -395,14 +409,14 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 			if (light > 31) light = 31;
 		}
 
-		iscale := depth / proj;
+		iscale := int(16r100000000 / big(scale));
 
 		# upper texture: from back ceiling to front ceiling
 		if (bceilz < fceilz && sd.toptexture != "" && sd.toptexture != "-") {
 			tex := rend->rtexture(r,sd.toptexture);
 			if (tex != nil) {
-				yt := projy(fceilz, depth);
-				yb := projy(bceilz, depth);
+				yt := r.centery - int(big(fceilz - vz) * big(scale) >> 32);
+				yb := r.centery - int(big(bceilz - vz) * big(scale) >> 32);
 				if (yt < cclip) yt = cclip;
 				if (yt < 0) yt = 0;
 				if (yb >= fclip) yb = fclip - 1;
@@ -423,8 +437,8 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 		if (bfloorz > ffloorz && sd.bottomtexture != "" && sd.bottomtexture != "-") {
 			tex := rend->rtexture(r,sd.bottomtexture);
 			if (tex != nil) {
-				yt := projy(bfloorz, depth);
-				yb := projy(ffloorz, depth);
+				yt := r.centery - (rend->fixedmul(bfloorz - vz, scale) >> 16);
+				yb := r.centery - (rend->fixedmul(ffloorz - vz, scale) >> 16);
 				if (yt < cclip) yt = cclip;
 				if (yt < 0) yt = 0;
 				if (yb >= fclip) yb = fclip - 1;
@@ -444,7 +458,7 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 
 		# portal: if back ceiling < front ceiling, occlude upper
 		if (bceilz < fceilz) {
-			yb := projy(bceilz, depth);
+			yb := r.centery - (rend->fixedmul(bceilz - vz, scale) >> 16);
 			yb1 := yb + 1;
 			if (yb1 < 0)
 				yb1 = 0;
@@ -455,7 +469,7 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 		}
 		# portal: if back floor > front floor, occlude lower
 		if (bfloorz > ffloorz) {
-			yt := projy(bfloorz, depth);
+			yt := r.centery - (rend->fixedmul(bfloorz - vz, scale) >> 16);
 			if (yt < 0)
 				yt = 0;
 			if (yt > h)
