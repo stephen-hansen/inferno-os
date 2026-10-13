@@ -323,6 +323,10 @@ projy(z, depth: int): int
 }
 
 FRACUNIT:	con 16r10000;
+SKYFLAT:	con "F_SKY1";	# map flat marking a sky ceiling (r_sky.h SKYFLATNAME)
+SKYTEX:		con "SKY1";	# sky texture: episode 1 (g_game.c maps episodes to
+			# SKY1/SKY2/SKY3; shareware has SKY1 only)
+SKYMID:		con 6553600;	# 100*FRACUNIT, vanilla skytexturemid (r_sky.c)
 
 # draw one seg as wall columns
 addline(segnum: int)
@@ -449,7 +453,8 @@ addline(segnum: int)
 	if (back != nil) {
 		# two-sided: draw upper and lower, skip middle
 		drawtwosided(sd, lx1, lx2, ox1, ox2, d1, d2, u1, u2,
-			ceilz, floorz, back.ceilingheight, back.floorheight);
+			ceilz, floorz, back.ceilingheight, back.floorheight,
+			back.ceilingtexture);
 		return;
 	}
 	if (texname == "" || texname == "-")
@@ -476,7 +481,7 @@ addline(segnum: int)
 		curfloor = checkplane(findplane(floorz, sec.floortexture, light),
 			lx1, lx2);
 	curceil = -1;
-	if (ceilz > vz || sec.ceilingtexture == "F_SKY1")
+	if (ceilz > vz || sec.ceilingtexture == SKYFLAT)
 		curceil = checkplane(findplane(ceilz, sec.ceilingtexture, light),
 			lx1, lx2);
 
@@ -577,7 +582,7 @@ addline(segnum: int)
 # two-sided line: draw upper and lower textures where heights differ
 drawtwosided(sd: ref Map->Side,
 	lx1, lx2, ox1, ox2, d1, d2, u1, u2: int,
-	fceilz, ffloorz, bceilz, bfloorz: int)
+	fceilz, ffloorz, bceilz, bfloorz: int, bceiltex: string)
 {
 	nsegs++;
 	dd1 := d1;
@@ -617,7 +622,7 @@ drawtwosided(sd: ref Map->Side,
 		frontfloor = checkplane(findplane(ffloorz, fsec.floortexture, flight),
 			lx1, lx2);
 	frontceil := -1;
-	if (fceilz > vz || fsec.ceilingtexture == "F_SKY1")
+	if (fceilz > vz || fsec.ceilingtexture == SKYFLAT)
 		frontceil = checkplane(findplane(fceilz, fsec.ceilingtexture, clight),
 			lx1, lx2);
 
@@ -653,8 +658,15 @@ drawtwosided(sd: ref Map->Side,
 		else
 			iscale = int(16r100000000 / big(scale));
 
-		# upper texture: from back ceiling to front ceiling
-		if (bceilz < fceilz && sd.toptexture != "" && sd.toptexture != "-") {
+		# upper texture: from back ceiling to front ceiling.  vanilla
+		# sky hack (r_segs.c:525-530): when both ceilings are sky,
+		# worldtop = worldhigh -- the upper texture collapses to zero
+		# height and is never drawn, so the sky flows continuously
+		# across height-changing outdoor areas.  our clip advance below
+		# (cclip = max(cclip, fctop)) already matches vanilla's
+		# markceiling branch (ceilingclip = yl-1) for undrawn uppers.
+		if (bceilz < fceilz && sd.toptexture != "" && sd.toptexture != "-"
+			&& !(fsec.ceilingtexture == SKYFLAT && bceiltex == SKYFLAT)) {
 			tex := rend->rtexture(r,sd.toptexture);
 			if (tex != nil) {
 				yt := r.centery - int(big(fceilz - vz) * big(scale) >> 32);
@@ -736,6 +748,13 @@ drawtwosided(sd: ref Map->Side,
 # many segs sharing a floor contribute to one plane.
 findplane(z: int, flatname: string, light: int): int
 {
+	# vanilla R_FindPlane (r_plane.c:218): sky forces height=0 and
+	# light=0 -- all skys map together into one plane, so sky-sky
+	# portals join it seamlessly regardless of sector heights/lights.
+	if (flatname == SKYFLAT) {
+		z = 0;
+		light = 0;
+	}
 	for (i := 0; i < nvp; i++) {
 		if (vps[i].z == z && vps[i].flatname == flatname && vps[i].light == light)
 			return i;
@@ -838,6 +857,30 @@ drawplanes()
 		vp := vps[pl];
 		if (vp.minx > vp.maxx)
 			continue;
+		# sky (vanilla R_DrawPlanes, r_plane.c:390): drawn as wall
+		# texture columns, fullbright (colormap row 0), iscale =
+		# pspriteiscale = FRACUNIT*SCREENWIDTH/viewwidth = 1.0 (one
+		# texel per screen pixel), texturemid = skytexturemid =
+		# 100*FRACUNIT which puts texture row 0 at screen row 0 when
+		# centery = 100.  Column = (viewangle + xtoviewangle[x]) >>
+		# 22 (r_sky.h ANGLETOSKYSHIFT) = ((vangle>>19)+xtofine[x])>>
+		# 3 in fine units, wrapped by tex.width in rdrawcolumn: the
+		# sky turns with the view, no parallax, vertical wrap every
+		# tex.height rows (vanilla behavior on 200-line screens).
+		if (vp.flatname == SKYFLAT) {
+			sky := rend->rtexture(r, SKYTEX);
+			if (sky != nil) {
+				for (x := vp.minx; x <= vp.maxx; x++) {
+					yl := vp.top[x];
+					if (yl < 0)
+						continue;
+					col := ((vangle >> ANGLETOFINESHIFT) + xtofine[x]) >> 3;
+					rend->rdrawcolumn(r, x, yl, vp.bottom[x], 0,
+						sky, col, SKYMID, FRACUNIT);
+				}
+			}
+			continue;
+		}
 		fl := rend->rflat(r, vp.flatname);
 		if (fl == nil)
 			continue;

@@ -189,7 +189,30 @@ Milestones (each independently testable)
            -0.024 where truth is 0.995, on every column.  Now computed
            in big (result <= 65536 since x <= ox2) in both addline and
            drawtwosided column loops.
-          sky (F_SKY1) DEFERRED - renders black, acceptable interim
+          sky (F_SKY1) DONE (user validation pending): derived from
+          vanilla r_plane.c R_DrawPlanes:390, r_sky.c/h, r_segs.c:525,
+          r_main.c:719.  Sky is NOT a flat - it is drawn as wall
+          texture columns from the SKY1 TEXTURE (shareware episode 1;
+          g_game.c maps episodes to SKY1/SKY2/SKY3), fullbright
+          (colormap row 0), iscale = pspriteiscale = 1.0 (one texel
+          per screen pixel), texturemid = 100*FRACUNIT (skytexturemid)
+          so texture row = screen row when centery=100, wrapping every
+          tex.height rows; column = (viewangle+xtoviewangle[x])>>22
+          (ANGLETOSKYSHIFT) = ((vangle>>19)+xtofine[x])>>3 in fine
+          units, wrapped by tex.width - the sky turns with the view,
+          no parallax.  Also: findplane normalizes sky to z=0/light=0
+          (vanilla R_FindPlane:218 - all skys map together, seamless
+          at sky-sky portals), and the vanilla sky hack (r_segs.c:525):
+          when both ceilings are sky the upper texture collapses to
+          zero height and is never drawn (outdoor height changes flow
+          as continuous sky; our undrawn-upper clip path already
+          matches vanilla's markceiling branch).  Numerically checked:
+          vertical mapping exact; column matches vanilla everywhere
+          except <=1 texture column at quantization boundaries near
+          the wrap (both quantize to 1/1024 turn; fine-unit phase
+          differs by <1/8 column - invisible, seamless via wrap).
+          F_SKY1 marker flat stays excluded from rflat (rend.b:99);
+          drawplanes special-cases it by name before the flat lookup.
     [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback
