@@ -109,10 +109,39 @@ Milestones (each independently testable)
            drops it to b.  Direction of the clip was inverted on first
            try (clamped t up to floorline=h, discarding every strip ->
            black floors); corrected to bound b/t by the line instead.
-           sky (F_SKY1) DEFERRED - renders black, acceptable interim
-   [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
+            plane shear on camera rotation STILL OPEN as of the baseyscale
+            sign fix (see below); do NOT claim it fixed without the user
+            confirming under rotation.
+          BUG FIX (baseyscale sign): vanilla r_plane.c:200-201 is
+            basexscale =  finecosine[viewangle-ANG90]/centerxfrac
+            baseyscale = -finesine  [viewangle-ANG90]/centerxfrac
+            With finecosine[k]=finesine[k+2048] the identity is
+            finesine[viewangle-ANG90] = -cos(viewangle) = -vcos, so the raw
+            baseyscale line reduces to -(-vcos) = +vcos/(proj<<16).  The
+            port had written baseyscale = -vcos(...): a SIGN FLIP.  The
+            step then pointed along left instead of right while the origin
+            was correct, so texture coords slid the wrong way - shear that
+            grows with the column's lateral offset (zero at default view,
+            worst at the screen edges on rotation).  REPEAT-MISTAKE NOTE:
+            individual pieces (basexscale sign, origin single-fixedmul,
+            distscale=1/cos, yslope) were each "verified" against vanilla
+            in earlier passes and shear persisted, because the origin and
+            step were never checked against EACH OTHER in reduced form.
+            Always reduce the raw vanilla lines to the port's vsin/vcos
+            terms in one place and compare BOTH the origin and the step
+            together before touching anything else.
+          sky (F_SKY1) DEFERRED - renders black, acceptable interim
+    [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback
+
+Process rule
+------------
+- Defer ALL visual validation to the user.  Do NOT spawn emu and take
+  automatic screenshots to "verify" rendering changes - a single frame
+  does not show rotation, movement, or timing behavior and has repeatedly
+  led to false "fixed it" claims (plane shear, occlusion).  Make the
+  change, rebuild, and hand off; the user reports what they see.
 
 Porting notes (C -> Limbo idioms)
 ---------------------------------

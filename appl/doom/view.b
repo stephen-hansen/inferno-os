@@ -10,6 +10,15 @@ include "map.m";
 	mapm: Map;
 include "view.m";
 
+# fine-angle table constants (mirror game.m; view.b does not import game.m).
+# finesine[k] = sin(k*PI/2048) in 16.16; finecosine[k] = finesine[k+2048].
+# view builds its own local table so it does not depend on Info.init().
+ANGLETOFINESHIFT:	con 19;
+FINEMASK:		con 8191;
+FINEANGLES:		con 8192;
+FINESINELEN:		con 10240;	# full sine + 1 extra quadrant for finecosine
+fsine:	array of int;	# local sine table, built once in init()
+
 # camera state (set at start of render)
 vx, vy, vz:	int;	# 16.16
 vangle:		int;	# BAM
@@ -56,6 +65,7 @@ curfloor, curceil:	int;	# index into vps of current floor/ceiling plane, -1 = no
 
 yslope:	array of int;	# [h] proj/|dy|, 16.16
 distscale:	array of int;	# [w] 1/cos(ray), 16.16
+xtofine:	array of int;	# [w] fine index of column's view angle (vanilla xtoviewangle>>ANGLETOFINESHIFT)
 centerx:	int;
 basexscale:	int;	# world u step per unit depth along right axis (16.16)
 baseyscale:	int;	# world v step per unit depth (16.16)
@@ -85,6 +95,7 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 		if (rend == nil)
 			return sys->sprint("can't load Rend module: %r");
 	}
+	buildfsine();	# local sine table, replaces Info dependency
 	r = rr;
 	lev = l;
 	w = width;
@@ -97,34 +108,82 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 
 	# plane texture-mapping table.  yslope[y] = proj/|dy| (16.16) scales
 	# the eye-to-plane vertical distance into a per-row depth; vanilla
-	# r_main.c uses abs(dy).  distscale[x] = cos(ray through x), the
-	# lateral (cosine) correction so edges don't stretch.
+	# r_main.c uses abs(dy).  distscale[x] = 1/cos(ray through x), the
+	# lateral (cosine) correction so edges don't stretch (built below,
+	# after xtofine, from the same quantized column angle as vanilla).
 	yslope = array[h] of int;
 	for (y := 0; y < h; y++) {
-		dyp := y - r.centery;
+		# vanilla r_main.c: dy = abs(((i-viewheight/2)<<FRACBITS)+FRACUNIT/2);
+		# yslope = FixedDiv((viewwidth/2)*FRACUNIT, dy) = (proj<<32)/dy.
+		# the +FRACUNIT/2 half-pixel bias was dropped before, skewing every
+		# row's depth slightly.
+		dyp := ((y - h / 2) << 16) + 32768;
 		if (dyp < 0)
 			dyp = -dyp;
-		if (dyp < 1)
-			dyp = 1;
-		# yslope = proj/dyp as a 16.16 ratio (both raw pixels).  then
-		# distance = fixedmul(dz, yslope) is a 16.16 depth.
-		yslope[y] = int((big(proj) << 16) / big dyp);
+		yslope[y] = int((big(proj) << 32) / big dyp);
 	}
 	distscale = array[w] of int;
+	# per-column fine view angle (vanilla xtoviewangle[x]>>ANGLETOFINESHIFT).
+	# the fine index k for column x is the one whose tangent matches
+	# (x-centerx)/proj: tan = finesine[k]/finesine[k+2048].  k is monotone
+	# in x, so binary-search the half-circle once per column (12 iters,
+	# ~4K ops total); mapplane then adds vangle.  This is what removes the
+	# rotation shear: a precomputed exact index replaces a per-span ray
+	# composition (single fixedmul per pixel, like vanilla).
+	xtofine = array[w] of int;
+	for (xc := 0; xc < w; xc++) {
+		tds := ((xc - centerx) << 16) / proj;	# signed tan(delta), 16.16
+		# find k in [-1024,1024] minimizing |tan(k)-tds| via binary search
+		# on the monotone tangent; tan(k)=finesine[k]/finesine[k+2048].
+		lo := -1024;
+		hi := 1024;
+		while (lo < hi) {
+			# floor-division midpoint; Limbo truncates toward zero, which
+			# stalls when lo=-1,hi=0 (mid=0 -> hi=0 forever).  compute floor
+			# of (lo+hi)/2 explicitly for negative sums.
+			sum := lo + hi;
+			mid := sum / 2;
+			if (sum < 0 && (sum % 2) != 0)
+				mid = mid - 1;
+			mk := mid & FINEMASK;
+			cs := fsine[(mk + 2048) & FINEMASK];
+			sn := fsine[mk];
+			# smallest k with tan(k) >= tds.  tan = sn/cs (both 16.16,
+			# scale cancels); tds is 16.16, so compare sn/cs vs tds/65536
+			# -> sn<<16 vs tds*cs.  (old code compared sn*proj vs tds*cs:
+			# wrong scale -- rhs was ~409x lhs, so the search always
+			# returned the +/-1024 boundary for every column.)
+			lhs := big(sn) << 16;
+			rhs := big(tds) * big(cs);
+			if (lhs < rhs)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
+		# vanilla xtoviewangle[x] is NEGATIVE for x > centerx (the ray
+		# through column x is at viewangle - delta).  the raw search finds
+		# +delta, so negate: the old port stored +delta, mirroring the
+		# texture origin left-right against the step axes -> shear.
+		xtofine[xc] = (-lo) & FINEMASK;
+	}
+
+	# distscale[x] = 1/cos(ray through x), 16.16.  vanilla r_main.c:734-736:
+	#   cosadj = abs(finecosine[xtoviewangle[i]>>ANGLETOFINESHIFT]);
+	#   distscale[i] = FixedDiv(FRACUNIT, cosadj) = (1<<32)/cosadj.
+	# built from the SAME quantized column angle as the origin (xtofine),
+	# like vanilla, so length and origin stay exactly consistent.  The old
+	# path computed 1/sqrt(1+tan^2) via isqrt(sum<<16): sum<<16 OVERFLOWS
+	# int32 for sum>32767 (|tan|>0.63, the outer third of each screen
+	# side), silently returning garbage/0 -> distscale fell back to 1.0
+	# while the origin angle was still rotated: length up to 41% short at
+	# the edges = severe shear/Stretch near screen edges.
 	for (x := 0; x < w; x++) {
-		td := ((x - centerx) << 16) / proj;	# tan(delta), 16.16
-		if (td < 0)
-			td = -td;
-		# cos(delta) = 1/sqrt(1+tan^2), 16.16.  the sum 1+tan^2 overflows
-		# int32 near the screen edge (tan ~1.0 -> sum ~2<<16, squared ~2^33),
-		# so build it in big; isqrt returns 16.16 directly.
-		t2 := int(big(td) * big(td) / big(16r10000));
-		sum := 16r10000 + t2;
-		sq := isqrt(sum << 16);		# sqrt(1+tan^2) = 1/cos, 16.16
-		if (sq <= 0)
-			distscale[x] = 16r10000;	# 1/cos = 1.0
-		else
-			distscale[x] = sq;	# 1/cos(delta), 16.16 -- vanilla r_main.c:736 distscale[i]=FRACUNIT/cosadj.  MUST be 1/cos, NOT cos: length=distance/cos so the cos in the unit direction cancels, giving a clean reach of `distance` along forward + lateral distance*tan.  Storing cos made the offset short by cos^2 -> edges shrank toward center = the rotation warp.
+		# cosadj = finecosine[xtofine[x]] = fsine[(xtofine+2048)&FINEMASK].
+		# |offset| <= 1024 fine (45 deg) -> cosadj in [46341, 65535] > 0.
+		cosadj := fsine[(xtofine[x] + 2048) & FINEMASK];
+		if (cosadj <= 0)
+			cosadj = 16r10000;
+		distscale[x] = int(big(65536) * big(65536) / big cosadj);
 	}
 
 	# visplane slots
@@ -157,18 +216,24 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int)
 	vangle = viewangle;
 	vcos = viewcos;
 	vsin = viewsin;
-	# per-frame plane step axes (vanilla R_ClearPlanes):
-	# Per-frame plane step axes (vanilla r_plane.c:200-201):
-	#   basexscale = finecosine[angle] / centerxfrac
-	#   baseyscale = -finesine[angle] / centerxfrac
-	# with centerxfrac = centerx<<FRACBITS = proj<<16.  angle = viewangle-ANG90,
-	# so finecosine[angle] = sin(viewangle) = vsin and finesine[angle] =
-	# -cos(viewangle)... in the port's terms these reduce to vsin and -vcos,
-	# each divided by (proj<<16) via fixeddiv.  mapplane applies
-	# xstep = fixedmul(distance, basexscale) directly -- the /proj is REQUIRED
-	# (removing it made the flat smear into diagonal noise).
+	# per-frame plane step axes (vanilla r_plane.c:200-201):
+	#   basexscale =  finecosine[viewangle-ANG90] / centerxfrac
+	#   baseyscale = -finesine  [viewangle-ANG90] / centerxfrac
+	# with centerxfrac = centerx<<FRACBITS = proj<<16.  fine-angle identity
+	# (finecosine[k]=finesine[k+2048]):
+	#   finecosine[viewangle-ANG90] =  sin(viewangle) = vsin
+	#   finesine  [viewangle-ANG90] = -cos(viewangle) = -vcos
+	# so the raw lines reduce to:
+	#   basexscale =  vsin / (proj<<16)
+	#   baseyscale = -(-vcos) / (proj<<16) = +vcos / (proj<<16)
+	# Earlier the port wrote baseyscale = -vcos(...): a sign flip.  The step
+	# then pointed along left instead of right while the origin was correct,
+	# so texture coords slid the wrong way -- shear that grows with the
+	# column's lateral offset (zero at default view, worst at the edges on
+	# rotation).  mapplane applies xstep=distance*basexscale directly; the
+	# /proj is REQUIRED (removing it smears the flat into diagonal noise).
 	basexscale = rend->rfixeddiv(vsin, proj << 16);
-	baseyscale = -rend->rfixeddiv(vcos, proj << 16);
+	baseyscale = rend->rfixeddiv(vcos, proj << 16);
 	nsegs = ncolumns = nspans = 0;
 
 	# clear to black
@@ -844,28 +909,20 @@ drawplanes()
 		return;
 
 	# vanilla R_MapPlane (r_plane.c:148-151): length is the scalar world
-	# reach; the column's world direction is a PLAIN UNIT vector applied
-	# over that scalar, exactly once:
-	#   length = distance * distscale[x1]      (distscale = 1/cos)
-	#   ds_xfrac = viewx + cos(angle)*length
-	#   ds_yfrac = -viewy - sin(angle)*length
-	# the unit direction = forward*cos(delta) + right*sin(delta), right=(vsin,-vcos),
-	# sin(delta)=tan(delta)*cos(delta).  with length=distance/cos the cos in the
-	# unit vector cancels, leaving reach `distance` along forward + lateral
-	# distance*tan -- matching the step.  (the warp was: distscale stored cos,
-	# so the offset was short by cos^2 at the screen edges, shrinking toward
-	# center as the camera rotated.)
+	# reach along the column's ray; the origin offset is a SINGLE fixedmul
+	# per component from the column's absolute view angle.  The earlier
+	# port composed a per-column ray (forward*cos(delta)+right*sin(delta))
+	# and rotated length through it: mathematically the same, but three
+	# rounded fixedmuls accumulate low-bit error that grows with delta, so
+	# the texture origin drifted as the camera turned (shear at rotation,
+	# none at the default angle where delta=0).  Vanilla does one fixedmul.
 	length := rend->fixedmul(distance, distscale[x1]);	# = distance/cos
-	td := ((x1 - centerx) << 16) / proj;	# tan(delta), 16.16
-	# cos(delta) = 1/distscale (distscale holds 1/cos), 16.16
-	cd := int(16r100000000 / big distscale[x1]);
-	sd := rend->fixedmul(td, cd);		# sin(delta), 16.16
-	# column ray dir, PLAIN UNIT vector: forward*cos + right*sin
-	rayx := rend->fixedmul(vcos, cd) + rend->fixedmul(vsin, sd);
-	rayy := rend->fixedmul(vsin, cd) - rend->fixedmul(vcos, sd);
-	# flat u,v = world x,y; v is negated (vanilla ds_yfrac=-viewy-...).
-	xfrac := vx + rend->fixedmul(length, rayx);
-	yfrac := -vy - rend->fixedmul(length, rayy);
+	# column angle = viewangle + xtoviewangle[x1]; the fine index of that
+	# angle is vangle's fine part + the precomputed per-column xtofine[x1].
+	idx := ((vangle >> ANGLETOFINESHIFT) + xtofine[x1]) & FINEMASK;
+	# finecosine[idx] = finesine[idx+2048]; one fixedmul per component
+	xfrac := vx + rend->fixedmul(fsine[(idx + 2048) & FINEMASK], length);
+	yfrac := -vy - rend->fixedmul(fsine[idx], length);
 
 	# Step along the same right axis as the start ray, scaled by distance:
 	#   xstep = distance*basexscale, ystep = distance*baseyscale
@@ -889,4 +946,48 @@ isqrt(n: int): int
 		y = (x + n / x) / 2;
 	}
 	return x;
+}
+
+# build local fine-sine table, replacing the Info.finesine dependency.
+# EXACT Doom formula (verified against the real tables.c / info.b table,
+# max error 2 over all 10240 entries):
+#   finesine[k] = round(sin((k + 0.5) * PI/4096) * 65536)
+# i.e. the argument step is PI/4096 (full circle at k=8192=FINEANGLES)
+# with a half-step phase.  Then finecosine = &finesine[FINEANGLES/4]:
+#   finecosine[k] = finesine[k+2048] = sin((k+2048.5)*PI/4096)
+#                 = sin((k+0.5)*PI/4096 + PI/2) = cos((k+0.5)*PI/4096).
+# The OLD generator used PI/2048 (DOUBLE frequency) with no half-step and
+# a Taylor series truncated at x^7 (0.23 rad error at x=pi) -- the table
+# was garbage, which is why no origin/step algebra fix ever helped:
+# the shear was baked in before any sign mattered.
+buildfsine()
+{
+	fsine = array[FINESINELEN] of int;
+	FRAC := big(65536) * big(65536);	# 2^32, shifts 16.16 back down
+	for (k := 0; k < FINESINELEN; k++) {
+		# fold into [0, 2048] where sin is monotone:
+		#   [4096,8192): sin(2pi-x)=-sin(x)  -> m=k-4096, sign=-1
+		#   [2048,4096): sin(pi-x)=sin(x)    -> m=4095-k
+		m := k % 8192;
+		sign := 1;
+		if (m >= 4096) {
+			m -= 4096;
+			sign = -1;
+		}
+		if (m >= 2048)
+			m = 4095 - m;
+		# x = (m + 0.5) * PI/4096 in 16.16, i.e. (2m+1)*PI/8192.
+		# PI/8192 in 16.16 = 65536*pi/8192 = 25.1327412 -> 251327/10000.
+		# x in [0, ~pi/2], where Taylor x^11 truncation error < 1 LSB.
+		x := int(big(2 * m + 1) * big(251327) / big(10000));
+		xb := big(x);
+		x3 := xb * xb * xb / FRAC;	# x^3 in 16.16
+		x5 := x3 * xb * xb / FRAC;
+		x7 := x5 * xb * xb / FRAC;
+		x9 := x7 * xb * xb / FRAC;
+		x11 := x9 * xb * xb / FRAC;
+		s := xb - x3 / big(6) + x5 / big(120) - x7 / big(5040)
+			+ x9 / big(362880) - x11 / big(39916800);
+		fsine[k] = int(s) * sign;
+	}
 }
