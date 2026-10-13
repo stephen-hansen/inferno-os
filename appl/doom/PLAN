@@ -211,8 +211,40 @@ Milestones (each independently testable)
           except <=1 texture column at quantization boundaries near
           the wrap (both quantize to 1/1024 turn; fine-unit phase
           differs by <1/8 column - invisible, seamless via wrap).
-          F_SKY1 marker flat stays excluded from rflat (rend.b:99);
-          drawplanes special-cases it by name before the flat lookup.
+           F_SKY1 marker flat stays excluded from rflat (rend.b:99);
+           drawplanes special-cases it by name before the flat lookup.
+           lighting (outdoor pitch-black fix) DONE (user validation
+           pending): the port computed light = (sec.lightlevel*31)/255
+           and passed it straight through as the COLORMAP ROW
+           (drawcolumn/drawspan: cm = row*256) - INVERTED vs vanilla.
+           COLORMAP row 0 = fullbright, row 31 = darkest; E1M1 outdoor
+           sectors are lightlevel 255/224 -> old rows 31/27 = pitch
+           black, and the old curves cross at 128 (old row 15), which
+           is exactly why interiors looked plausible and only the
+           outside went black.  Parsed doom1.wad (sectors lump 26-byte,
+           name-based): 85 sectors, 7 sky sectors, outdoor lights
+           255 x6 + 224 x1, indoor histogram 128..255.  Full vanilla
+           model now implemented (r_main.h constants, R_InitLightTables
+           r_main.c:610, scalelight build in R_SetViewSize r_main.c:741,
+           R_MapPlane r_plane.c:160, R_StoreWallRange r_segs.c:649):
+           light index i = lightlevel>>LIGHTSEGSHIFT (extralight=0, no
+           light-amp pickups) picks 1 of 16 bands; startmap = (15-i)*4;
+           zlight[i][j] (j = plane distance>>LIGHTZSHIFT, clamp
+           MAXLIGHTZ-1=127) = clamp(startmap - scale/2) with scale =
+           FixedDiv((w/2)*FRACUNIT, (j+1)<<LIGHTZSHIFT)>>LIGHTSCALESHIFT
+           (= 160/(j+1) at w=320); scalelight[i][j] (j =
+           wall scale>>LIGHTSCALESHIFT, clamp MAXLIGHTSCALE-1=47) =
+           clamp(startmap - j*320/w/DISTMAP) (= startmap - j/2).
+           Wall lightnum gets the orientation hack (r_segs.c:649-653:
+           horizontal segs -1, vertical +1, clamp [0,15]).  Visplane
+           light field now stores the light INDEX (claims pass pllight);
+           mapplane picks the row per distance band; addline and
+           drawtwosided column draws pick it per scale band (scalelight
+           was built in view.b init alongside the other tables).
+           Numeric check BEFORE editing: lightlevel 255 -> row 0 at
+           every band (outdoors fullbright), 192 -> 0 near .. 12 far,
+           128 -> 0 near .. 28 far (vanilla distance darkening), walls
+           row 0 at scale index 47 (near, bright) .. startmap far.
     [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback

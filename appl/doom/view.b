@@ -17,6 +17,17 @@ ANGLETOFINESHIFT:	con 19;
 FINEMASK:		con 8191;
 FINEANGLES:		con 8192;
 FINESINELEN:		con 10240;	# full sine + 1 extra quadrant for finecosine
+# vanilla lighting constants (r_main.h): light index i = lightlevel>>4
+# (16 bands), colormap rows 0..31 (row 0 = fullbright, 31 = darkest),
+# plane distance band shift 20, wall scale band shift 12.
+LIGHTLEVELS:		con 16;
+LIGHTSEGSHIFT:		con 4;
+NUMCOLORMAPS:		con 32;
+LIGHTSCALESHIFT:	con 12;
+MAXLIGHTSCALE:		con 48;
+LIGHTZSHIFT:		con 20;
+MAXLIGHTZ:		con 128;
+DISTMAP:		con 2;
 fsine:	array of int;	# local sine table, built once in init()
 
 # camera state (set at start of render)
@@ -42,7 +53,8 @@ MAXVISW:	con 512;	# width cap for visplane clip arrays
 
 Visplane: adt {
 	z:	int;		# plane world z, 16.16
-	light:	int;		# colormap row 0..31
+	light:	int;		# vanilla light index i = lightlevel>>LIGHTSEGSHIFT (0..15);
+				# the colormap row is picked per distance band via zlight
 	flatname:	string;
 	minx, maxx:	int;
 	top, bottom:	array of int;	# [MAXVISW] per-column clip; -1 = none
@@ -59,6 +71,8 @@ centerx:	int;
 basexscale:	int;	# world u step per unit depth along right axis (16.16)
 baseyscale:	int;	# world v step per unit depth (16.16)
 plfl:	ref Rend->Flat;	# flat bound for the mapplane call below
+zlight:	array of array of int;	# [LIGHTLEVELS][MAXLIGHTZ] colormap row per light band / plane distance band
+scalelight:	array of array of int;	# [LIGHTLEVELS][MAXLIGHTSCALE] row per light band / wall scale index
 
 init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 {
@@ -167,14 +181,56 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 		distscale[x] = int(big(65536) * big(65536) / big cosadj);
 	}
 
+	# vanilla light tables (r_main.c: R_InitLightTables builds zlight,
+	# R_SetViewSize builds scalelight).  startmap = the dark/far base
+	# for light band i; plane distance (zlight) and wall scale
+	# (scalelight) subtract up to 31 (DISTMAP=2), so near = bright,
+	# far = startmap.  i = lightlevel>>LIGHTSEGSHIFT with extralight=0
+	# (no light-amp pickups): lightlevel 255 -> i=15 -> startmap 0 ->
+	# row 0 at EVERY distance (outdoors fullbright).  The old
+	# (lightlevel*31)/255 was INVERTED: 255 -> row 31, the DARKEST
+	# colormap row -> outdoors (lightlevel 255/224) rendered pitch
+	# black; the curves crossed at 128 so dim interiors looked fine.
+	zlight = array[LIGHTLEVELS] of array of int;
+	scalelight = array[LIGHTLEVELS] of array of int;
+	for (i := 0; i < LIGHTLEVELS; i++) {
+		startmap := ((LIGHTLEVELS - 1 - i) * 2) * NUMCOLORMAPS / LIGHTLEVELS;
+		level := 0;
+		j := 0;
+		zlight[i] = array[MAXLIGHTZ] of int;
+		scalelight[i] = array[MAXLIGHTSCALE] of int;
+		for (j = 0; j < MAXLIGHTZ; j++) {
+			# scale = FixedDiv((w/2)*FRACUNIT, (j+1)<<LIGHTZSHIFT)
+			#         >> LIGHTSCALESHIFT; big: (w/2)<<(16+16) > int32
+			scale := int((big(w / 2) << 32) / big((j + 1) << LIGHTZSHIFT))
+				>> LIGHTSCALESHIFT;
+			level = startmap - scale / DISTMAP;
+			if (level < 0)
+				level = 0;
+			if (level >= NUMCOLORMAPS)
+				level = NUMCOLORMAPS - 1;
+			zlight[i][j] = level;
+		}
+		for (j = 0; j < MAXLIGHTSCALE; j++) {
+			# vanilla: startmap - j*SCREENWIDTH/viewwidth/DISTMAP
+			# (= startmap - j/2 at detailshift 0, w = SCREENWIDTH = 320)
+			level = startmap - j * 320 / w / DISTMAP;
+			if (level < 0)
+				level = 0;
+			if (level >= NUMCOLORMAPS)
+				level = NUMCOLORMAPS - 1;
+			scalelight[i][j] = level;
+		}
+	}
+
 	# visplane slots
 	vps = array[MAXVISPLANES] of Visplane;
-	for (i := 0; i < MAXVISPLANES; i++) {
+	for (i = 0; i < MAXVISPLANES; i++) {
 		vps[i] = Visplane(z := 0, light := 0, flatname := "",
 			minx := w, maxx := -1,
 			top := array[MAXVISW] of int,
 			bottom := array[MAXVISW] of int);
-		for (x := 0; x < MAXVISW; x++) {
+		for (x = 0; x < MAXVISW; x++) {
 			vps[i].top[x] = -1;
 			vps[i].bottom[x] = -1;
 		}
@@ -448,13 +504,33 @@ addline(segnum: int)
 	if (lx2 >= w)
 		lx2 = w - 1;
 
+	# vanilla light indices (r_segs.c R_StoreWallRange + r_plane.c).
+	# plane claims use the sector index i = lightlevel>>LIGHTSEGSHIFT
+	# with extralight = 0; wall columns additionally get the orientation
+	# hack (r_segs.c:649-653: horizontal segs one step darker, vertical
+	# one step brighter, then clamp to [0,LIGHTLEVELS-1]).
+	pllight := sec.lightlevel >> LIGHTSEGSHIFT;
+	if (pllight < 0)
+		pllight = 0;
+	if (pllight >= LIGHTLEVELS)
+		pllight = LIGHTLEVELS - 1;
+	walllight := pllight;
+	if (v1.y == v2.y)
+		walllight--;
+	else if (v1.x == v2.x)
+		walllight++;
+	if (walllight < 0)
+		walllight = 0;
+	if (walllight >= LIGHTLEVELS)
+		walllight = LIGHTLEVELS - 1;
+
 	# choose texture
 	texname := sd.midtexture;
 	if (back != nil) {
 		# two-sided: draw upper and lower, skip middle
 		drawtwosided(sd, lx1, lx2, ox1, ox2, d1, d2, u1, u2,
 			ceilz, floorz, back.ceilingheight, back.floorheight,
-			back.ceilingtexture);
+			back.ceilingtexture, pllight, walllight);
 		return;
 	}
 	if (texname == "" || texname == "-")
@@ -462,13 +538,6 @@ addline(segnum: int)
 	tex := rend->rtexture(r, texname);
 	if (tex == nil)
 		return;
-
-	# light level (simplified: constant from sector)
-	light := (sec.lightlevel * 31) / 255;
-	if (light < 0)
-		light = 0;
-	if (light > 31)
-		light = 31;
 
 	# intern this sector's floor/ceiling planes for the column loop below.
 	# vanilla R_Subsector only picks a floorplane below the eye and a
@@ -478,11 +547,11 @@ addline(segnum: int)
 	# duplicate (vanilla R_CheckPlane), keeping per-column strips exact.
 	curfloor = -1;
 	if (floorz < vz)
-		curfloor = checkplane(findplane(floorz, sec.floortexture, light),
+		curfloor = checkplane(findplane(floorz, sec.floortexture, pllight),
 			lx1, lx2);
 	curceil = -1;
 	if (ceilz > vz || sec.ceilingtexture == SKYFLAT)
-		curceil = checkplane(findplane(ceilz, sec.ceilingtexture, light),
+		curceil = checkplane(findplane(ceilz, sec.ceilingtexture, pllight),
 			lx1, lx2);
 
 	# perspective-correct: scale (px per world unit, 16.16) is linear
@@ -568,7 +637,14 @@ addline(segnum: int)
 				iscale = int(16r100000000 / big(scale));
 			# texturemid: world z above eye, 16.16 texels (1 texel = 1 unit)
 			tmid := z1t + rend->fixedmul(z2t - z1t, frac) - vz;
-			rend->rdrawcolumn(r,x, yt, yb, light, tex, col, tmid, iscale);
+			# vanilla wall light: index = rw_scale>>LIGHTSCALESHIFT
+			# (r_segs.c:260-263), clamp MAXLIGHTSCALE-1, row from
+			# scalelight[front lightnum][index]
+			lidx := scale >> LIGHTSCALESHIFT;
+			if (lidx >= MAXLIGHTSCALE)
+				lidx = MAXLIGHTSCALE - 1;
+			rend->rdrawcolumn(r,x, yt, yb, scalelight[walllight][lidx],
+				tex, col, tmid, iscale);
 			ncolumns++;
 		}
 
@@ -580,9 +656,12 @@ addline(segnum: int)
 }
 
 # two-sided line: draw upper and lower textures where heights differ
+# plight = front sector plane light index; walllight = front sector wall
+# light index (orientation-adjusted, computed in addline).
 drawtwosided(sd: ref Map->Side,
 	lx1, lx2, ox1, ox2, d1, d2, u1, u2: int,
-	fceilz, ffloorz, bceilz, bfloorz: int, bceiltex: string)
+	fceilz, ffloorz, bceilz, bfloorz: int, bceiltex: string,
+	plight, walllight: int)
 {
 	nsegs++;
 	dd1 := d1;
@@ -609,21 +688,13 @@ drawtwosided(sd: ref Map->Side,
 	# painted back floors over front floors at steps).  checkplane keeps
 	# per-column strips exact (vanilla R_CheckPlane).
 	fsec := sd.sector;
-	flight := 0;
-	clight := 0;
-	if (fsec != nil) {
-		flight = (fsec.lightlevel * 31) / 255;
-		if (flight < 0) flight = 0;
-		if (flight > 31) flight = 31;
-		clight = flight;
-	}
 	frontfloor := -1;
 	if (ffloorz < vz)
-		frontfloor = checkplane(findplane(ffloorz, fsec.floortexture, flight),
+		frontfloor = checkplane(findplane(ffloorz, fsec.floortexture, plight),
 			lx1, lx2);
 	frontceil := -1;
 	if (fceilz > vz || fsec.ceilingtexture == SKYFLAT)
-		frontceil = checkplane(findplane(fceilz, fsec.ceilingtexture, clight),
+		frontceil = checkplane(findplane(fceilz, fsec.ceilingtexture, plight),
 			lx1, lx2);
 
 	tspan := ox2 - ox1;
@@ -644,13 +715,14 @@ drawtwosided(sd: ref Map->Side,
 
 		cclip := solid[2*x];
 		fclip := solid[2*x+1];
-		light := 0;
-		sec := sd.sector;
-		if (sec != nil) {
-			light = (sec.lightlevel * 31) / 255;
-			if (light < 0) light = 0;
-			if (light > 31) light = 31;
-		}
+
+		# vanilla wall light: index = rw_scale>>LIGHTSCALESHIFT
+		# (r_segs.c:260-263), clamp MAXLIGHTSCALE-1, row from
+		# scalelight[front lightnum][index]
+		lidx := scale >> LIGHTSCALESHIFT;
+		if (lidx >= MAXLIGHTSCALE)
+			lidx = MAXLIGHTSCALE - 1;
+		wrow := scalelight[walllight][lidx];
 
 		iscale: int;
 		if (scale >= 16r10000)
@@ -679,7 +751,7 @@ drawtwosided(sd: ref Map->Side,
 					# upper texture anchored at the top:
 					# texture row 0 at fceilz going down
 					tmid := fceilz - vz;
-					rend->rdrawcolumn(r,x, yt, yb, light, tex, col, tmid, iscale);
+					rend->rdrawcolumn(r,x, yt, yb, wrow, tex, col, tmid, iscale);
 					ncolumns++;
 					cclip = yb + 1;
 				}
@@ -703,7 +775,7 @@ drawtwosided(sd: ref Map->Side,
 					# texture row 0 at bfloorz going down... vanilla
 					# uses (bfloorz - viewz) but offset by texture height
 					tmid := bfloorz - vz;
-					rend->rdrawcolumn(r,x, yt, yb, light, tex, col, tmid, iscale);
+					rend->rdrawcolumn(r,x, yt, yb, wrow, tex, col, tmid, iscale);
 					ncolumns++;
 					fclip = yt;
 				}
@@ -924,7 +996,9 @@ drawplanes()
 # through column x makes angle atan((x-centerx)/proj) with the view
 # direction.  world offset = forward*depth + right*(depth*tan).
 #
-# planez: the plane's world z (16.16); light: colormap row 0..31.
+# planez: the plane's world z (16.16); light: the visplane's vanilla
+# light index i (lightlevel>>4), NOT a colormap row -- the row is picked
+# per distance band via zlight like vanilla R_MapPlane.
 	mapplane(y, x1, x2, planez, light: int)
 	{
 		nspans++;
@@ -951,6 +1025,19 @@ drawplanes()
 	if (distance <= 0)
 		return;
 
+	# vanilla R_MapPlane (r_plane.c:160-162): colormap row =
+	# planezlight[distance >> LIGHTZSHIFT], band clamped to MAXLIGHTZ-1
+	# (row 0 = fullbright near, startmap far).
+	band := distance >> LIGHTZSHIFT;
+	if (band >= MAXLIGHTZ)
+		band = MAXLIGHTZ - 1;
+	lv := light;
+	if (lv < 0)
+		lv = 0;
+	if (lv >= LIGHTLEVELS)
+		lv = LIGHTLEVELS - 1;
+	row := zlight[lv][band];
+
 	# vanilla R_MapPlane (r_plane.c:148-151): length is the scalar world
 	# reach along the column's ray; the origin offset is a SINGLE fixedmul
 	# per component from the column's absolute view angle.  The earlier
@@ -973,7 +1060,7 @@ drawplanes()
 	xstep := rend->fixedmul(distance, basexscale);
 	ystep := rend->fixedmul(distance, baseyscale);
 
-	rend->rdrawspan(r, y, x1, x2, light, fl, xfrac, yfrac, xstep, ystep);
+	rend->rdrawspan(r, y, x1, x2, row, fl, xfrac, yfrac, xstep, ystep);
 	nspans++;
 }
 
