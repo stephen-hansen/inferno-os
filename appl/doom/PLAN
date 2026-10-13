@@ -297,12 +297,28 @@ Porting notes (C -> Limbo idioms)
   * key events must NEVER advance game tics — only the tick timer
     does.  A fall-through after every alt case made held keys
     surge the game at repeat rate (turning bursty, "not smooth")
+  * the key/tick alt must DRAIN all keys before the tick can run:
+    libinterp's xecalt picks among simultaneously-ready cases at
+    random (LCG % nready), and after a render both keych and tick
+    are ready (render >= TICMS), so the old single alt drained a
+    key backlog at ~1 event per render cycle while X auto-repeat
+    kept adding to it — release latency grew with hold time.
+    Now: nonblocking alt (`*` default on empty) drains keych fully,
+    then a blocking alt waits for key/tick; a tic runs only right
+    after a full drain.  keych is buffered (chan [128] of int) so
+    kbdreader keeps draining emu's gkscanq during renders — it is
+    only 256 bytes and qproduce SILENTLY DROPS events when full
+    (emu/port/qio.c), which could lose the release event entirely
+    on a long hold.
   * XTEST injection for automated key testing: gcc xinj.c -lX11
     libXtst.so.6 (no header — declare XTestFakeKeyEvent yourself);
     first keys after window map may miss (focus), retry after
     focus settles
 - Limbo has no if-expression usable as a call argument:
   `f(if (c) "a" else "b")` is a syntax error — bind a var first
+- `break` inside an `alt` case exits the ALT, not the enclosing loop
+  (alt pushes its own break target, limbo/com.c — like Go's select).
+  To leave a loop from an alt case, set a flag and break after the alt.
 
 Licensing
 ---------

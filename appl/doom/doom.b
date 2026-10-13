@@ -576,7 +576,14 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 	}
 
 	keystate = array[NKEYS] of int;
-	keych = chan of int;
+	# buffered: kbdreader must keep draining emu's gkscanq even while
+	# the game loop is rendering.  gkscanq is a 256-byte queue and
+	# qproduce SILENTLY DROPS events when full (emu/port/qio.c), so
+	# with an unbuffered channel kbdreader stalled on every frame and
+	# a long hold (X auto-repeat) could fill the queue and lose the
+	# release event entirely.  128 events >> anything one frame can
+	# generate; sends only block if the game stops consuming entirely.
+	keych = chan [128] of int;
 	# in both modes read /dev/scancode: it reports true press/release
 	# (code, code|0x80).  the wm kbd channel only ever delivers press
 	# runes with no key-up, so keys stick and coalesce wrongly.
@@ -608,7 +615,39 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 	for (; !quit;) {
 		# key events only update keystate; tics come SOLELY from the
 		# tick timer (key-driven tics made the game surge at
-		# auto-repeat rate and stutter between repeats)
+		# auto-repeat rate and stutter between repeats).
+		#
+		# drain ALL pending key events before considering the tick.
+		# libinterp's xecalt picks among simultaneously-ready alt
+		# cases at random (LCG % nready), and after a render both
+		# keych and tick are usually ready (render >= TICMS): the old
+		# single alt drained a key backlog at ~1 event per render
+		# cycle, while holding a key (X auto-repeat) kept adding to
+		# it - so a release at the tail of the backlog only applied
+		# seconds later, the longer the key had been held.  the `*`
+		# default runs only when keych is empty, so this loop exits
+		# exactly when input is drained, and a tic can only run right
+		# after a full drain: a release lands in keystate before the
+		# next frame is drawn and stops the motion on the next tic.
+		# (break inside an alt case exits the ALT, not the for — alt
+		# pushes its own break target, com.c — so signal with a flag
+		# and break AFTER the alt, where the for is innermost.)
+		drain := 1;
+		for (;;) {
+			alt {
+			k := <-keych =>
+				if (handlekey(k))
+					quit = 1;
+			* =>
+				drain = 0;
+			}
+			if (!drain || quit)
+				break;
+		}
+		if (quit)
+			break;
+		# idle: block for the next key or tic; keys arriving while
+		# waiting are handled immediately, exactly as before
 		alt {
 		k := <-keych =>
 			quit = handlekey(k);
