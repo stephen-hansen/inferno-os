@@ -83,8 +83,8 @@ Milestones (each independently testable)
          - keyboard.m is header-only: define Esc/Up/Down/Left/
            Right/LCtrl/RCtrl constants inline in doom.b
          - floor renders correctly via drawspan + convert + present
-   [~] 7  world view: BSP walk -> seg clip -> wall columns DONE;
-          floor/ceiling spans still TODO (r_plane.c)
+   [x] 7  world view: BSP walk -> seg clip -> wall columns DONE;
+          floor/ceiling visplanes DONE (r_plane.c port)
           viewx/viewy/viewz/viewangle from console player;
           occlusion array (solid[] / ceilingclip/floorclip);
           projection: screenx = centerx - left*proj/depth;
@@ -92,6 +92,24 @@ Milestones (each independently testable)
           view.m/view.b module; walls render textured (320 cols/frame);
           two-sided lines: upper/lower textures + portal occlusion
           with clamping; one-sided: midtexture columns
+          visplanes: findplane/markplane/drawplanes + mapplane;
+          per-column [top,bottom] mark, span-run accumulator -> mapplane;
+          yslope[y]=proj/|dy| (16.16), distscale[x]=1/cos;
+           BUG FIX: basexscale/baseyscale must be vsin/vcos DIVIDED by
+           proj (vanilla folds /centerxfrac into them).  bare vsin/vcos
+           made ds_xstep ~160x too large -> texture aliased to a solid
+           color (the flat-blue floor); added fixeddiv to rend.
+           BUG FIX: markplane unioned each column's strips into one
+           [top,bottom] range, so a farther plane spanned gaps that
+           nearer planes owned -> lower blue floor painted over higher
+           gray floor, seams not flush.  Split into markfloor/markceil
+           with shared per-column floorline[x] (init h) / ceilline[x]
+           (init -1): a floor claims [t..min(b,floorline)] then raises
+           the line to t; a ceiling claims [max(t,ceilline)..b] then
+           drops it to b.  Direction of the clip was inverted on first
+           try (clamped t up to floorline=h, discarding every strip ->
+           black floors); corrected to bound b/t by the line instead.
+           sky (F_SKY1) DEFERRED - renders black, acceptable interim
    [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback

@@ -59,10 +59,17 @@ Rend: module {
 	# (Limbo has no int64, so split into 16-bit halves)
 	fixedmul:	fn(a, b: int): int;
 
+	# 16.16 fixed-point divide: (a<<16)/b, done in big to avoid overflow
+	fixeddiv:	fn(a, b: int): int;
+
 	# module-level wrappers for Renderer methods (for callers
 	# that don't import the Renderer adt)
 	rclear:		fn(r: ref Renderer, color: int);
 	rtexture:	fn(r: ref Renderer, name: string): ref Texture;
+	rflat:		fn(r: ref Renderer, name: string): ref Flat;
+	rfixeddiv:	fn(a, b: int): int;
 	rdrawcolumn:	fn(r: ref Renderer, x, yl, yh, light: int,
 				tex: ref Texture, col, texturemid, iscale: int);
+	rdrawspan:	fn(r: ref Renderer, y, x1, x2, light: int,
+				fl: ref Flat, xfrac, yfrac, xstep, ystep: int);
 };

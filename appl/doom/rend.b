@@ -49,6 +49,14 @@ fixedmul(a, b: int): int
 	return ((ah * bh) << 16) + ah * bl + al * bh + (((al * bl) >> 16) & 16rFFFF);
 }
 
+# vanilla FixedDiv: (a<<16)/b in 64-bit; Limbo has no int64, so use big
+fixeddiv(a, b: int): int
+{
+	if (b == 0)
+		return 0;
+	return int((big(a) << 16) / big b);
+}
+
 # vanilla R_DrawColumnInCache: clip one patch column of posts into a
 # dense cache column (post: topdelta, length, pad, data[length], pad,
 # terminated by topdelta == 0xff)
@@ -372,8 +380,24 @@ rtexture(r: ref Renderer, name: string): ref Texture
 	return r.texture(name);
 }
 
+rflat(r: ref Renderer, name: string): ref Flat
+{
+	return r.flat(name);
+}
+
+rfixeddiv(a, b: int): int
+{
+	return fixeddiv(a, b);
+}
+
 rdrawcolumn(r: ref Renderer, x, yl, yh, light: int,
 	tex: ref Texture, col, texturemid, iscale: int)
 {
 	r.drawcolumn(x, yl, yh, light, tex, col, texturemid, iscale);
+}
+
+rdrawspan(r: ref Renderer, y, x1, x2, light: int,
+	fl: ref Flat, xfrac, yfrac, xstep, ystep: int)
+{
+	r.drawspan(y, x1, x2, light, fl, xfrac, yfrac, xstep, ystep);
 }

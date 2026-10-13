@@ -673,14 +673,25 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 	sys->print("play: quit at t=%d\n", tic);
 }
 
-# autopilot screenshot test: turn in place at spawn first (tight
-# closet, walls close on all sides = near-plane/edge stress), then
-# run forward; pause per turn step for external screenshots
+# autopilot screenshot test: run forward out of the spawn closet into the
+# room first (so the camera is in open space), then do a slow sweep so
+# screenshots catch the room interior, not the closet's back wall.
 walltest(rr: ref Renderer, v: ref Context, mo: ref Mobj)
 {
-	sys->print("walltest: turning in place 24 x 15 deg at spawn...\n");
+	sys->print("walltest: running forward 40 tics into the room...\n");
+	for (t := 0; t < 40; t++) {
+		game->setcmd(50, 0, 0, 0);
+		game->ticker();
+		game->setview();
+		view->render(game->viewx, game->viewy, game->viewz,
+			game->viewangle, game->viewcos, game->viewsin);
+		rr.convert(v.fb);
+		v.present();
+		sys->sleep(1000 / 35);
+	}
+	sys->print("walltest: sweeping 180 deg (12 x 15 deg)...\n");
 	turn := 2730;		# 2730<<16 ~ 15 deg BAM
-	for (s := 0; s < 24; s++) {
+	for (s := 0; s < 12; s++) {
 		game->setcmd(0, 0, turn, 0);
 		game->ticker();
 		game->setview();
@@ -690,17 +701,6 @@ walltest(rr: ref Renderer, v: ref Context, mo: ref Mobj)
 		v.present();
 		sys->print("  step %2d angle %d deg\n", s + 1, bamdegrees(mo.angle));
 		sys->sleep(700);
-	}
-	sys->print("walltest: running forward 35 tics...\n");
-	for (t := 0; t < 35; t++) {
-		game->setcmd(50, 0, 0, 0);
-		game->ticker();
-		game->setview();
-		view->render(game->viewx, game->viewy, game->viewz,
-			game->viewangle, game->viewcos, game->viewsin);
-		rr.convert(v.fb);
-		v.present();
-		sys->sleep(1000 / 35);
 	}
 	sys->print("walltest: done, final pos %d,%d angle %d deg\n",
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
