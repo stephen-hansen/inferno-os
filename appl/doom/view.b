@@ -333,7 +333,7 @@ addline(segnum: int)
 	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
 		if (tspan > 0)
-			frac = int((big(x - ox1) << 16) / big(tspan));
+			frac = ((x - ox1) << 16) / tspan;	# int-safe: |x-ox1|<=320, tspan<=~65536
 		scale := s1 + rend->fixedmul(s2 - s1, frac);
 		if (scale <= 0)
 			continue;
@@ -365,8 +365,13 @@ addline(segnum: int)
 
 		# texture mapping
 		col := u >> 16;
-		# iscale: 16.16 texture units per screen pixel = 2^32/scale
-		iscale := int(16r100000000 / big(scale));
+		# iscale: 16.16 texture units per screen pixel = 2^32/scale.
+		# int-safe when scale>=2^16 (result<=2^16); else big (rare: very close walls).
+		iscale: int;
+		if (scale >= 16r10000)
+			iscale = int(big(16r100000000) / big(scale));
+		else
+			iscale = int(16r100000000 / big(scale));
 		# texturemid: world z above eye, 16.16 texels (1 texel = 1 unit)
 		tmid := z1t + rend->fixedmul(z2t - z1t, frac) - vz;
 		rend->rdrawcolumn(r,x, yt, yb, light, tex, col, tmid, iscale);
@@ -401,7 +406,7 @@ drawtwosided(sd: ref Map->Side,
 	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
 		if (tspan > 0)
-			frac = int((big(x - ox1) << 16) / big(tspan));
+			frac = ((x - ox1) << 16) / tspan;	# int-safe
 		scale := s1 + rend->fixedmul(s2 - s1, frac);
 		if (scale <= 0)
 			continue;
@@ -422,7 +427,11 @@ drawtwosided(sd: ref Map->Side,
 			if (light > 31) light = 31;
 		}
 
-		iscale := int(16r100000000 / big(scale));
+		iscale: int;
+		if (scale >= 16r10000)
+			iscale = int(big(16r100000000) / big(scale));
+		else
+			iscale = int(16r100000000 / big(scale));
 
 		# upper texture: from back ceiling to front ceiling
 		if (bceilz < fceilz && sd.toptexture != "" && sd.toptexture != "-") {

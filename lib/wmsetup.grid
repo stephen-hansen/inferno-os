@@ -49,6 +49,7 @@ menu System			'Memory monitor'	{wmrun wm/memory}
 menu System			'About'			{wmrun wm/about}
 menu Games			'Tetris'			{wmrun wm/tetris}
 menu Games			'Bounce'			{wmrun wm/bounce}
+menu Games			'Doom'				{wmrun doom/doom /doom1.wad}
 
 # anything else
 if {ftest -f $home/lib/wmsetup} {run $home/lib/wmsetup} {}

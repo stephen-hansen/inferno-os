@@ -6,6 +6,7 @@ implement Doom;
 	include "wad.m";
 	wad: Wad;
 	File: import wad;
+	include "tk.m";
 include "video.m";
 	video: Video;
 	Context: import video;
@@ -32,7 +33,7 @@ Doom: module
 
 WADPATH:	con "doom1.wad";	# shareware IWAD, expected in cwd or via arg
 
-init(nil: ref Draw->Context, args: list of string)
+init(ctxt: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
 
@@ -132,7 +133,7 @@ init(nil: ref Draw->Context, args: list of string)
 	w.close();
 
 	# no flags: interactive play; -p: wall-hug autopilot (screenshot test)
-	play(path, pt);
+	play(path, pt, ctxt);
 }
 
 checkread(w: ref Wad->File, name: string, expect: int)
@@ -499,7 +500,7 @@ XK_Down:	con 116;
 keystate:	array of int;
 keych:		chan of int;
 
-play(path: string, autopilot: int)
+play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 {
 	game = load Game Game->PATH;
 	if (game == nil)
@@ -561,13 +562,27 @@ play(path: string, autopilot: int)
 	if (err != nil)
 		fail(err);
 
-	(v, verr) := video->open(vid_w, vid_h);
-	if (v == nil)
-		fail(verr);
+	v: ref Context;
+	wmkeys: chan of string;
+	verr: string;
+	if (wmctxt != nil) {
+		(v, wmkeys, verr) = video->openwm(wmctxt, vid_w, vid_h, "Doom");
+		if (v == nil)
+			fail(verr);
+	} else {
+		(v, verr) = video->open(vid_w, vid_h);
+		if (v == nil)
+			fail(verr);
+	}
 
 	keystate = array[NKEYS] of int;
 	keych = chan of int;
+	# in both modes read /dev/scancode: it reports true press/release
+	# (code, code|0x80).  the wm kbd channel only ever delivers press
+	# runes with no key-up, so keys stick and coalesce wrongly.
 	spawn kbdreader(keych);
+	if (wmctxt != nil)
+		spawn wmquitshim(wmkeys, keych);
 
 	p := game->consoleplayer();
 	if (p == nil || p.mo == nil)
@@ -589,23 +604,14 @@ play(path: string, autopilot: int)
 	spawn timerproc(tick, TICMS);
 	tic := 0;
 	quit := 0;
+	dotic := 0;
 	for (; !quit;) {
 		# key events only update keystate; tics come SOLELY from the
 		# tick timer (key-driven tics made the game surge at
 		# auto-repeat rate and stutter between repeats)
-		dotic := 0;
 		alt {
 		k := <-keych =>
-			if (k == Esc) {
-				quit = 1;
-				break;
-			}
-			if ((k & 16r10000) != 0) {	# release
-				k &= ~16r10000;
-				if (k >= 0 && k < NKEYS)
-					keystate[k] = 0;
-			} else if (k >= 0 && k < NKEYS)
-				keystate[k] = 1;
+			quit = handlekey(k);
 		<-tick =>
 			dotic = 1;
 		}
@@ -613,6 +619,7 @@ play(path: string, autopilot: int)
 			break;
 		if (!dotic)
 			continue;
+		dotic = 0;
 
 		tic++;
 
@@ -736,34 +743,62 @@ keysym(code: int): int
 	}
 }
 
-# /dev/scancode: raw X11 keycodes, press=code, release=code|0x80.
-# true key-up events (unlike /dev/keyboard's press-only runes, which
-# relied on X auto-repeat + a hold-decay hack that leaked movement
-# after release and stuttered between repeats).  opening /dev/scancode
-# makes emu route ALL key events here (xkeyboard: gkscanq path).
-kbdreader(ch: chan of int)
+# wm delivers a "quit" on window close; the game reads real key state
+# from /dev/scancode, so this shim only needs to forward quit.
+wmquitshim(src: chan of string, ch: chan of int)
 {
-	dfd := sys->open("/dev/scancode", sys->OREAD);
-	if (dfd == nil) {
-		sys->print("kbdreader: can't open /dev/scancode: %r\n");
-		return;
-	}
-	buf := array[64] of byte;
 	for (;;) {
-		n := sys->read(dfd, buf, len buf);
-		if (n < 1)
-			break;
-		for (i := 0; i < n; i++) {
-			b := int buf[i];
-			k := keysym(b & 16r7f);
-			if (k < 0)
-				continue;
-			if ((b & 16r80) != 0)	# release
-				ch <-= k | 16r10000;
-			else
-				ch <-= k;
+		s := <-src;
+		if (s == "quit")
+			ch <-= Esc;
+	}
+}
+
+	# /dev/scancode: raw X11 keycodes, press=code, release=code|0x80.
+	# true key-up events (unlike /dev/keyboard's press-only runes, which
+	# relied on X auto-repeat + a hold-decay hack that leaked movement
+	# after release and stuttered between repeats).  opening /dev/scancode
+	# makes emu route ALL key events here (xkeyboard: gkscanq path).
+	# note: the FIRST read at offset 0 returns the gkscanid banner string
+	# ("emu_x11"), not scancodes; skip it and keep reading scancodes.
+	kbdreader(ch: chan of int)
+	{
+		dfd := sys->open("/dev/scancode", sys->OREAD);
+		if (dfd == nil) {
+			sys->print("kbdreader: can't open /dev/scancode: %r\n");
+			return;
+		}
+		buf := array[64] of byte;
+		for (;;) {
+			n := sys->read(dfd, buf, len buf);
+			if (n < 1)
+				break;
+			for (i := 0; i < n; i++) {
+				b := int buf[i];
+				k := keysym(b & 16r7f);
+				if (k < 0)
+					continue;
+				if ((b & 16r80) != 0)	# release
+					ch <-= k | 16r10000;
+				else
+					ch <-= k;
+			}
 		}
 	}
+
+# apply one scancode event to keystate; returns 1 if it was Esc (quit).
+# press = k, release = k | 16r10000 (the /dev/scancode encoding).
+handlekey(k: int): int
+{
+	if (k == Esc)
+		return 1;
+	if ((k & 16r10000) != 0) {	# release
+		k &= ~16r10000;
+		if (k >= 0 && k < NKEYS)
+			keystate[k] = 0;
+	} else if (k >= 0 && k < NKEYS)
+		keystate[k] = 1;
+	return 0;
 }
 
 timerproc(ch: chan of int, ms: int)
