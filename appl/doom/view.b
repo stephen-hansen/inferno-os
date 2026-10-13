@@ -29,18 +29,7 @@ r:	ref Rend->Renderer;
 lev:	ref Map->Level;
 w, h:	int;
 proj:	int;		# 16.16 focal length (= centerx for 90deg FOV)
-solid:	array of int;	# per-column occlusion: solid[2*x]=ceilclip, solid[2*x+1]=floorclip
-
-# Shared per-column floor/ceiling claiming lines for visplane occlusion.
-# The walk is front-to-back, so each floor plane claims only rows below
-# floorline[x] (the bottom of the nearest floor seen so far) and then
-# raises the line; each ceiling plane claims only rows above ceilline[x]
-# (the top of the nearest ceiling) and then lowers it.  A farther plane
-# can thus never paint over a nearer one, which fixes the blue-over-gray
-# floor overdraw and makes adjacent floor segments meet flush.  Reset to
-# h/-1 each frame.
-floorline:	array of int;
-ceilline:	array of int;
+solid:	array of int;	# per-column occlusion: solid[2*x]=first open row, solid[2*x+1]=one past last open row (vanilla ceilingclip+1 / floorclip)
 
 # ---- floor/ceiling plane rendering ----
 # Vanilla visplane model (r_plane.c).  As walls are walked front-to-
@@ -71,12 +60,6 @@ basexscale:	int;	# world u step per unit depth along right axis (16.16)
 baseyscale:	int;	# world v step per unit depth (16.16)
 plfl:	ref Rend->Flat;	# flat bound for the mapplane call below
 
-# plane params for the seg being drawn; addline/drawtwosided set these
-# before marking, so markfloor/markceil know what to intern.
-markz:	array of int;	# [0]=floor z, [1]=ceiling z, 16.16
-marklight:	array of int;	# [0]=floor, [1]=ceiling, colormap 0..31
-markflat:	array of string;	# [0]=floor, [1]=ceiling flat names
-
 init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 {
 	if (sys == nil)
@@ -103,8 +86,6 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 	proj = width / 2;		# 90-degree horizontal FOV (raw pixels)
 	centerx = width / 2;
 	solid = array[w * 2] of int;
-	floorline = array[w] of int;
-	ceilline = array[w] of int;
 
 	# plane texture-mapping table.  yslope[y] = proj/|dy| (16.16) scales
 	# the eye-to-plane vertical distance into a per-row depth; vanilla
@@ -200,9 +181,6 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 	}
 	nvp = 0;
 	curfloor = curceil = -1;
-	markz = array[2] of int;
-	marklight = array[2] of int;
-	markflat = array[2] of string;
 	return nil;
 }
 
@@ -241,10 +219,8 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int)
 
 	# reset occlusion: full screen open in every column
 	for (x := 0; x < w; x++) {
-		solid[2*x] = -1;	# ceiling clip (top of open region)
-		solid[2*x+1] = h;	# floor clip (bottom of open region)
-		floorline[x] = h;	# no floor claimed yet
-		ceilline[x] = -1;	# no ceiling claimed yet
+		solid[2*x] = -1;	# first open row (vanilla ceilingclip+1)
+		solid[2*x+1] = h;	# one past last open row (vanilla floorclip)
 	}
 
 	# reset visplanes for this frame
@@ -472,7 +448,7 @@ addline(segnum: int)
 	texname := sd.midtexture;
 	if (back != nil) {
 		# two-sided: draw upper and lower, skip middle
-		drawtwosided(sd, back, lx1, lx2, ox1, ox2, d1, d2, u1, u2,
+		drawtwosided(sd, lx1, lx2, ox1, ox2, d1, d2, u1, u2,
 			ceilz, floorz, back.ceilingheight, back.floorheight);
 		return;
 	}
@@ -489,9 +465,20 @@ addline(segnum: int)
 	if (light > 31)
 		light = 31;
 
-	# intern this sector's floor/ceiling planes for the column loop below
-	curfloor = findplane(floorz, sec.floortexture, light);
-	curceil = findplane(ceilz, sec.ceilingtexture, light);
+	# intern this sector's floor/ceiling planes for the column loop below.
+	# vanilla R_Subsector only picks a floorplane below the eye and a
+	# ceilingplane above it (or sky): outside those bounds the plane is
+	# not visible and claiming with it paints garbage.  checkplane then
+	# decides per seg whether claims join the interned visplane or a
+	# duplicate (vanilla R_CheckPlane), keeping per-column strips exact.
+	curfloor = -1;
+	if (floorz < vz)
+		curfloor = checkplane(findplane(floorz, sec.floortexture, light),
+			lx1, lx2);
+	curceil = -1;
+	if (ceilz > vz || sec.ceilingtexture == "F_SKY1")
+		curceil = checkplane(findplane(ceilz, sec.ceilingtexture, light),
+			lx1, lx2);
 
 	# perspective-correct: scale (px per world unit, 16.16) is linear
 	# in screen x; depth is derived per column.  Vanilla steps
@@ -534,8 +521,6 @@ addline(segnum: int)
 
 		yt := r.centery - int(big(z1t + rend->fixedmul(z2t - z1t, frac) - vz) * big(scale) >> 32);
 		yb := r.centery - int(big(z1b + rend->fixedmul(z2b - z1b, frac) - vz) * big(scale) >> 32);
-		if (yt > yb)
-			continue;
 
 		# clip to occlusion
 		cclip := solid[2*x];
@@ -548,38 +533,40 @@ addline(segnum: int)
 			yb = fclip - 1;
 		if (yb >= h)
 			yb = h - 1;
-		if (yt > yb)
-			continue;
 
-		# texture mapping
-		col := u >> 16;
-		# iscale: 16.16 texture units per screen pixel = 2^32/scale.
-		# int-safe when scale>=2^16 (result<=2^16); else big (rare: very close walls).
-		iscale: int;
-		if (scale >= 16r10000)
-			iscale = int(big(16r100000000) / big(scale));
-		else
-			iscale = int(16r100000000 / big(scale));
-		# texturemid: world z above eye, 16.16 texels (1 texel = 1 unit)
-		tmid := z1t + rend->fixedmul(z2t - z1t, frac) - vz;
-		rend->rdrawcolumn(r,x, yt, yb, light, tex, col, tmid, iscale);
-		ncolumns++;
+		# mark the planes this wall exposes before drawing, like vanilla
+		# R_RenderSegLoop: rows above the wall to the ceiling plane, rows
+		# below to the floor plane.  markplane clamps both strips to the
+		# open window, and a fully clipped wall still marks (its strips
+		# tile what the window has left) then closes the column.
+		markplane(curceil, x, cclip, yt - 1);
+		markplane(curfloor, x, yb + 1, fclip);
 
-		# mark floor/ceiling exposed by this solid wall: rows between the
-		# open clip and the wall edges belong to the sector's planes.
-		# a solid wall occludes everything from yt..yb, so ceiling fills
-		# [cclip..yt-1] and floor fills [yb+1..fclip].
-		markceil(curceil, x, cclip, yt - 1);
-		markfloor(curfloor, x, yb + 1, fclip);
+		if (yt <= yb) {
+			# texture mapping
+			col := u >> 16;
+			# iscale: 16.16 texture units per screen pixel = 2^32/scale.
+			# int-safe when scale>=2^16 (result<=2^16); else big (rare: very close walls).
+			iscale: int;
+			if (scale >= 16r10000)
+				iscale = int(big(16r100000000) / big(scale));
+			else
+				iscale = int(16r100000000 / big(scale));
+			# texturemid: world z above eye, 16.16 texels (1 texel = 1 unit)
+			tmid := z1t + rend->fixedmul(z2t - z1t, frac) - vz;
+			rend->rdrawcolumn(r,x, yt, yb, light, tex, col, tmid, iscale);
+			ncolumns++;
+		}
 
-		# update occlusion for solid wall
-		solid[2*x] = yb + 1;	# everything below is occluded
-		solid[2*x+1] = yt;	# everything above is occluded
+		# a solid wall is terminal: close the column completely
+		# (vanilla sets ceilingclip=viewheight, floorclip=-1).
+		solid[2*x] = h;
+		solid[2*x+1] = -1;
 	}
 }
 
 # two-sided line: draw upper and lower textures where heights differ
-drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
+drawtwosided(sd: ref Map->Side,
 	lx1, lx2, ox1, ox2, d1, d2, u1, u2: int,
 	fceilz, ffloorz, bceilz, bfloorz: int)
 {
@@ -598,11 +585,15 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 	id1 := int(16r100000000 / big(dd1));
 	id2 := int(16r100000000 / big(dd2));
 
-	# intern front and back sector planes.  the front sector's floor and
-	# ceiling fill the regions above the upper wall and below the lower
-	# wall; the back sector's planes are seen through the portal opening
-	# between them.  use each sector's own light so the two don't share
-	# a visplane unless they truly match.
+	# intern the FRONT sector's planes for this seg.  vanilla picks
+	# floorplane/ceilingplane per subsector (R_Subsector): floor only
+	# below the eye, ceiling only above it (or sky) -- outside those
+	# bounds the plane is invisible and must not claim rows.  The window
+	# rows between the textures are claimed by the next seg behind this
+	# portal, whose front sector is the back side: vanilla never claims
+	# back-sector planes here (doing so double-claimed flat portals and
+	# painted back floors over front floors at steps).  checkplane keeps
+	# per-column strips exact (vanilla R_CheckPlane).
 	fsec := sd.sector;
 	flight := 0;
 	clight := 0;
@@ -612,17 +603,14 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 		if (flight > 31) flight = 31;
 		clight = flight;
 	}
-	frontfloor := findplane(ffloorz, fsec.floortexture, flight);
-	frontceil := findplane(fceilz, fsec.ceilingtexture, clight);
-	backfloor := -1;
-	backceil := -1;
-	if (back != nil) {
-		blight := (back.lightlevel * 31) / 255;
-		if (blight < 0) blight = 0;
-		if (blight > 31) blight = 31;
-		backfloor = findplane(bfloorz, back.floortexture, blight);
-		backceil = findplane(bceilz, back.ceilingtexture, blight);
-	}
+	frontfloor := -1;
+	if (ffloorz < vz)
+		frontfloor = checkplane(findplane(ffloorz, fsec.floortexture, flight),
+			lx1, lx2);
+	frontceil := -1;
+	if (fceilz > vz || fsec.ceilingtexture == "F_SKY1")
+		frontceil = checkplane(findplane(fceilz, fsec.ceilingtexture, clight),
+			lx1, lx2);
 
 	tspan := ox2 - ox1;
 	for (x := lx1; x <= lx2; x++) {
@@ -700,46 +688,33 @@ drawtwosided(sd: ref Map->Side, back: ref Map->Sector,
 			}
 		}
 
-		# portal: if back ceiling < front ceiling, occlude upper
-		if (bceilz < fceilz) {
-			yb := r.centery - int(big(bceilz - vz) * big(scale) >> 32);
-			yb1 := yb + 1;
-			if (yb1 < 0)
-				yb1 = 0;
-			if (yb1 > h)
-				yb1 = h;
-			if (yb1 > cclip)
-				cclip = yb1;
-		}
-		# portal: if back floor > front floor, occlude lower
-		if (bfloorz > ffloorz) {
-			yt := r.centery - int(big(bfloorz - vz) * big(scale) >> 32);
-			if (yt < 0)
-				yt = 0;
-			if (yt > h)
-				yt = h;
-			if (yt < fclip)
-				fclip = yt;
-		}
-
-		# mark planes exposed by this portal.  screen y = centery-(z-vz)*proj/depth,
-		# so higher z projects to smaller y.  the front ceiling fills the strip
-		# between the open-clip top and the FRONT ceiling's edge; the front floor
-		# fills the strip between the FRONT floor's edge and the open-clip bottom.
-		# through the portal window [cclip..fclip] we see the BACK sector's planes:
-		# the BACK ceiling (higher z than the front floor) fills [cclip..bctop-1]
-		# and the BACK floor (lower z than the front ceiling) fills [blbot+1..fclip].
-		# (was: the back strips used the front sector's z, so the back sector's
-		# floor was marked starting at the front floor's edge -- painting the back
-		# floor over the front floor and breaking flush seams.)
+		# window edges (port equivalents of vanilla's topfrac/bottomfrac
+		# rows for the front sector's ceiling and floor)
 		fctop := r.centery - int(big(fceilz - vz) * big(scale) >> 32);
-		markceil(frontceil, x, solid[2*x], fctop - 1);
 		flbot := r.centery - int(big(ffloorz - vz) * big(scale) >> 32);
-		markfloor(frontfloor, x, flbot + 1, solid[2*x+1]);
-		bctop := r.centery - int(big(bceilz - vz) * big(scale) >> 32);
-		markceil(backceil, x, cclip, bctop - 1);
-		blbot := r.centery - int(big(bfloorz - vz) * big(scale) >> 32);
-		markfloor(backfloor, x, blbot + 1, fclip);
+
+		# advance the column clips to the front edges where no texture
+		# covered them.  An upper/lower texture draw above already set
+		# cclip/fclip past these edges, so the max/min are no-ops there.
+		# This mirrors vanilla's "no top/bottom wall" clip branches
+		# (ceilingclip = yl-1, floorclip = yh+1); vanilla gates those on
+		# markceiling/markfloor, but the gate only suppresses the advance
+		# when both sides share the plane, and then the next seg claims
+		# with identical z/flat/light and joins the same visplane anyway.
+		if (fctop > cclip)
+			cclip = fctop;
+		if (flbot + 1 < fclip)
+			fclip = flbot + 1;
+
+		# mark the front sector's planes in the strips above the upper
+		# wall and below the lower wall; markplane clamps both to the
+		# open window (vanilla's mutual ceilingclip/floorclip clamps).
+		# Window rows are left for the next seg behind the portal, whose
+		# front sector is the back side -- claiming back-sector planes here
+		# double-claimed flat portals and painted back floors over front
+		# floors at steps.
+		markplane(frontceil, x, solid[2*x], fctop - 1);
+		markplane(frontfloor, x, flbot + 1, solid[2*x+1]);
 
 		solid[2*x] = cclip;
 		solid[2*x+1] = fclip;
@@ -769,48 +744,67 @@ findplane(z: int, flatname: string, light: int): int
 	return nvp++;
 }
 
-# Mark floor plane `pl` exposing screen rows [t..b] in column x.
-# A floor may claim from its strip top down to the shared floorline (the
-# bottom edge of the nearest floor already drawn in this column), so a
-# farther floor can never paint over a nearer one; then the line rises to
-# the top of what this floor claimed, so the next (farther) floor sits
-# below it.  floorline starts at h (nothing claimed).
-markfloor(pl, x, t, b: int)
+# Vanilla R_CheckPlane (r_plane.c): decide whether this seg's claims can
+# join the interned visplane `pl` or need a fresh duplicate.  If the
+# seg's column range [x1..x2] contains a column the plane already
+# claims, a second claim in that column would overwrite the first, so
+# spawn a copy with the same z/flat/light and claim into that instead.
+# This keeps each plane's per-column strip exact (no min/max fusing of
+# disjoint strips), which is what makes draw order irrelevant: every row
+# of every column is claimed by exactly one plane.
+checkplane(pl, x1, x2: int): int
 {
-	if (pl < 0 || x < 0 || x >= w)
-		return;
-	if (b > floorline[x])
-		b = floorline[x];
-	if (b >= h)
-		b = h - 1;
-	if (t < 0)
-		t = 0;
-	if (t > b)
-		return;
-	if (x < vps[pl].minx)
-		vps[pl].minx = x;
-	if (x > vps[pl].maxx)
-		vps[pl].maxx = x;
-	if (vps[pl].top[x] < 0 || t < vps[pl].top[x])
-		vps[pl].top[x] = t;
-	if (vps[pl].bottom[x] < 0 || b > vps[pl].bottom[x])
-		vps[pl].bottom[x] = b;
-	if (t < floorline[x])
-		floorline[x] = t;
+	lo: int;
+	hi: int;
+	x: int;
+	if (pl < 0)
+		return pl;
+	lo = x1;
+	if (lo < vps[pl].minx)
+		lo = vps[pl].minx;
+	hi = x2;
+	if (hi > vps[pl].maxx)
+		hi = vps[pl].maxx;
+	if (lo > hi)
+		return pl;	# no overlap with claimed span: reuse
+	for (x = lo; x <= hi; x++)
+		if (vps[pl].top[x] >= 0)
+			break;
+	if (x > hi)
+		return pl;	# span overlaps but no column claimed: reuse
+	if (nvp >= MAXVISPLANES)
+		return pl;	# table full: reuse (worst case, strips fuse)
+	np := nvp;
+	vps[np].z = vps[pl].z;
+	vps[np].light = vps[pl].light;
+	vps[np].flatname = vps[pl].flatname;
+	vps[np].minx = x1;
+	vps[np].maxx = x2;
+	for (x = 0; x < MAXVISW; x++) {
+		vps[np].top[x] = -1;
+		vps[np].bottom[x] = -1;
+	}
+	nvp++;
+	return np;
 }
 
-# Mark ceiling plane `pl` exposing screen rows [t..b] in column x.
-# A ceiling may claim from the shared ceilline (the top edge of the
-# nearest ceiling already drawn) down to its strip bottom, so a farther
-# ceiling can never paint over a nearer one; then the line drops to the
-# bottom of what this ceiling claimed, so the next (farther) ceiling sits
-# above it.  ceilline starts at -1 (nothing claimed).
-markceil(pl, x, t, b: int)
+# Mark plane `pl` exposing screen rows [t..b] (inclusive) in column x.
+# The strip is clamped to the column's open window solid[2*x]..
+# solid[2*x+1]-1 -- the vanilla R_RenderSegLoop claim clamps against
+# ceilingclip/floorclip -- so a plane can only claim rows no wall has
+# covered: planes can never paint over walls.  Planes cannot paint over
+# each other either: the front-to-back walk advances the clips at every
+# wall and portal so each row of each column is offered to exactly one
+# plane (vanilla's clip partition), and checkplane keeps same-plane
+# re-claims from fusing disjoint strips.  Empty strips are dropped.
+markplane(pl, x, t, b: int)
 {
 	if (pl < 0 || x < 0 || x >= w)
 		return;
-	if (t < ceilline[x])
-		t = ceilline[x];
+	if (t < solid[2*x])
+		t = solid[2*x];
+	if (b > solid[2*x+1] - 1)
+		b = solid[2*x+1] - 1;
 	if (t < 0)
 		t = 0;
 	if (b >= h)
@@ -821,12 +815,8 @@ markceil(pl, x, t, b: int)
 		vps[pl].minx = x;
 	if (x > vps[pl].maxx)
 		vps[pl].maxx = x;
-	if (vps[pl].top[x] < 0 || t < vps[pl].top[x])
-		vps[pl].top[x] = t;
-	if (vps[pl].bottom[x] < 0 || b > vps[pl].bottom[x])
-		vps[pl].bottom[x] = b;
-	if (b > ceilline[x])
-		ceilline[x] = b;
+	vps[pl].top[x] = t;
+	vps[pl].bottom[x] = b;
 }
 
 # Emit the spans for one plane: walk columns minx..maxx and, wherever a

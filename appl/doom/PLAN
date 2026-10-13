@@ -99,37 +99,80 @@ Milestones (each independently testable)
            proj (vanilla folds /centerxfrac into them).  bare vsin/vcos
            made ds_xstep ~160x too large -> texture aliased to a solid
            color (the flat-blue floor); added fixeddiv to rend.
-           BUG FIX: markplane unioned each column's strips into one
-           [top,bottom] range, so a farther plane spanned gaps that
-           nearer planes owned -> lower blue floor painted over higher
-           gray floor, seams not flush.  Split into markfloor/markceil
-           with shared per-column floorline[x] (init h) / ceilline[x]
-           (init -1): a floor claims [t..min(b,floorline)] then raises
-           the line to t; a ceiling claims [max(t,ceilline)..b] then
-           drops it to b.  Direction of the clip was inverted on first
-           try (clamped t up to floorline=h, discarding every strip ->
-           black floors); corrected to bound b/t by the line instead.
-            plane shear on camera rotation STILL OPEN as of the baseyscale
-            sign fix (see below); do NOT claim it fixed without the user
-            confirming under rotation.
-          BUG FIX (baseyscale sign): vanilla r_plane.c:200-201 is
-            basexscale =  finecosine[viewangle-ANG90]/centerxfrac
-            baseyscale = -finesine  [viewangle-ANG90]/centerxfrac
-            With finecosine[k]=finesine[k+2048] the identity is
-            finesine[viewangle-ANG90] = -cos(viewangle) = -vcos, so the raw
-            baseyscale line reduces to -(-vcos) = +vcos/(proj<<16).  The
-            port had written baseyscale = -vcos(...): a SIGN FLIP.  The
-            step then pointed along left instead of right while the origin
-            was correct, so texture coords slid the wrong way - shear that
-            grows with the column's lateral offset (zero at default view,
-            worst at the screen edges on rotation).  REPEAT-MISTAKE NOTE:
-            individual pieces (basexscale sign, origin single-fixedmul,
-            distscale=1/cos, yslope) were each "verified" against vanilla
-            in earlier passes and shear persisted, because the origin and
-            step were never checked against EACH OTHER in reduced form.
-            Always reduce the raw vanilla lines to the port's vsin/vcos
-            terms in one place and compare BOTH the origin and the step
-            together before touching anything else.
+            BUG FIX (SUPERSEDED by occlusion rework below): markplane
+            unioned each column's strips into one [top,bottom] range, so a
+            farther plane spanned gaps that nearer planes owned -> lower
+            blue floor painted over higher gray floor, seams not flush.
+            Split into markfloor/markceil with shared per-column
+            floorline[x] (init h) / ceilline[x] (init -1).  This bounded
+            each plane correctly but broke on cross-plane interactions
+            (vanilla shares ONE clip pair between planes and walls); the
+            floorline/ceilline system was fully replaced - see the
+            vanilla-clip occlusion rework entry below.
+            RESOLVED (user-confirmed): floor/ceiling rotation shear is
+            gone.  Final root causes, found by deriving vanilla geometry
+            end-to-end and simulating the Limbo logic numerically:
+            1. buildfsine FREQUENCY/PHASE: real Doom is
+               finesine[k]=round(sin((k+0.5)*PI/4096)*65536) (full circle
+               at 8192, half-step phase; verified vs tables.c, max err 1).
+               The port generated sin(k*PI/2048) - DOUBLE frequency, no
+               phase, and a Taylor series truncated at x^7 (0.23 rad error
+               near pi).  Every origin lookup was garbage regardless of
+               sign/algebra fixes.
+            2. xtofine BINARY SEARCH: compared sn*proj vs tds*cs (scale
+               mismatch, rhs ~409x lhs) so the search returned the
+               +/-1024 boundary for nearly every column; and stored +delta
+               where vanilla xtoviewangle is NEGATIVE for x>centerx (ray
+               angle = viewangle - delta), mirroring the origin against
+               the step.  Fixed to sn<<16 vs tds*cs and (-lo)&FINEMASK.
+            3. distscale OVERFLOW: isqrt(sum<<16) overflowed int32 for
+               sum>32767 (|tan|>0.63, outer third of each screen side),
+               falling back to 1.0 while the origin angle still rotated.
+               Rebuilt distscale from xtofine like vanilla (r_main.c:734:
+               FixedDiv(FRACUNIT, abs(finecosine[xtoviewangle>>19]))),
+               which also ties length to the same quantized column angle
+               as the origin.
+            4. yslope half-pixel: vanilla dy=abs(((i-h/2)<<16)+32768);
+               the +32768 bias was dropped.  yslope=(proj<<32)/dy now.
+            (baseyscale sign fix from the prior pass was correct
+            algebra (+vcos/(proj<<16)) but was not the shear cause.)
+            REPEAT-MISTAKE NOTE: individual pieces were "verified" in
+            isolation across several passes while shear persisted.  What
+            finally worked: derive the FULL pipeline (table formula ->
+            column angle -> origin -> step) from the raw vanilla source
+            and compare against exact geometry numerically before
+             touching code.  Never trust piecewise verification.
+           RESOLVED (model-verified, user validation pending): floor/
+           ceiling occlusion rework - replaced floorline/ceilline with
+           vanilla's shared-clip model.  Full pipeline derived from raw
+           r_segs.c (R_RenderSegLoop/R_StoreWallRange), r_plane.c
+           (R_CheckPlane), r_bsp.c (R_Subsector), then encoded as a
+           Python state machine (/tmp/opencode/occ_model.py, 11 scenarios
+           incl. portals/steps/sky/gaps): port_fix claims + final open
+           sets + drawn rows EXACTLY equal vanilla on every scenario,
+           while port_now fails exactly the predicted bugs.  Root causes
+           fixed: (1) back-sector plane claims at portals double-claimed
+           flat portals / painted back floors over front floors at
+           steps - vanilla claims back planes only via the NEXT seg;
+           (2) markfloor bottom off-by-one (was inclusive fclip, vanilla
+           is floorclip-1); (3) no mutual clip clamps on two-sided strip
+           marks; (4) floorline/ceilline cross-plane misbehavior (far
+           floor discarded when t>b -> holes; ceilline overlap row);
+           (5) no viewz/sky gate on plane choice -> garbage claims when
+           floor is above the eye (vanilla: floorplane only below eye,
+           ceilingplane only above eye or sky); (6) untextured upper "-"
+           advanced the clip past undrawn rows -> black band (advance
+           only to the front ceiling edge); (7) one-sided continue-before-
+           marks skipped claims+close on degenerate walls; (8) min/max
+           union fused disjoint strips across gaps (A-B-A ceilings) ->
+           now per-seg R_CheckPlane spawns a duplicate when the seg's
+           range already contains a claim, so each column row has exactly
+           one owner and draw order is irrelevant.  solid[] now stores
+           vanilla ceilingclip+1/floorclip (first-open/one-past-last);
+           one-sided walls close solid[2x]=h, solid[2x+1]=-1; dead
+           floorline/ceilline/markz/marklight/markflat removed.
+           NOTE for future sprite work: sprites will need vanilla
+           sprtopclip semantics - solid[] no longer holds wall edges.
           sky (F_SKY1) DEFERRED - renders black, acceptable interim
     [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
