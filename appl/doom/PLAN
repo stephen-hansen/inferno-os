@@ -173,6 +173,22 @@ Milestones (each independently testable)
            floorline/ceilline/markz/marklight/markflat removed.
            NOTE for future sprite work: sprites will need vanilla
            sprtopclip semantics - solid[] no longer holds wall edges.
+           BUG FIX (left-edge wall corruption): the per-column frac used
+           for scale/z/u interpolation was computed in int32 as
+           ((x-ox1)<<16)/tspan, with a comment assuming |x-ox1|<=320.
+           But ox1 is the ORIGINAL projected endpoint, kept unclamped as
+           the interpolation basis - a near-plane-clipped endpoint
+           projects to |x| ~ 100k px, so for segs extending off the
+           LEFT screen edge (x-ox1)~64000 and <<16 overflows int32.
+           Right-extending segs never overflow (ox1 stays on-screen ->
+           x-ox1 <= 320), which is why only the leftmost side broke.
+           Garbage frac (negative or far-off positive, position/angle
+           dependent) extrapolates scale/id: magnified ("zoomed") wall
+           texture, or scale/id <= 0 -> column skipped ("textures not
+           rendering").  Verified numerically: ox1=-64000 gives frac
+           -0.024 where truth is 0.995, on every column.  Now computed
+           in big (result <= 65536 since x <= ox2) in both addline and
+           drawtwosided column loops.
           sky (F_SKY1) DEFERRED - renders black, acceptable interim
     [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"

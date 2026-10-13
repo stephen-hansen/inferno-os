@@ -508,7 +508,16 @@ addline(segnum: int)
 	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
 		if (tspan > 0)
-			frac = ((x - ox1) << 16) / tspan;	# int-safe: |x-ox1|<=320, tspan<=~65536
+			# ox1 is the ORIGINAL projected endpoint (kept unclamped as
+			# the interpolation basis) and can sit far off-screen: a
+			# near-plane-clipped endpoint projects to |x| ~ 100k px, so
+			# (x-ox1)<<16 overflows int32 for left-extending segs ->
+			# garbage/negative frac -> scale/id extrapolated to garbage:
+			# zoomed or missing wall columns along the screen's left edge.
+			# (Right-extending segs never overflow: ox1 stays on-screen
+			# so x-ox1 <= 320.)  big required; result stays <= 65536
+			# since x <= ox2.
+			frac = int(((big(x) - big(ox1)) << 16) / big(tspan));
 		scale := s1 + rend->fixedmul(s2 - s1, frac);
 		if (scale <= 0)
 			continue;
@@ -616,7 +625,8 @@ drawtwosided(sd: ref Map->Side,
 	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
 		if (tspan > 0)
-			frac = ((x - ox1) << 16) / tspan;	# int-safe
+			# big: same left-edge ox1 overflow as in addline's loop
+			frac = int(((big(x) - big(ox1)) << 16) / big(tspan));	# int-safe
 		scale := s1 + rend->fixedmul(s2 - s1, frac);
 		if (scale <= 0)
 			continue;
