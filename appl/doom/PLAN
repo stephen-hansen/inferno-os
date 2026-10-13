@@ -213,8 +213,8 @@ Milestones (each independently testable)
           differs by <1/8 column - invisible, seamless via wrap).
            F_SKY1 marker flat stays excluded from rflat (rend.b:99);
            drawplanes special-cases it by name before the flat lookup.
-           lighting (outdoor pitch-black fix) DONE (user validation
-           pending): the port computed light = (sec.lightlevel*31)/255
+            lighting (outdoor pitch-black fix) DONE (user-validated):
+            the port computed light = (sec.lightlevel*31)/255
            and passed it straight through as the COLORMAP ROW
            (drawcolumn/drawspan: cm = row*256) - INVERTED vs vanilla.
            COLORMAP row 0 = fullbright, row 31 = darkest; E1M1 outdoor
@@ -241,10 +241,47 @@ Milestones (each independently testable)
            mapplane picks the row per distance band; addline and
            drawtwosided column draws pick it per scale band (scalelight
            was built in view.b init alongside the other tables).
-           Numeric check BEFORE editing: lightlevel 255 -> row 0 at
-           every band (outdoors fullbright), 192 -> 0 near .. 12 far,
-           128 -> 0 near .. 28 far (vanilla distance darkening), walls
-           row 0 at scale index 47 (near, bright) .. startmap far.
+            Numeric check BEFORE editing: lightlevel 255 -> row 0 at
+            every band (outdoors fullbright), 192 -> 0 near .. 12 far,
+            128 -> 0 near .. 28 far (vanilla distance darkening), walls
+            row 0 at scale index 47 (near, bright) .. startmap far.
+            P_SlideMove (wall slide + flush-to-wall) DONE (user
+            validation pending): the port zeroed momentum on a blocked
+            move (milestone 5 stub) instead of vanilla's flush + along-
+            wall redirect, so the player stopped short of walls and
+            could not slide.  Root cause: every other collision piece
+            (pointonlineside, boxonlineside, pitcheckline,
+            pitcheckthing, checkposition, trymove step checks,
+            xymovement, map slopetype/bbox, tmbbox conventions) was
+            already byte-equivalent to vanilla; only the slide pipeline
+            was missing.  Full transcription now in game.b from raw
+            sources: P_SlideMove + P_HitSlideLine + PTR_SlideTraverse
+            (p_map.c:622-830), P_InterceptVector + P_PointOnDivlineSide
+            + PIT_AddLineIntercepts crossing test + P_TraverseIntercepts
+            maxfrac=FRACUNIT stop (p_maputl.c), R_PointToAngle octant
+            body (r_main.c:262), SlopeDiv (tables.c), FixedDiv
+            saturation (m_fixed.c), and the EXACT vanilla tantoangle
+            [2049] table embedded in init() (extracted from tables.c,
+            not recomputed from atan).  No blockmap: the three leading-
+            corner rays brute-force ALL lines with vanilla's crossing
+            test and frac in [0,FRACUNIT] - order-independent vs the
+            min-frac scan (stops at first blocker), vanilla's blockmap
+            blocks only prefilter candidates.  Signed/unsigned edges:
+            deltaangle > ANG180 as s32 (negative but != ANG180), u32
+            >>19 & FINEMASK = logical shift, SlopeDiv unsigned (num<<3)
+            wrap done in big, saturating FixedDiv before rend's raising
+            div (rend->fixeddiv never touched).  Numeric checks BEFORE
+            editing (/tmp/opencode/slide_check.py): SlopeDiv port ==
+            vanilla 3012 cases; pointtoangle2 worst 0.635 fine steps
+            vs exact atan2 (vanilla's own table quantization);
+            hitslide direction residual <=2% of the original normal
+            component, length inside the AproxDistance 6% envelope;
+            intercept frac divergences only at crossing_sin ~2e-5
+            (near-parallel) where vanilla's FixedMul(>>8) truncation
+            is identical and P_TraverseIntercepts drops the frac
+            anyway; flush sim: every -0x800 fudge stays clear of the
+            wall AABB.  Startup smoke: emu timeout 8s, E1M1 t=70, no
+            errors, no process left running.
     [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback
