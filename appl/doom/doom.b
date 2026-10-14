@@ -55,11 +55,13 @@ init(ctxt: ref Draw->Context, args: list of string)
 	mt := 0;
 	gt := 0;
 	pt := 0;
+	demo1 := 0;
 	for (;;) {
 		if (args == nil ||
 		    (hd args != "-d" && hd args != "-t" &&
 		     hd args != "-r" && hd args != "-m" &&
-		     hd args != "-g" && hd args != "-p"))
+		     hd args != "-g" && hd args != "-p" &&
+		     hd args != "-v" && hd args != "-demo1"))
 			break;
 		if (hd args == "-d")
 			dump = 1;
@@ -71,6 +73,10 @@ init(ctxt: ref Draw->Context, args: list of string)
 			mt = 1;
 		else if (hd args == "-p")
 			pt = 1;
+		else if (hd args == "-v")
+			verbose = 1;
+		else if (hd args == "-demo1")
+			demo1 = 1;
 		else
 			gt = 1;
 		args = tl args;
@@ -133,7 +139,9 @@ init(ctxt: ref Draw->Context, args: list of string)
 	w.close();
 
 	# no flags: interactive play; -p: wall-hug autopilot (screenshot test)
-	play(path, pt, ctxt);
+	# -demo1: play the built-in DEMO1 lump (deterministic repro path)
+	# -v: sprite diagnostics (PDROP/PROJ/CMISS/POFF) on stdout
+	play(path, pt, ctxt, demo1);
 }
 
 checkread(w: ref Wad->File, name: string, expect: int)
@@ -363,7 +371,7 @@ maptest(path: string)
 
 usage()
 {
-	sys->fprint(sys->fildes(2), "usage: doom [-d] [-t] [-r] [-m] [-g] [doom.wad]\n");
+	sys->fprint(sys->fildes(2), "usage: doom [-d] [-t] [-r] [-m] [-g] [-p] [-v] [-demo1] [doom.wad]\n");
 	raise "fail:usage";
 }
 
@@ -374,6 +382,15 @@ bamdegrees(angle: int): int
 	if (ua < big 0)
 		ua = ua + big 16r100000000;
 	return int (ua * big 360 / big 16r100000000);
+}
+
+# signed byte from the demo stream (vanilla *demo_p++ as signed char)
+demobyte(ofs: int): int
+{
+	v := int demosrc[ofs];
+	if (v >= 128)
+		v -= 256;
+	return v;
 }
 
 gametest(path: string)
@@ -499,8 +516,11 @@ XK_Down:	con 116;
 
 keystate:	array of int;
 keych:		chan of int;
+demosrc:	array of byte;	# TEMP demo playback stream (DEMO1 lump)
+demoofs:	int;
+verbose:	int;		# TEMP: -v enables view sprite diagnostics
 
-play(path: string, autopilot: int, wmctxt: ref Draw->Context)
+play(path: string, autopilot: int, wmctxt: ref Draw->Context, demo1: int)
 {
 	game = load Game Game->PATH;
 	if (game == nil)
@@ -544,7 +564,25 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 	if (err != nil)
 		fail(err);
 
-	(l, merr) := map->open(w, "E1M1");
+	demomap := "E1M1";
+	demoskill := game->SK_MEDIUM;
+	if (demo1) {
+		i := w.find("DEMO1");
+		if (i < 0)
+			fail("no DEMO1 lump");
+		(dbytes, derr) := w.read(i);
+		if (dbytes == nil || len dbytes < 13)
+			fail("bad DEMO1 lump");
+		if (int dbytes[0] != 109)
+			fail("unsupported demo version");
+		demoskill = int dbytes[1];
+		demomap = sys->sprint("E%dM%d", int dbytes[2], int dbytes[3]);
+		demosrc = dbytes;
+		demoofs = 13;		# ver+skill+ep+map+dm+respawn+fast+nomon+cons
+					# +playeringame[4]
+	}
+
+	(l, merr) := map->open(w, demomap);
 	if (l == nil)
 		fail(merr);
 
@@ -557,10 +595,15 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 	err = view->init(rr, l, w, game, vid_w, vid_h);
 	if (err != nil)
 		fail(err);
+	if (verbose)
+		view->dbgprints = 1;
 
-	err = game->setuplevel(l, game->SK_MEDIUM);
+	err = game->setuplevel(l, demoskill);
 	if (err != nil)
 		fail(err);
+	if (demo1)
+		sys->print("play: DEMO1 on %s skill %d (esc quits)\n",
+			demomap, demoskill);
 
 	v: ref Context;
 	wmkeys: chan of string;
@@ -687,6 +730,31 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 			btn |= 1;		# BT_USE
 		if (keystate[LCtrl] || keystate[RCtrl])
 			btn |= 2;		# BT_ATTACK
+
+		# demo playback overrides the ticcmd (G_ReadDemoTiccmd:
+		# s8 forward, s8 side, s8 angleturn<<8, u8 buttons; our
+		# buttons bit 2=attack 1=use vs vanilla 1/4)
+		if (demo1 && demosrc != nil) {
+			if (demoofs + 4 > len demosrc
+			    || int demosrc[demoofs] == 16r80) {
+				sys->print("play: demo ended at t=%d\n",
+					tic);
+				quit = 1;
+				break;
+			}
+			fm = demobyte(demoofs);
+			demoofs++;
+			sm = demobyte(demoofs);
+			demoofs++;
+			at = demobyte(demoofs) << 8;
+			demoofs++;
+			db := int demosrc[demoofs];
+			demoofs++;
+			if (db & 1)
+				btn |= 2;	# BT_ATTACK
+			if (db & 4)
+				btn |= 1;	# BT_USE
+		}
 
 		game->setcmd(fm, sm, at, btn);
 		game->ticker();

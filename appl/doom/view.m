@@ -32,4 +32,5 @@ View: module {
 	nsegs, ncolumns, nspans:	int;
 	nsprites, ndrawsegs:		int;
 	nmasked:			int;	# masked mid segs flushed last frame
+	dbgprints:			int;	# TEMP: 1 enables sprite diagnostics
 };

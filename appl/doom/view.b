@@ -38,7 +38,11 @@ fsine:	array of int;	# local sine table, built once in init()
 
 # camera state (set at start of render)
 vx, vy, vz:	int;	# 16.16
-vangle:		int;	# BAM
+	vangle:		int;	# BAM
+	# TEMP diagnostics (sprite clip debugging): auto sweep
+	dbgframes:	int;
+	dbgcx, dbgcy:	int;
+	cltopfrom, clbotfrom: array of int;
 vcos, vsin:	int;	# 16.16
 
 # renderer state (set by init)
@@ -349,6 +353,12 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 {
 	if (r == nil || lev == nil)
 		return;
+	# TEMP: clip-attribution arrays for drawspscan instrumentation
+	if (cltopfrom == nil) {
+		cltopfrom = array[w] of int;
+		clbotfrom = array[w] of int;
+	}
+	dbgframes++;
 	vx = viewx;
 	vy = viewy;
 	vz = viewz;
@@ -1286,68 +1296,103 @@ maskpost(x, yl, yh, light, tmid, iscale: int,
 
 # ---- thing sprites (r_things.c) ----
 
+# TEMP drop diagnostics for the sprite-disappearance hunt (silent
+# unless view->dbgprints, set by doom -v)
+pdrop(reason: string, a, b, c: int)
+{
+	if (dbgprints != 0)
+		sys->print("PDROP f=%d %s a=%d b=%d c=%d\n",
+			dbgframes, reason, a, b, c);
+}
+
 # project one mobj into the vissprite pool (vanilla R_ProjectSprite)
 projectmo(mo: ref Game->Mobj)
 {
 	if (mo == nil || mo.removed || mo.subsector == nil)
 		return;
-	if (mo.sprite < 0 || mo.sprite >= len sprdefs)
+	if (mo.sprite < 0 || mo.sprite >= len sprdefs) {
+		pdrop("sprdef", mo.sprite, len sprdefs, 0);
 		return;
+	}
 	trx := mo.x - vx;
 	TRY := mo.y - vy;
 	gxt := rend->fixedmul(trx, vcos);
 	gyt := -rend->fixedmul(TRY, vsin);
 	tz := gxt - gyt;
-	if (tz < MINZ)
+	if (tz < MINZ) {
+		pdrop("minz", tz, mo.x, mo.y);
 		return;
+	}
 	xscale := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(tz));
-	if (xscale <= 0)
+	if (xscale <= 0) {
+		pdrop("xscale", xscale, tz, 0);
 		return;
+	}
 	gxt = -rend->fixedmul(trx, vsin);
 	gyt = rend->fixedmul(TRY, vcos);
 	tx := -(gyt + gxt);
 	atx := tx;
 	if (atx < 0)
 		atx = -atx;
-	if (atx > (tz << 2))
+	if (atx > (tz << 2)) {
+		pdrop("atx", atx, tz, mo.sprite);
 		return;
+	}
 	sd := sprdefs[mo.sprite];
 	f := mo.frame & FF_FRAMEMASK;
-	if (f < 0 || f >= len sd.frames)
+	if (f < 0 || f >= len sd.frames) {
+		pdrop("frm", f, len sd.frames, mo.sprite);
 		return;
+	}
 	sfr := sd.frames[f];
-	if (len sfr.lump == 0)
+	if (len sfr.lump == 0) {
+		pdrop("nolump", f, mo.sprite, sfr.rotate);
 		return;
+	}
 	rot := 0;
 	flip := 0;
 	if (sfr.rotate == 1) {
-		if (gmod == nil)
+		if (gmod == nil) {
+			pdrop("nomod", 0, 0, 0);
 			return;
+		}
 		ang := gmod->pointtoangle2(vx, vy, mo.x, mo.y);
 		rot = ((ang - mo.angle + ANG45HALF9) >> 29) & 7;
-		if (sfr.lump[rot] < 0)
+		if (sfr.lump[rot] < 0) {
+			pdrop("rothole", rot, f, mo.sprite);
 			return;
+		}
 		flip = sfr.flip[rot];
 	} else {
-		if (sfr.lump[0] < 0)
+		if (sfr.lump[0] < 0) {
+			pdrop("lump0", f, mo.sprite, 0);
 			return;
+		}
 	}
 	lp := sfr.lump[rot];
 	sp := sprpatch[lp];
-	if (sp == nil)
+	if (sp == nil) {
+		pdrop("nopatch", lp, 0, 0);
 		return;
+	}
 	cx := centerx << 16;
 	txm := tx - sp.xoff;		# tx -= spriteoffset (16.16)
 	x1 := (cx + rend->fixedmul(txm, xscale)) >> 16;
-	if (x1 > w)
+	if (x1 > w) {
+		pdrop("x1off", x1, w, mo.sprite);
 		return;
+	}
 	txm += sp.w << 16;		# tx += spritewidth (16.16)
 	x2 := ((cx + rend->fixedmul(txm, xscale)) >> 16) - 1;
-	if (x2 < 0)
+	if (x2 < 0) {
+		pdrop("x2off", x2, 0, mo.sprite);
 		return;
+	}
 
-	if (nvis >= MAXVISSPRITES)
+	if (nvis >= MAXVISSPRITES) {
+		pdrop("ovf", nvis, 0, 0);
 		return;			# overflow: discarded, vanilla behavior
+	}
 	# build a local value and commit with a whole-struct assign at the
 	# end: `ref viss[nvis]` COPIES the element instead of aliasing
 	vis: Vissprite;
@@ -1384,8 +1429,10 @@ projectmo(mo: ref Game->Mobj)
 		vis.light = 0;
 	} else {
 		sec := mo.subsector.sector;
-		if (sec == nil)
+		if (sec == nil) {
+			pdrop("nosec", 0, 0, mo.sprite);
 			return;
+		}
 		lnum := sec.lightlevel >> LIGHTSEGSHIFT;
 		if (lnum < 0)
 			lnum = 0;
@@ -1397,6 +1444,10 @@ projectmo(mo: ref Game->Mobj)
 		vis.light = scalelight[lnum][idx];
 	}
 	viss[nvis] = vis;
+	if (dbgprints != 0 && (dbgframes % 2) == 0)
+		sys->print("PROJ f=%d spr=%d fr=%d rot=%d flip=%d x1=%d x2=%d sc=%d tz=%d\n",
+			dbgframes, mo.sprite, f, rot, flip, vis.x1, vis.x2,
+			vis.scale, tz);
 	nvis++;
 }
 
@@ -1414,6 +1465,17 @@ drawvis(vis: ref Vissprite)
 	if (iscale < 0)
 		iscale = -iscale;
 	sprtop := (r.centery << 16) - rend->fixedmul(vis.texturemid, vis.scale);
+	# TEMP clip profile: 'o' drew, 'c' had screen content all clipped
+	# out, '.' no screen-visible post
+	dbg := dbgprints != 0 && (dbgframes % 2) == 0;
+	colst: array of byte;
+	ccols := 0;
+	nscr := 0;			# posts intersecting the screen rows
+	if (dbg) {
+		colst = array[vis.x2 - vis.x1 + 1] of byte;
+		for (x := vis.x1; x <= vis.x2; x++)
+			colst[x - vis.x1] = byte 16r2e;
+	}
 	for (x := vis.x1; x <= vis.x2; x++) {
 		tc := frac >> 16;
 		frac += vis.xiscale;
@@ -1434,6 +1496,14 @@ drawvis(vis: ref Vissprite)
 			bottomscreen := topscreen + vis.scale * ln;
 			yl := (topscreen + 65535) >> 16;
 			yh := (bottomscreen - 1) >> 16;
+			yl0 := yl;
+			yh0 := yh;
+			if (yl0 < 0)
+				yl0 = 0;
+			if (yh0 > h - 1)
+				yh0 = h - 1;
+			if (yl0 <= yh0)
+				nscr++;
 			if (yl < sptop[x])
 				yl = sptop[x];
 			if (yh > spbot[x] - 1)
@@ -1442,9 +1512,62 @@ drawvis(vis: ref Vissprite)
 				maskpost(x, yl, yh, vis.light,
 					vis.texturemid - (td << 16),
 					iscale, sp.raw, pos + 3, ln);
+			if (dbg) {
+				if (yl <= yh)
+					colst[x - vis.x1] = byte 16r6f;	# o
+				else if (yl0 <= yh0 && colst[x - vis.x1] == byte 16r2e) {
+					colst[x - vis.x1] = byte 16r63;	# c
+					ccols++;
+				}
+			}
 			pos += ln + 4;
 		}
 	}
+	# TEMP report fully-clipped-out sprites with clip attribution
+	if (dbg && ccols > 0) {
+		sys->print("CMISS f=%d vx=%d vy=%d va=%d gx=%d gy=%d sc=%d x1=%d x2=%d c=%d %s\n",
+			dbgframes, vx, vy, vangle, vis.gx, vis.gy, vis.scale,
+			vis.x1, vis.x2, ccols, string colst);
+		n := 0;
+		for (x := vis.x1; x <= vis.x2 && n < 6; x++) {
+			if (colst[x - vis.x1] != byte 16r63)
+				continue;
+			fi := cltopfrom[x];
+			bi := clbotfrom[x];
+			s1n := -1;
+			s2n := -1;
+			se1 := 0;
+			se2 := 0;
+			dx1 := 0;
+			dx2 := 0;
+			ds1 := 0;
+			ds2 := 0;
+			ox := 0;
+			tsp := 1;
+			ps := -1;
+			if (fi >= 0) {
+				s1n = dssegs[fi].segnum;
+				se1 = evalscale(dssegs[fi], x);
+				dx1 = dssegs[fi].x1;
+				dx2 = dssegs[fi].x2;
+				ds1 = dssegs[fi].s1;
+				ds2 = dssegs[fi].s2;
+				ox = dssegs[fi].ox1;
+				tsp = dssegs[fi].tspan;
+				ps = pointonsegside(vis.gx, vis.gy, dssegs[fi].segnum);
+			}
+			sys->print("  x=%d gz=%d gzt=%d top=%d fr=%d (seg %d s=%d dx=%d..%d ds=%d..%d ox=%d ts=%d ps=%d) bot=%d fr=%d\n",
+				x, vis.gz, vis.gzt, sptop[x], fi, s1n, se1,
+				dx1, dx2, ds1, ds2, ox, tsp, ps, spbot[x], bi);
+			n++;
+		}
+	}
+	# TEMP: projected sprite whose posts never touch the screen rows
+	# (silent vanish: no CMISS record fires because ccols==0)
+	if (dbg && nscr == 0)
+		sys->print("POFF f=%d gx=%d gy=%d sc=%d x1=%d x2=%d gz=%d gzt=%d tmid=%d sprtop=%d\n",
+			dbgframes, vis.gx, vis.gy, vis.scale, vis.x1, vis.x2,
+			vis.gz, vis.gzt, vis.texturemid, sprtop);
 }
 
 # scan drawsegs for clipping, then draw (vanilla R_DrawSprite):
@@ -1458,6 +1581,8 @@ drawspscan(vis: ref Vissprite)
 	for (x := vis.x1; x <= vis.x2; x++) {
 		sptop[x] = -2;
 		spbot[x] = -2;
+		cltopfrom[x] = -1;
+		clbotfrom[x] = -1;
 	}
 	for (i := nds - 1; i >= 0; i--) {
 		ds := dssegs[i];
@@ -1493,13 +1618,17 @@ drawspscan(vis: ref Vissprite)
 			sil &= ~SIL_TOP;
 		if ((sil & SIL_BOTTOM) != 0) {
 			for (x = r1; x <= r2; x++)
-				if (spbot[x] == -2)
+				if (spbot[x] == -2) {
 					spbot[x] = ds.bot[x];
+					clbotfrom[x] = i;
+				}
 		}
 		if ((sil & SIL_TOP) != 0) {
 			for (x = r1; x <= r2; x++)
-				if (sptop[x] == -2)
+				if (sptop[x] == -2) {
 					sptop[x] = ds.top[x];
+					cltopfrom[x] = i;
+				}
 		}
 	}
 	for (x = vis.x1; x <= vis.x2; x++) {
