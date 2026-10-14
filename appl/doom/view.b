@@ -39,9 +39,8 @@ fsine:	array of int;	# local sine table, built once in init()
 # camera state (set at start of render)
 vx, vy, vz:	int;	# 16.16
 	vangle:		int;	# BAM
-	# TEMP diagnostics (sprite clip debugging): auto sweep
+	# TEMP diagnostics (sprite clip debugging, silent unless -v)
 	dbgframes:	int;
-	dbgcx, dbgcy:	int;
 	cltopfrom, clbotfrom: array of int;
 vcos, vsin:	int;	# 16.16
 
@@ -621,19 +620,29 @@ addline(segnum: int)
 	u1 = seg.offset + sd.textureoffset;
 	u2 = u1 + linelen;
 
-	# clip endpoints behind the near plane.
-	# interpolation is in wall-parameter space (affine) so linear
+	# clip endpoints at/behind the near plane (d < FRACUNIT/4).
+	# Vanilla has no near plane (angle-space clipping), but our
+	# screen-x basis needs finite endpoints: snapping to the d=0.25
+	# crossing keeps (ox, s) on the true perspective line, so the
+	# on-screen interpolation stays exact (the dropped sliver is
+	# always off-screen).  Merely clamping dd for the scale (old
+	# code) left ox true while s maxed, tilting the whole basis:
+	# columns near that end rendered at wildly wrong depth/offset
+	# for exactly the frames an endpoint sat in (0, 0.25) -- the
+	# 1-frame wall glitch at grazing corners/doorframes/steps.
+	# Interpolation is in wall-parameter space (affine) so linear
 	# frac is exact here; frac itself needs big: (-d1)<<16
 	# overflows int32 for far-behind endpoints (16.16 << 16).
-	if (d1 <= 0) {
-		if (d2 <= 0)
-			return;
-		frac := int((big(-d1) << 16) / big(d2 - d1));	# 16.16
+	# Both ends inside: degenerate sliver at the camera, skip.
+	if (d1 < FRACUNIT / 4 && d2 < FRACUNIT / 4)
+		return;
+	if (d1 < FRACUNIT / 4) {
+		frac := int(((big(FRACUNIT) / big(4) - big(d1)) << 16) / (big(d2) - big(d1)));	# 16.16
 		l1 = l1 + rend->fixedmul(l2 - l1, frac);
 		d1 = FRACUNIT / 4;	# small positive depth
 		u1 = u1 + rend->fixedmul(u2 - u1, frac);
-	} else if (d2 <= 0) {
-		frac := int((big(-d2) << 16) / big(d1 - d2));	# 16.16
+	} else if (d2 < FRACUNIT / 4) {
+		frac := int(((big(FRACUNIT) / big(4) - big(d2)) << 16) / (big(d1) - big(d2)));	# 16.16
 		l2 = l2 + rend->fixedmul(l1 - l2, frac);
 		d2 = FRACUNIT / 4;
 		u2 = u2 + rend->fixedmul(u1 - u2, frac);
@@ -1819,10 +1828,10 @@ snaperr:	string;
 # zero per-frame allocation); review mode steps through slots and
 # snapshots any of them.  Per-seg clip slices are packed (span lengths
 # vary); a frame whose clips exceed CLIPPOOL is marked invalid.
-RINGSZ:		con 35;		# ~1s of history at 35Hz
+RINGSZ:		con 105;	# ~3s of history at 35Hz
 RINGMOBS:	con 256;	# max mobjs stored per frame
-CLIPPOOL:	con 8192;	# packed top/bot ints per frame
-MIDPOOL:	con 2048;	# packed masked col/flag ints per frame
+CLIPPOOL:	con 4096;	# packed top/bot ints per frame (~3x observed max)
+MIDPOOL:	con 1024;	# packed masked col/flag ints per frame
 RingRec: adt {
 	valid, tic:	int;	# tic = dbgframes at capture
 	vx, vy, vz, vangle, vcos, vsin:	int;

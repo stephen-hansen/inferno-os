@@ -493,3 +493,35 @@ Milestones (each independently testable)
           DEMO1: sim identical, PROJ identical, clip checker clean
           (80396 lines, 0 violations), pool 256->~20.  USER-CONFIRMED
           FIXED.
+          BUG FIX (1-frame left-edge wall glitch at grazing corners -
+          user report: texture intact, wrong offset/depth for 1 frame
+          at stairs, snaps back): the dd depth clamp
+          (dd = max(d, FRACUNIT/4)) tilted the scale basis when a wall
+          endpoint sat microscopically in front (0 < d < 0.25): ox
+          stayed at the true exploded projection while s maxed at the
+          clamp, so on-screen columns near that end rendered at up to
+          4x wrong depth.  Proven vs raycast ground truth on the
+          user's glitch frame (E1M1 seg 303, endpoint depth +0.039u):
+          old basis gives 23-50% of true scale across the span, fixed
+          basis matches truth to 0.2% every column.  Fix: extend the
+          near-plane clip from d <= 0 to d < FRACUNIT/4 (snap to the
+          0.25 crossing, keeping (ox,s) on the true perspective line;
+          dropped sliver is always off-screen); skip the seg when
+          both ends are inside (degenerate, unreachable past 16u
+          collision radius).  Handoff at d = 0.25 is seamless (snapped
+          frac = 0).  Validated: seg-basis oracle updated to the new
+          formulas; Python simulation of the new branch with
+          engine-exact arithmetic reproduces raycast truth; normal
+          frames unaffected (no endpoint in the slab -> identical
+          code path); build clean, smoke clean.  USER VISUAL
+          CONFIRMATION PENDING at stair/door corners.
+          REMOVED (user request): demo playback (-demo1, desynced),
+          gametest (-g), and the other dev-test modes (-d/-t/-r/-m/-p
+          with videotest/rendertest/maptest/walltest).            Diagnostics
+          stay: F1 snapshot + F2 ring review + -v (PDROP/PROJ/CMISS/
+          POFF/TRIP).  usage is now: doom [-v] [doom.wad].
+          RING BUFFER 35 -> 105 frames (~3s) at user request, for
+          catching rare glitches; masked clip pool 2048->1024,
+          CLIPPOOL 8192->4096 (still 3x observed max; overflow marks
+          frame invalid, never corrupts); review hold-scroll sped up
+          (every 3rd iter).
