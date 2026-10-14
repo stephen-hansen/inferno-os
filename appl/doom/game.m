@@ -1,10 +1,10 @@
 # Play simulation: mobj thinkers, player movement, collision
 # clipping, and the 35Hz tic loop.  Brute-force line/thing checks
-# replace the blockmap (475 lines on E1M1 is cheap at 35Hz) and
-# P_SlideMove is a momentum-kill stub until intercepts are ported.
-# Item pickup, weapons/psprites, line specials and AI actions are
-# left for later milestones; action routines from the state table
-# are dispatched as no-op stubs for now.
+# replace the blockmap (475 lines on E1M1 is cheap at 35Hz);
+# P_SlideMove is ported (flush-to-wall + along-wall redirect over
+# brute-force intercepts).  Item pickup, weapons/psprites, line
+# specials and AI actions are left for later milestones; action
+# routines from the state table are dispatched as no-op stubs.
 #
 # Reference: doomgeneric p_mobj.c p_map.c p_maputl.c p_user.c
 # p_tick.c g_game.c (GPL-2).
@@ -169,4 +169,8 @@ Game: module {
 	consoleplayer:	fn(): ref Player;
 	getleveltime:	fn(): int;
 	prandom:	fn(): int;
+
+	# vanilla R_PointToAngle relative to (x1,y1) in BAM; used by the
+	# renderer to pick sprite rotations
+	pointtoangle2:	fn(x1, y1, x2, y2: int): int;
 };

@@ -4,7 +4,19 @@ Doom for Inferno — build plan
 Goal: run shareware Doom (doom1.wad) under hosted emu, engine rewritten
 in Limbo.  Reference spec: doomgeneric's 5-function platform seam
 (DG_Init, DG_DrawFrame, DG_SleepMs, DG_GetTicksMs, DG_GetKey) — we port
-the seam to Inferno and translate the engine body C -> Limbo.
+the seam to Inferno and translate the engine body C -> Limbo.  Target:
+a full, vanilla-faithful E1 episode playthrough (monsters fight back,
+doors open, exit works, status bar/HUD present, SFX audible).
+
+Build / run
+-----------
+  build   cd /home/steve/inferno-os/appl/doom && \
+          PATH=/home/steve/inferno-os/Linux/386/bin:$PATH mk install
+  run     cd /home/steve/inferno-os && DISPLAY=:0 \
+          ./Linux/386/bin/emu /dis/doom/doom.dis doom1.wad
+  modes   doom -d (WAD dump) -t (plasma fps) -r (texture) -m (map
+          check) -g (105-tic sim) -p (walltest autopilot);
+          no flag = play E1M1 (skill hardcoded MEDIUM for now)
 
 Platform services available in-tree (verified):
   blit      Draw->Image.writepixels(dst, r, data), module/draw.m:190;
@@ -13,8 +25,9 @@ Platform services available in-tree (verified):
   screen    Display.allocate(nil) then draw/writepixels on
             display.image (appl/cmd/wish.b path); no Tk, no wm needed
   clock     Sys->millisec(), Sys->sleep(), module/sys.m:141,153
-  keys      /dev/keyboard + /dev/pointer readers
-            (appl/cmd/wish.b spawn pattern)
+  keys      /dev/scancode raw keycodes (press = code, release =
+            code|0x80) via kbdreader -> buffered event chan
+  pointer   /dev/pointer (mouse) — unused so far (milestone 25)
   audio     /dev/audio + /dev/audioctl, enc pcm, rate 11025
             (emu/port/audio-tbls.c — exactly Doom's SFX rate)
 
@@ -28,263 +41,778 @@ Layout
                    things as adts; shared ref Sectors (module)
   view.m/view.b    world-view renderer: BSP walk, seg clip, wall
                    columns, two-sided upper/lower (module)
-  doom.b           main command; grows with each milestone
+  info.m/info.b    generated state/mobj tables (geninfo.py; do not
+                   re-read to "verify")
+  game.m/game.b    play simulation: tic loop, movement, collision,
+                   thinkers (module)
+  doom.b           main command: input, main loop, present
   doom1.wad        shareware IWAD (data, place in $ROOT or pass path)
   PLAN             this file
+  PLAN.done        historical close-out log for milestones 1-7
+
+  planned (added by milestones below):
+  sound.m/sound.b  SFX engine (17; no-op stub lands in 9)
+  spr              sprite asset side lives in rend.b or a new module
+                   — decide at milestone 8
+
+Status snapshot (what works today)
+----------------------------------
+  [x] WAD load, palette/colormap, texture+flat compositing
+  [x] 320x200 XRGB32 present path, input (scancode down/up), 35Hz
+      tic clock decoupled from keys
+  [x] map load: THINGS/LINEDEFS/SIDEDEFS/VERTEXES/SEGS/SSECTORS/
+      NODES/SECTORS (REJECT/BLOCKMAP found but NOT parsed)
+  [x] world render: BSP walk, wall columns (one-sided + two-sided
+      upper/lower), floor/ceiling visplanes, sky, vanilla lighting
+      (zlight/scalelight), occlusion model verified
+  [x] play sim: spawn per skill, mobj/state tables, P_Random,
+      gravity/bob/friction movement, brute-force collision, step
+      up/down, P_SlideMove (flush + along-wall)
+  [ ] EVERYTHING else: thing sprites, weapon sprites, combat,
+      pickups, damage/death, AI, line/sector specials, sound,
+      status bar, HUD, automap, menu, intermission, level
+      progression, finale, demos, cheats, mouse, save/load, music
+  Each gap below is a milestone; nothing else is hidden here.
+
+Known latent issues (found during the survey; fixed by their
+milestones — do not "discover" them again)
+---------------------------------------------
+  - doom.b:688/689: Space does `btn |= 1` labelled BT_USE and Ctrl
+    `btn |= 2` labelled BT_ATTACK, but game.m defines BT_ATTACK=1,
+    BT_USE=2 — bits are SWAPPED.  Dormant (nothing reads buttons
+    yet).  Fixed in milestone 10 (first consumer).
+  - game.b:696: missile explode-on-sky-ceiling check skipped ("no
+    skyflatnum yet").  Milestone 10.
+  - game.b:910: PIT_CheckThing missile/special branches stubbed.
+    Milestones 9/10.
+  - game.b:969 + 896: spechit accumulation + special-line crossing
+    "later".  Milestones 10/13.
+  - game.b:750: P_FloatChase ("float-to-target") skipped.  12.
+  - game.b:473: doaction() is the single no-op hook for ALL A_*
+    state routines.  11/12.
+  - game.b:651: P_PlayerInSpecialSector / weapon change / use lines
+    "later".  10/11/14.
+  - game.b:622: use-button respawn in deaththink.  16.
+  - game.b:1267: P_UpdateSpecials / P_RespawnSpecials "later".  13.
+  - game.m:135: totalkills/totalitems exist, totalsecret does not.
+    14 (consumed by 16).
+  - view.b:529: two-sided midtextures explicitly skipped ("draw
+    upper and lower, skip middle").  8.
+  - doom.b:411/561: skill hardcoded SK_MEDIUM.  21.
 
 Milestones (each independently testable)
 ----------------------------------------
-  [x] 1  WAD loader + directory dump + lump read     (doom -d)
-  [x] 2  video path: 320x200 framebuffer blitted onto the emu
-         screen via writepixels; measure fps
-         (doom -t: xor-plasma, ~101 fps at 320x200 XRGB32;
-         screen is win-x11a's forced 32bpp, so the framebuffer
-         is XRGB32 BGRX, not RGB24 — RGB24 writes fail with
-         "loadimage: insufficient data")
-  [x] 3  renderer: COLORMAP + PLAYPAL, flats, walls
-         (doom -r: vanilla R_DrawColumn/R_DrawSpan, eager
-         texture compositing from patches, 49 fps full-screen
-         STARTAN3 wall + FLOOR4_8 floor with light gradients)
-   [x] 4  map load: LINEDEFS/SECTORS/SIDEDEFS/VERTEXES,
-          geometry structs as Limbo adts
-          (doom -m: map.m/map.b Level adt, shared ref Sectors so
-          movers can mutate heights; E1M1 checks all match vanilla:
-          467 v / 475 l / 648 s / 85 sec / 138 things, two-sided
-          173, player1 1056,-3616 angle 90)
-  [x] 5  game tics: player movement, mobj state tables,
-         Doom's tick loop (35Hz) driven from Sys->millisec
-         (doom -g: gametest runs 105 tics at exactly 35 tics/sec;
-         spawn 1056,-3616 angle 90 health 100 state 149 S_PLAY;
-         95 mobjs / 6 kills / 37 items on E1M1 skill medium;
-         brute-force collision over 475 lines + all mobjs;
-         geninfo.py generates info.m/info.b from info.c/info.h;
-         fixed bare-identifier enum bug: Limbo merges consecutive
-         `A, B, C,` lists into one declaration ending at the next
-         `: con value` — all SPR_/S_/MT_ constants evaluated to 1
-         until geninfo.py was fixed to emit `: con iota;`)
-  [x] 6  input: /dev/scancode raw keycodes -> event chan
-         (rewritten: /dev/keyboard had no key-up, relied on X
-         auto-repeat + a hold-decay hack — stuttered between
-         repeats, leaked movement after release, felt buffered)
-         - kbdreader opens /dev/scancode: raw X11 keycodes,
-           press=code, release=code|0x80 (emu win-x11a.c xkeyboard
-           gkscanq path; opening /dev/scancode routes ALL key
-           events there — /dev/keyboard goes silent)
-         - keysym() maps evdev+8 keycodes (Esc=9, W=25, A=38,
-           S=39, D=40, Space=65, arrows=111/113/114/116,
-           LCtrl=37, RCtrl=105) to keystate indices; unknown
-           codes ignored
-         - keystate is 0/1 (true down/up), NO decay
-         - main loop: key events ONLY update keystate and
-           `continue`; tics come SOLELY from the tick timer —
-           key-driven tics made the game surge at auto-repeat
-           rate and stutter between repeats (the "not smooth"
-           bug); key-to-motion latency = one tic max (28ms)
-         - keyboard.m is header-only: define Esc/Up/Down/Left/
-           Right/LCtrl/RCtrl constants inline in doom.b
-         - floor renders correctly via drawspan + convert + present
-   [x] 7  world view: BSP walk -> seg clip -> wall columns DONE;
-          floor/ceiling visplanes DONE (r_plane.c port)
-          viewx/viewy/viewz/viewangle from console player;
-          occlusion array (solid[] / ceilingclip/floorclip);
-          projection: screenx = centerx - left*proj/depth;
-          depth = dx*cos+dy*sin, left = dy*cos-dx*sin;
-          view.m/view.b module; walls render textured (320 cols/frame);
-          two-sided lines: upper/lower textures + portal occlusion
-          with clamping; one-sided: midtexture columns
-          visplanes: findplane/markplane/drawplanes + mapplane;
-          per-column [top,bottom] mark, span-run accumulator -> mapplane;
-          yslope[y]=proj/|dy| (16.16), distscale[x]=1/cos;
-           BUG FIX: basexscale/baseyscale must be vsin/vcos DIVIDED by
-           proj (vanilla folds /centerxfrac into them).  bare vsin/vcos
-           made ds_xstep ~160x too large -> texture aliased to a solid
-           color (the flat-blue floor); added fixeddiv to rend.
-            BUG FIX (SUPERSEDED by occlusion rework below): markplane
-            unioned each column's strips into one [top,bottom] range, so a
-            farther plane spanned gaps that nearer planes owned -> lower
-            blue floor painted over higher gray floor, seams not flush.
-            Split into markfloor/markceil with shared per-column
-            floorline[x] (init h) / ceilline[x] (init -1).  This bounded
-            each plane correctly but broke on cross-plane interactions
-            (vanilla shares ONE clip pair between planes and walls); the
-            floorline/ceilline system was fully replaced - see the
-            vanilla-clip occlusion rework entry below.
-            RESOLVED (user-confirmed): floor/ceiling rotation shear is
-            gone.  Final root causes, found by deriving vanilla geometry
-            end-to-end and simulating the Limbo logic numerically:
-            1. buildfsine FREQUENCY/PHASE: real Doom is
-               finesine[k]=round(sin((k+0.5)*PI/4096)*65536) (full circle
-               at 8192, half-step phase; verified vs tables.c, max err 1).
-               The port generated sin(k*PI/2048) - DOUBLE frequency, no
-               phase, and a Taylor series truncated at x^7 (0.23 rad error
-               near pi).  Every origin lookup was garbage regardless of
-               sign/algebra fixes.
-            2. xtofine BINARY SEARCH: compared sn*proj vs tds*cs (scale
-               mismatch, rhs ~409x lhs) so the search returned the
-               +/-1024 boundary for nearly every column; and stored +delta
-               where vanilla xtoviewangle is NEGATIVE for x>centerx (ray
-               angle = viewangle - delta), mirroring the origin against
-               the step.  Fixed to sn<<16 vs tds*cs and (-lo)&FINEMASK.
-            3. distscale OVERFLOW: isqrt(sum<<16) overflowed int32 for
-               sum>32767 (|tan|>0.63, outer third of each screen side),
-               falling back to 1.0 while the origin angle still rotated.
-               Rebuilt distscale from xtofine like vanilla (r_main.c:734:
-               FixedDiv(FRACUNIT, abs(finecosine[xtoviewangle>>19]))),
-               which also ties length to the same quantized column angle
-               as the origin.
-            4. yslope half-pixel: vanilla dy=abs(((i-h/2)<<16)+32768);
-               the +32768 bias was dropped.  yslope=(proj<<32)/dy now.
-            (baseyscale sign fix from the prior pass was correct
-            algebra (+vcos/(proj<<16)) but was not the shear cause.)
-            REPEAT-MISTAKE NOTE: individual pieces were "verified" in
-            isolation across several passes while shear persisted.  What
-            finally worked: derive the FULL pipeline (table formula ->
-            column angle -> origin -> step) from the raw vanilla source
-            and compare against exact geometry numerically before
-             touching code.  Never trust piecewise verification.
-           RESOLVED (model-verified, user validation pending): floor/
-           ceiling occlusion rework - replaced floorline/ceilline with
-           vanilla's shared-clip model.  Full pipeline derived from raw
-           r_segs.c (R_RenderSegLoop/R_StoreWallRange), r_plane.c
-           (R_CheckPlane), r_bsp.c (R_Subsector), then encoded as a
-           Python state machine (/tmp/opencode/occ_model.py, 11 scenarios
-           incl. portals/steps/sky/gaps): port_fix claims + final open
-           sets + drawn rows EXACTLY equal vanilla on every scenario,
-           while port_now fails exactly the predicted bugs.  Root causes
-           fixed: (1) back-sector plane claims at portals double-claimed
-           flat portals / painted back floors over front floors at
-           steps - vanilla claims back planes only via the NEXT seg;
-           (2) markfloor bottom off-by-one (was inclusive fclip, vanilla
-           is floorclip-1); (3) no mutual clip clamps on two-sided strip
-           marks; (4) floorline/ceilline cross-plane misbehavior (far
-           floor discarded when t>b -> holes; ceilline overlap row);
-           (5) no viewz/sky gate on plane choice -> garbage claims when
-           floor is above the eye (vanilla: floorplane only below eye,
-           ceilingplane only above eye or sky); (6) untextured upper "-"
-           advanced the clip past undrawn rows -> black band (advance
-           only to the front ceiling edge); (7) one-sided continue-before-
-           marks skipped claims+close on degenerate walls; (8) min/max
-           union fused disjoint strips across gaps (A-B-A ceilings) ->
-           now per-seg R_CheckPlane spawns a duplicate when the seg's
-           range already contains a claim, so each column row has exactly
-           one owner and draw order is irrelevant.  solid[] now stores
-           vanilla ceilingclip+1/floorclip (first-open/one-past-last);
-           one-sided walls close solid[2x]=h, solid[2x+1]=-1; dead
-           floorline/ceilline/markz/marklight/markflat removed.
-           NOTE for future sprite work: sprites will need vanilla
-           sprtopclip semantics - solid[] no longer holds wall edges.
-           BUG FIX (left-edge wall corruption): the per-column frac used
-           for scale/z/u interpolation was computed in int32 as
-           ((x-ox1)<<16)/tspan, with a comment assuming |x-ox1|<=320.
-           But ox1 is the ORIGINAL projected endpoint, kept unclamped as
-           the interpolation basis - a near-plane-clipped endpoint
-           projects to |x| ~ 100k px, so for segs extending off the
-           LEFT screen edge (x-ox1)~64000 and <<16 overflows int32.
-           Right-extending segs never overflow (ox1 stays on-screen ->
-           x-ox1 <= 320), which is why only the leftmost side broke.
-           Garbage frac (negative or far-off positive, position/angle
-           dependent) extrapolates scale/id: magnified ("zoomed") wall
-           texture, or scale/id <= 0 -> column skipped ("textures not
-           rendering").  Verified numerically: ox1=-64000 gives frac
-           -0.024 where truth is 0.995, on every column.  Now computed
-           in big (result <= 65536 since x <= ox2) in both addline and
-           drawtwosided column loops.
-          sky (F_SKY1) DONE (user validation pending): derived from
-          vanilla r_plane.c R_DrawPlanes:390, r_sky.c/h, r_segs.c:525,
-          r_main.c:719.  Sky is NOT a flat - it is drawn as wall
-          texture columns from the SKY1 TEXTURE (shareware episode 1;
-          g_game.c maps episodes to SKY1/SKY2/SKY3), fullbright
-          (colormap row 0), iscale = pspriteiscale = 1.0 (one texel
-          per screen pixel), texturemid = 100*FRACUNIT (skytexturemid)
-          so texture row = screen row when centery=100, wrapping every
-          tex.height rows; column = (viewangle+xtoviewangle[x])>>22
-          (ANGLETOSKYSHIFT) = ((vangle>>19)+xtofine[x])>>3 in fine
-          units, wrapped by tex.width - the sky turns with the view,
-          no parallax.  Also: findplane normalizes sky to z=0/light=0
-          (vanilla R_FindPlane:218 - all skys map together, seamless
-          at sky-sky portals), and the vanilla sky hack (r_segs.c:525):
-          when both ceilings are sky the upper texture collapses to
-          zero height and is never drawn (outdoor height changes flow
-          as continuous sky; our undrawn-upper clip path already
-          matches vanilla's markceiling branch).  Numerically checked:
-          vertical mapping exact; column matches vanilla everywhere
-          except <=1 texture column at quantization boundaries near
-          the wrap (both quantize to 1/1024 turn; fine-unit phase
-          differs by <1/8 column - invisible, seamless via wrap).
-           F_SKY1 marker flat stays excluded from rflat (rend.b:99);
-           drawplanes special-cases it by name before the flat lookup.
-            lighting (outdoor pitch-black fix) DONE (user-validated):
-            the port computed light = (sec.lightlevel*31)/255
-           and passed it straight through as the COLORMAP ROW
-           (drawcolumn/drawspan: cm = row*256) - INVERTED vs vanilla.
-           COLORMAP row 0 = fullbright, row 31 = darkest; E1M1 outdoor
-           sectors are lightlevel 255/224 -> old rows 31/27 = pitch
-           black, and the old curves cross at 128 (old row 15), which
-           is exactly why interiors looked plausible and only the
-           outside went black.  Parsed doom1.wad (sectors lump 26-byte,
-           name-based): 85 sectors, 7 sky sectors, outdoor lights
-           255 x6 + 224 x1, indoor histogram 128..255.  Full vanilla
-           model now implemented (r_main.h constants, R_InitLightTables
-           r_main.c:610, scalelight build in R_SetViewSize r_main.c:741,
-           R_MapPlane r_plane.c:160, R_StoreWallRange r_segs.c:649):
-           light index i = lightlevel>>LIGHTSEGSHIFT (extralight=0, no
-           light-amp pickups) picks 1 of 16 bands; startmap = (15-i)*4;
-           zlight[i][j] (j = plane distance>>LIGHTZSHIFT, clamp
-           MAXLIGHTZ-1=127) = clamp(startmap - scale/2) with scale =
-           FixedDiv((w/2)*FRACUNIT, (j+1)<<LIGHTZSHIFT)>>LIGHTSCALESHIFT
-           (= 160/(j+1) at w=320); scalelight[i][j] (j =
-           wall scale>>LIGHTSCALESHIFT, clamp MAXLIGHTSCALE-1=47) =
-           clamp(startmap - j*320/w/DISTMAP) (= startmap - j/2).
-           Wall lightnum gets the orientation hack (r_segs.c:649-653:
-           horizontal segs -1, vertical +1, clamp [0,15]).  Visplane
-           light field now stores the light INDEX (claims pass pllight);
-           mapplane picks the row per distance band; addline and
-           drawtwosided column draws pick it per scale band (scalelight
-           was built in view.b init alongside the other tables).
-            Numeric check BEFORE editing: lightlevel 255 -> row 0 at
-            every band (outdoors fullbright), 192 -> 0 near .. 12 far,
-            128 -> 0 near .. 28 far (vanilla distance darkening), walls
-            row 0 at scale index 47 (near, bright) .. startmap far.
-            P_SlideMove (wall slide + flush-to-wall) DONE (user
-            validation pending): the port zeroed momentum on a blocked
-            move (milestone 5 stub) instead of vanilla's flush + along-
-            wall redirect, so the player stopped short of walls and
-            could not slide.  Root cause: every other collision piece
-            (pointonlineside, boxonlineside, pitcheckline,
-            pitcheckthing, checkposition, trymove step checks,
-            xymovement, map slopetype/bbox, tmbbox conventions) was
-            already byte-equivalent to vanilla; only the slide pipeline
-            was missing.  Full transcription now in game.b from raw
-            sources: P_SlideMove + P_HitSlideLine + PTR_SlideTraverse
-            (p_map.c:622-830), P_InterceptVector + P_PointOnDivlineSide
-            + PIT_AddLineIntercepts crossing test + P_TraverseIntercepts
-            maxfrac=FRACUNIT stop (p_maputl.c), R_PointToAngle octant
-            body (r_main.c:262), SlopeDiv (tables.c), FixedDiv
-            saturation (m_fixed.c), and the EXACT vanilla tantoangle
-            [2049] table embedded in init() (extracted from tables.c,
-            not recomputed from atan).  No blockmap: the three leading-
-            corner rays brute-force ALL lines with vanilla's crossing
-            test and frac in [0,FRACUNIT] - order-independent vs the
-            min-frac scan (stops at first blocker), vanilla's blockmap
-            blocks only prefilter candidates.  Signed/unsigned edges:
-            deltaangle > ANG180 as s32 (negative but != ANG180), u32
-            >>19 & FINEMASK = logical shift, SlopeDiv unsigned (num<<3)
-            wrap done in big, saturating FixedDiv before rend's raising
-            div (rend->fixeddiv never touched).  Numeric checks BEFORE
-            editing (/tmp/opencode/slide_check.py): SlopeDiv port ==
-            vanilla 3012 cases; pointtoangle2 worst 0.635 fine steps
-            vs exact atan2 (vanilla's own table quantization);
-            hitslide direction residual <=2% of the original normal
-            component, length inside the AproxDistance 6% envelope;
-            intercept frac divergences only at crossing_sin ~2e-5
-            (near-parallel) where vanilla's FixedMul(>>8) truncation
-            is identical and P_TraverseIntercepts drops the frac
-            anyway; flush sim: every -0x800 fudge stays clear of the
-            wall AABB.  Startup smoke: emu timeout 8s, E1M1 t=70, no
-            errors, no process left running.
-    [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
-         -> /dev/audioctl "enc pcm" "rate 11025"
-  [ ] 8  polish: menus, status bar, demo playback
+Completed — detail logs in PLAN.done:
+  [x] 1  WAD loader + directory dump                (doom -d)
+  [x] 2  video path: 320x200 -> writepixels         (doom -t)
+  [x] 3  renderer: COLORMAP/PLAYPAL, flats, walls   (doom -r)
+  [x] 4  map load: geometry adts                    (doom -m)
+  [x] 5  game tics: movement, state tables, tick    (doom -g)
+  [x] 6  input: /dev/scancode true down/up, timer-
+         driven tics, latency rules
+  [x] 7  world view: BSP/seg/visplanes/sky/lighting/
+         P_SlideMove — user-validated
+
+New milestones: gameplay first (visibility -> damage -> guns -> AI
+-> specials -> progression), then presentation, then infrastructure.
+
+================================================================================
+Part A — world visibility
+================================================================================
+
+  [ ] 8  Thing sprites + masked two-sided midtextures
+         WHY: the world is empty — monsters/items never render;
+         two-sided midtextures (fences, grates) are skipped.
+         SOURCES: r_things.c (R_InitSpriteDefs, R_InstallSpriteLump,
+           R_ProjectSprite, R_DrawSprite, R_DrawVisSprites,
+           R_DrawMasked), r_data.c (sprite def/patch init),
+           r_segs.c (R_RenderMaskedSegRange + drawsegs masked
+           accumulation in R_StoreWallRange), r_main.c
+           R_RenderPlayerView call order, r_draw.c (fuzz column).
+         WORK:
+           - sprite assets: scan S_START..S_END (map of lumps);
+             names are SSSSFFRR / SSSSFF (rotationless); compose
+             patch posts into dense columns like textures (rend.b
+             pattern), store width/height/leftoffset/topoffset in
+             16.16; build spritedefs[frame][rot] index table;
+             "A_" frames with no rot use the flat frame
+           - vissprite pool: preallocate MAXVISSPRITES refs at init
+             (GC rule: no alloc per frame), fields per r_things.h
+           - R_ProjectSprite: frustum cull by R_PointToAngle vs
+             viewangle (the pointtoangle2 just added in game.b is
+             a model — renderer needs its own or shares), x =
+             projx, scale = proj/depth, texturemid from z +
+             topoffset, x1/x2 clip to screen
+           - R_DrawSprite column clipping: derive from raw
+             r_things.c against OUR solid[] (PLAN.done note: our
+             solid[] holds vanilla ceilingclip+1/floorclip, NOT
+             wall edges — model this numerically like occ_model.py
+             BEFORE editing; sprites and the existing clip model
+             must agree or planes/holes regress)
+           - MF_SHADOW: R_DrawFuzzColumn (vanilla fuzzmap
+             refire decay); no other translations needed
+           - masked 2S mids: collect per seg where midtexture != "-"
+             and backsector set, draw in the vanilla R_DrawMasked
+             order together with sprites (derive exact ordering:
+             R_RenderPlayerView = BSP -> planes -> masked)
+           - view.m interface must expose mobjs to render() (view.m
+             does not import game.m today; pass the array from
+             doom.b or import — decide here, keep it one way)
+           - player's own mobj skip semantics: derive from source
+         VALIDATE BEFORE EDITING: projection math (sprite screen
+           x/top/bottom vs exact geometry — Python, extend
+           /tmp/opencode/), clip state machine vs raw source; then
+           hand off.
+         DONE WHEN: monsters/items visible at correct depth vs
+           walls/planes; spectre fuzzes; E1M1 grates (if any) draw.
+         DEPS: none (first new milestone).
+
+================================================================================
+Part B — combat & simulation completeness
+================================================================================
+
+  [ ] 9  Damage, pickups & item effects (p_inter.c)
+         WHY: nothing in the world can be collected or killed; this
+         is the effect layer both player and monsters need.
+         SOURCES: p_inter.c (P_TouchSpecialThing, P_DamageMobj,
+           P_KillMobj, P_Give*/use- health/armor/ammo/weapons/keys/
+           powers, P_RadiusAttack), p_mobj.c (P_SpawnMapThing flag
+           handling), ditems/dstrings (names/messages — message
+           text can no-op until 19).
+         WORK:
+           - wire PIT_CheckThing's MF_SPECIAL branch (game.b:910)
+             -> P_TouchSpecialThing(mo, toucher) with vanilla
+             distance/height test; bonuses (health/armor/berserk),
+             ammo, weapons, keycards (E1: none), armor types
+           - P_DamageMobj: take-damage, MF count flags, pain
+             chance (rndtable), thrust (P_DamageMobj mom push),
+             player death -> PST_DEAD + sound hooks, gibbing
+             (health < -spawnhealth -> MF_CORPSE + gibs spawn),
+             telefrag no, obituary message hook (no-op until 19)
+           - P_KillMobj: drop items (no dropped items in shareware
+             — verify per mobjinfo), counts (killcount++), corpse
+             state
+           - P_RadiusAttack (A_Explode consumers come in 11/12 —
+             land the function now, callers follow)
+           - introduce sound.m interface + no-op sound.b here:
+             first call sites are pickup/pain/death sounds; every
+             later milestone adds call sites, milestone 17 fills
+             the body.  load nil-safe (init loads stub)
+           - PIT_CheckThing missile branch stays for 10 (it needs
+             P_DamageMobj — landing order within 9/10 is fine)
+         VALIDATE: give-values vs p_inter.c tables (numeric list);
+           damage/painchance bit tests; E1M1 walk-over pickup test
+           (health bonuses are on the spawn route).
+         DONE WHEN: walking over E1M1 pickups increments health/
+           ammo on a debug readout; dying sets PST_DEAD (debug key
+           applies damage until 10/12 provide sources).
+         DEPS: 8 (blood/puff visibility is cosmetic but the pickup
+           flash of items requires items drawn).
+
+  [ ] 10 Player use + attacks: hitscan, missiles, use-lines
+         WHY: no way to shoot or open doors; use-lines crossing is
+         also the substrate for specials (13).
+         SOURCES: p_map.c (P_LineAttack, P_AimLineAttack,
+           P_TraceAttack, P_UseLines, P_UseMobj, PTR_ShootTraverse,
+           PTR_UseTraverse), p_mobj.c (P_SpawnMissile,
+           P_SpawnPlayerMissile), p_user.c (P_PlayerThink button
+           processing: attackdown/usedown latches, BT_CHANGE),
+           p_spec.h/p_local.h (spechit, use range).
+         WORK:
+           - FIX doom.b:688/689 button bits (BT_ATTACK=1,
+             BT_USE=2) while wiring
+           - p_user button logic in playerthink (game.b:651):
+             BT_USE edge -> P_UseLines, BT_ATTACK edge ->
+             P_SetPspritePtr attack (real firing lands in 11 — 10
+             provides P_LineAttack/P_SpawnPlayerMissile)
+           - P_UseLines: 64*FRACUNIT view check, spawn use line,
+             PTR_UseTraverse collects SPECHIT (vanilla buffer
+             size — read p_local.h) when crossing; today's
+             "crossed special lines" comment in trymove (game.b:969)
+             becomes real: trymove records crossed one-sided
+             specials like vanilla PIT_CheckLine spechit (derive
+             exact semantics — vanilla does this in PIT_CheckLine,
+             not trymove; our brute force folds blockmap iteration
+             into checkposition, so add the same recording there)
+           - P_UseMobj / P_UseSpecialLine dispatch calls into 13's
+             handlers — until 13, a crossed/used special is a
+             no-op (interface only)
+           - P_AimLineAttack (autoaim: coarse angle scan via
+             P_PointOnLineSide traces + P_CheckSight? — derive;
+             it uses bulletslope), P_LineAttack (hitscan trace =
+             brute-force P_PathTraverse equivalent over lines with
+             PTR_ShootTraverse: one-sided = damage, two-sided =
+             glass/blocks rules), P_TraceAttack (damage + thrust)
+           - P_SpawnPlayerMissile (aim slope or straight),
+             P_SpawnMissile (generic monster missile), missile
+             flight already works (xymovement/zmovement/
+             explodemissile exist); ADD skyflatnum for the
+             game.b:696 ceiling-sky check
+           - MF_SKULLFLY path in xymovement already special-cased
+           - attack/hit sounds: sound.m call sites (stub body)
+         VALIDATE BEFORE EDITING: hitscan trace math vs exact
+           geometry (extend slide_check.py: frac/slope); use-range
+           bbox; autoaim step sizes vs raw source; button latch
+           truth table.
+         DONE WHEN: (with a debug fire key or once 11 lands) pistol
+           hitscan kills a sitting zombie in E1M1; use button +
+           facing a door line records a crossing.
+         DEPS: 8 (puff/blood sprites), 9 (damage).
+
+  [ ] 11 Weapons & psprites (p_pspr.c)
+         WHY: no weapon on screen, no firing loop, no ammo drain.
+         SOURCES: p_pspr.c (P_SetupPsprites, P_MovePsprites,
+           P_BringUpWeapon, all A_WeaponReady/Lower/Raise/
+           Fire*/ReFlash/etc actions), r_things.c R_DrawPSprite,
+           d_items.c (weapon/ammo info), info.c S_P_* states
+           (already in info.b), game.m Player fields (already
+           present: readyweapon, pendingweapon, weaponowned,
+           ammo[AM_*]).
+         WORK:
+           - doaction dispatch: extend game.b:473 doaction with a
+             table for PS_P (psprite) actions vs PS_PLAY/MOBJ —
+             vanilla splits by psprite vs mobj vs player; map the
+             action-name roster in info.b:25 to Limbo fns, first
+             the weapon ones (A_WeaponReady, A_Lower, A_Raise,
+             A_GunFlash, A_Fire*, A_ReFire, A_Punch, A_Saw,
+             A_BFGSpray..., A_Light0/1/2, A_CheckReload etc.)
+           - psprite state machine: psp array on Player, P_SetPs-
+             prite state table indexing, bob/positioning rules
+             (vanilla P_SetPspritePosition: sx/sy from
+             weaponstate), pause/refire
+           - P_SetupPsprites on weapon change; BT_CHANGE ->
+             pendingweapon (from 10's button logic)
+           - render: R_DrawPSprite (draw weapon sprite at screen
+             offsets, fullbright, clip y) — shares sprite machinery
+             from 8; add to view.b masked pass after things
+           - firing actions call 10's P_LineAttack /
+             P_SpawnPlayerMissile; A_GunFlash spawns muzzle
+           - ammo decrement, no-ammo -> auto switch
+           - sounds via 9's sound.m
+         VALIDATE: weapon state rows from info.b (S_P_* tics),
+           ammo tables vs d_items.c, psprite offset math vs r_things
+           c; user test for feel.
+         DONE WHEN: pistol/shotgun fire with animation, ammo drops,
+           switch weapons (2/3 keys), chaingun chain-fires.
+         DEPS: 8 (sprite draw), 10 (attack primitives), 9 (ammo
+           give + damage).
+
+  [ ] 12 Enemy AI (p_enemy.c + p_sight.c)
+         WHY: monsters spawn and stand frozen (doaction no-op);
+         E1M1 plays as a walking tour.
+         SOURCES: p_enemy.c (A_Look, A_Chase, A_FaceTarget, all
+           attack A_* — roster = info.b:25 names), p_sight.c
+           (P_CheckSight, direct-argless + reject matrix),
+           p_mobj.c (P_SetTarget, P_SpawnMissile target logic,
+           lost soul skullfly = already special-cased), m_random.
+         WORK:
+           - REJECT lump parse in map.b (bit matrix over sector
+             pairs) + fast-reject in P_CheckSight (trace without
+             reject is correct but slow — implement reject since
+             it is 3 lines)
+           - doaction table entries for every action referenced by
+             shareware states — script an extraction from info.b
+             so the checklist is generated, not remembered
+           - A_Look: hear range/sight -> P_CheckSight -> target,
+             play sound, MF_AMBUSH ("deaf") rules
+           - A_Chase: movecount/movedir/threshold logic,
+             P_NewChaseDir (8-dir + diagonal wall checks via the
+             existing collision), face-target pacing, no-fight-
+             close flag, A_FloatChase (enables game.b:750 skip),
+             A_VileChase (archvile not in shareware — but roster
+             extraction will tell; implement what shareware needs)
+           - attacks: PosAttack/SPosAttack/CPosAttack (hitscan
+             spread via P_Random), TroopAttack (imp fireball ->
+             P_SpawnMissile), SargAttack (melee), HeadAttack/
+             BruisAttack (plasma ball), SkullAttack (skullfly —
+             path exists), plus pain/scream/fall/A_Explode/
+             A_XScream/A_Pain/A_Fall/A_BossDeath as referenced
+           - monster missile spawns use 10's P_SpawnMissile;
+             damage lands via 9's P_DamageMobj
+           - reactiontime, lastlook (P_Random target search)
+           - pain chance/threshold: A_Chase stops attacking when
+             threshold > 0 (vanilla) — uses Mobj.threshold field
+             (already declared)
+         VALIDATE BEFORE EDITING: P_NewChaseDir dir tables vs raw
+           source (pure function — numeric exhaustive test);
+           sight-reject bit indexing vs p_setup/p_sight derivation;
+           roster extraction script (generated checklist).
+         DONE WHEN: imps/zombies/sprites actively chase and damage
+           the player on E1M1; can be killed; lost souls charge.
+         DEPS: 8, 9 (damage), 10 (attack primitives), 11 (so the
+           player can fight back with weapons).
+
+================================================================================
+Part C — specials & progression (make an episode completable)
+================================================================================
+
+  [ ] 13 Line & sector specials (p_spec.c family) — biggest systems
+         milestone; split into 13a/13b if needed, both before 14.
+         WHY: no doors/lifts/exits — E1M1 cannot be finished.
+         SOURCES: p_spec.c (special dispatcher: P_UseSpecialLine,
+           P_ShootSpecialLine, P_CrossSpecialLine, P_ChangeSwitch-
+           Texture, P_SpawnSpecials, P_UpdateSpecials, buttons,
+           tag helpers), p_doors.c, p_floor.c, p_plats.c,
+           p_ceilng.c, p_switch.c, p_lights.c (StrobeFlash/Glow/
+           LightFlash thinkers), p_telept.c, p_user.c
+           P_PlayerInSpecialSector is 14, p_local.h T_MovePlane,
+           p_mobj.c P_ChangeSector, g_game.c G_ExitLevel/
+           G_SecretExitLevel (flag only — transition lands in 16).
+         WORK (ordered):
+           - thinker generalization: runthinkers (game.b:515)
+             iterates a snapshot of mobjs only.  Introduce a
+             thinker list with a pick/mode tag {mobj, ceiling,
+             door, plat, floor, light, button, switch} so T_*
+             functions join the same 35Hz pass; removal rules per
+             vanilla (T_MovePlane status return, door thinkers
+             self-remove)
+           - EV_DoDoor/EV_DoFloor/EV_DoPlat/EV_DoCeiling core:
+             T_MovePlane (sector heights as 16.16, crunch/dest-
+             heights), floor types (turbo/slow/normal/down-wait-
+             up-stay/raise-to-match), door types (normal/open-
+             wait-close/fast/steel/raise), plat types (raise-
+             wait-down / down-wait-up + P_ChangeSector sweep),
+             ceiling (crushers slow/fast, raise-to-lowest)
+           - P_ChangeSector: move sector, walk mobjs (brute force:
+             test each against new floor/ceiling like vanilla's
+             blockmap thing iteration) and update floorz/ceilingz
+           - tags: P_FindSectorFromLineTag / lowest-surrounding
+             helpers (p_spec.c) — shared ref Sectors in map.b
+             already exist for mutation
+           - lights: P_SpawnSpecials (per-sector thinker spawn
+             from sector special: strobe/flicker/glow + phase via
+             P_Random; also leveltime blink support),
+             P_UpdateSpecials (switch/button light timers,
+             door/plat counters) — becomes the body of game.b:1267
+           - teleport: MT_TELEPORTMAN destination spawn
+             (P_SpawnMapThing hook in setuplevel), EV_Teleport +
+             P_TeleportMove (angle + height + no-drag rules)
+           - switches: P_ChangeSwitchTexture (texture swap on
+             first/second use + button timer list); WAD switch
+             lumps SW1*/SW2* parse via existing texture system
+           - line-special dispatch complete for E1: parse the
+             LINEDEFS special histogram for E1M1..E1M9 up front
+             (numeric pre-check: which types must exist) and use
+             it as the implementation checklist
+           - crossed-line firing: P_CrossSpecialLine from the
+             spechit buffer (built in 10) in P_XYMove's post-move
+             pass — derive vanilla order (P_TryMove -> specials)
+           - P_UseSpecialLine: activate type ranges (W1/W1-*
+             exit-able once, WR walk-repeat, S1/SR switch, G
+             gun/GB open gun), return false when
+             !button-success so 10's use bounces
+           - G_ExitLevel/G_SecretExitLevel set a level-exit flag
+             (consumed by 16); exit switch sound stub
+           - E1-specific note: E1M1 exit is a switch on a special
+             line — validate against the histogram
+         VALIDATE BEFORE EDITING: special-type histogram per E1 map
+           (parse LINEDEFS directly); T_MovePlane step semantics vs
+           raw source; tag search cases (self/next/lowest) as pure
+           functions; user validation for feel (door timing,
+           lift rhythm).
+         DONE WHEN: E1M1 fully completable: doors open, lift works,
+           exit switch ends the level (lands back in the menu/16's
+           no-op until then — at minimum the level flag flips).
+         DEPS: 10 (use-lines crossing + spechit + button), 13 uses
+           9's sounds via stub.
+
+  [ ] 14 Player special sectors + secrets
+         WHY: damaging floors/secrets are core E1 (nukage runs,
+           secret walls count); intermission (16) needs totals.
+         SOURCES: p_user.c P_PlayerInSpecialSector (sector special
+           5 nukage 20%/5%, 7 light-bleed 10%, 9 secret marker,
+           god/invuln/bonus sectors), p_mobj.c P_SpawnMapThing +
+           ML secret line flag handling (automap), doomdef.h
+           sector-special constants.
+         WORK:
+           - P_PlayerInSpecialSector from playerthink (game.b:651)
+             — runs when standing in sector: damage schedule per
+             vanilla (16-tick cadence), secret: mark
+             secr+ (count once — vanilla uses sector.special
+             temporary bit 9 + player secretcount)
+           - add totalsecret to game.m/world state (setuplevel
+             counts secret sectors; P_PlayerInSpecialSector
+             increments p.secretcount)
+           - intermission-adjacent counters sanity: killcount/
+             itemcount already on Player (game.m:121)
+           - damaging-floor damage needs 9's P_DamageMobj
+         VALIDATE: sector-special histogram for E1 (parse SECTORS
+           lump: count types 5/7/9/etc); nukage tick math vs source.
+         DONE WHEN: standing in E1M1's nukage (or E1M2's) drains
+           health at vanilla rate; secrets increment (debug print).
+         DEPS: 9 (damage), 13 (sector machinery conceptually).
+
+  [ ] 15 Screen graphics layer (V_DrawPatch/Block/Text port)
+         WHY: shared prerequisite for 16-22 — status bar, HUD,
+           menu, automap, intermission and finale all blit patches
+           onto the 8-bit fb; rend.b only composes textures today.
+         SOURCES: v_video.c (V_DrawPatch transparent-column blit,
+           V_DrawBlock, V_FillBuffer, fills), hu_lib.c (font draw
+           primitives), the WAD's patch format (already parsed for
+           textures in rend.b — reuse compose but blit DIRECTLY to
+           fb8 with PLAYPAL indices, no compositing).
+         WORK:
+           - rend.b: drawpatch(dst fb8, x, y, patch) — posts:
+             for each column, for each post (topdelta/length):
+             copy pixels, honoring topdelta==0xff end and 0x80
+             tall-pad quirk (derive from v_video.c exactly)
+           - drawblock (raw rect), fill, and a drawtext using
+             arbitrary patch fonts (character name table from
+             STCFN/HU_FONT/M_* naming — per caller)
+           - centering helpers (patch width = patch[0..1] le16)
+           - NO per-frame allocation (pools not needed — patches
+             are lump views; keep them as arrays)
+         VALIDATE: patch parse parity with existing texture code;
+           transparency cases (topdelta chain) as unit-style
+           script on a known lump (e.g., STBAR columns vs manual
+           decode).
+         DONE WHEN: a debug command can blit any lump patch at
+           (x,y) on the running game (used by 16+).
+         DEPS: none — do early if convenient (16 blocks on it).
+
+================================================================================
+Part D — presentation & game flow
+================================================================================
+
+  [ ] 16 Level exit flow + intermission + map progression
+         WHY: after 13 the exit flips a flag; this makes the game
+           CONTINUE to E1M2 and carry scores (and ends E1M9).
+         SOURCES: g_game.c (G_ExitLevel, G_SecretExitLevel,
+           G_WorldDone, G_DoLoadLevel, G_DoReborn, G_PlayerReborn
+           totals carry, gameaction state machine), wi_stuff.c
+           (WI_Start, WI_Ticker counting animation, WI_Drawer,
+           par times, level name), dstrings (level names — derive
+           how shareware resolves "HANGAR" etc from source).
+         WORK:
+           - gameaction: minimal state machine in game.b/doom.b
+             (load / worlddone / completed / vgaFinished-style
+             flag; vanilla's gameaction enum subset)
+           - exit flag (13) -> WI_Start on next tic; WORLDDONE ->
+             load next map (E1M1..E1M9 sequence table), E1M9 ->
+             secret exit table + E1M9->E1 secret handling (shareware
+             has no E1M10 — verify from source/table)
+           - intermission screens: background patch + numbers via
+             15; kills/secrets/items percentages (with par time),
+             animated counting cadence, "entering" title
+           - G_PlayerReborn: carry killcount/itemcount/secretcount
+             totals + health/ammo reset per vanilla rules
+           - death -> use-button respawn hook (game.b:622):
+             single-player reborn = restart level (derive vanilla
+             P_PlayerThink/G_PlayerReborn order)
+           - pause between levels uses levelname lookup — verify
+             against wad (map name lumps vs hardcoded table)
+         VALIDATE: map sequence + reborn carry rules vs g_game.c;
+           par table vs source; % math; user plays through.
+         DONE WHEN: exit E1M1 -> intermission shows real counts ->
+         E1M2 starts with stats carried; death -> use restarts.
+         DEPS: 13 (exit), 14 (secrets counted), 15 (patches).
+
+  [ ] 17 SFX: Doom mixer (8 x 8-bit unsigned channels)
+         (was milestone 8 in the old PLAN)
+         WHY: silence; sound.m call sites already exist as no-ops
+           from 9 onward.
+         SOURCES: s_sound.c (channel alloc, priority, distance/
+           separation volume, S_UpdateSounds origin tracking),
+           sounds.c (S_sfx table: pitch/visibility/start/stop),
+           i_sdlsound.c-style mixing (mix 8-bit unsigned with
+           per-channel volume), w_wad DS* lumps (DMX format:
+           8-byte header, 16-bit length, 16-byte pad at both ends).
+         WORK:
+           - sound.b: load DS* lumps once; mixer thread or
+             per-frame mix into a ring buffer; /dev/audioctl "enc
+             pcm" "rate 11025" mono unsigned8 (verify emu accepts;
+             flip signed if not — check emu audio-tbls)
+           - S_StartSound(origin, id): channel reuse by
+             (mobj,priority), cutoff rules (weapon fire cuts same
+             origin), attenuation from P_AproxDistance +
+             angle pan (vanilla separation), pitch for
+             singularity clamps
+           - listener updates each tic from view x/y/angle
+           - nil-safe when /dev/audio missing (headless runs)
+           - thread discipline: mixer never blocks the tic loop;
+             preallocated mix buffer (GC rule)
+         VALIDATE: DMX header parse on known lumps (length/pad);
+           mixer saturation arithmetic; volume/pan formula vs
+           s_sound.c; user listens.
+         DONE WHEN: weapon fire, pain, doors, ambience audible with
+           distance falloff; no clicks/dropouts.
+         DEPS: 9 (interface exists), gameplay sites from 10-14.
+
+  [ ] 18 Status bar + view sizing (st_stuff.c + st_lib.c)
+         WHY: no health/ammo/armor/keys on screen; view is fixed
+           full-screen 320x200.
+         SOURCES: st_stuff.c (ST_Start/Ticker/Drawer/Responder,
+           face state machine), st_lib.c (number/percent/icon/
+           bar widgets), the ST* lumps (STBAR, STTNUM0-9,
+           STTPRCNT, STGNUM*, STYSNUM*, STFB* faces 0-29, STFST/
+           STFTR/STFTL/STFOUCH/STFEVL/STFKILL face sets, STKEYS*,
+           STTMBAR/STTMINUS bars, STDISK? — verify exact list by
+           scanning the WAD in the milestone's pre-check).
+         WORK:
+           - view sizing: view.m init already takes height — add
+             R_SetViewSize semantics (screenblocks 10 = 168px view
+             + 32px bar; keep option for full 200 with bar hidden);
+             doom.b re-inits or we draw bar OVER the bottom (vanilla
+             draws bar over) — derive ST_Start interplay with
+             R_SetViewSize from source; simplest faithful path:
+             render world 320x168, blit bar at y=168
+           - widgets per st_lib: draw via 15's drawpatch; number
+             widgets = tall-num patch sets (STTNUM + STTYP?)
+           - face: number-of-pain-chips logic, evil/grin timers,
+             weapon-change faces, ST_update from Player fields
+           - ST_Ticker per tic; F1 help overlay optional
+           - keys widget from player's cards (E1 has none — still
+             render)
+         VALIDATE: face-state truth table vs st_stuff.c (pure);
+           widget ranges; user sees the bar.
+         DONE WHEN: bar visible with working health/armor/ammo/
+           arms/face/keys; world view above it unwarped (view
+           height change must not break centery math — numeric
+           check: centery for h=168 vs source).
+         DEPS: 11 (weapon state for face/arms), 15 (patches).
+
+  [ ] 19 HUD messages (hu_stuff.c + hu_lib.c)
+         WHY: no pickup/obituary feedback; messages milestone after
+           9/10/11 already emit hooks.
+         SOURCES: hu_stuff.c (HU_init, HU_Drawer, HU_tick queue,
+           HU_dequeue), hu_lib.c (draw text widgets), HUFONT lumps,
+           message strings from p_inter/p_map/p_enemy (that part
+           is already stubbed in those milestones).
+         WORK:
+           - message queue (string list, preallocated ring),
+             4-tick-per-line cadence, draw top rows via 15
+           - STSTR_* keys ("mapping", "cheat" strings from
+             dstrings — add as needed by 25)
+           - level-title overlay (HU_title: "E1M1" + name — derive
+             name source from raw files at implementation)
+           - message store point: expose game->postmessage()
+           - obituaries ("was killed by") from 9/12 hooks
+         DONE WHEN: pickups announce, cheats (25) confirm, title
+           flashes on map start.
+         DEPS: 15, message hooks from 9-12.
+
+  [ ] 20 Automap (am_map.c)
+         WHY: navigation; also classic IDDTC? (map reveal from 25).
+         SOURCES: am_map.c (AM_Init/Drawer/Ticker/Responder/follow,
+           line draw with AMWIDTH scaling, player arrow, keys,
+           grid, zoom, overlay vs toggle), AM* patches (ARROW?,
+           STKEYS, crosshair? — verify by WAD scan), plus map-name
+           title pass-through from 19.
+         WORK:
+           - own draw context onto fb8 (lines as V_DrawLine-style
+             pixel writes — vanilla uses V_DrawPatch of the level
+             BUILT as a patch (amgraph)? derive: vanilla builds
+             the map image once into a patch buffer? No — vanilla
+             draws lines per frame with fb writes (drawline).
+             Derive from source exactly.)
+           - scale/offset vs player, ML_MAPPED marking (explored
+             lines), secret toggle (ML_SECRET display), follow
+             mode, zoom keys, rotate toggle (vanilla supports
+             rotate — keep)
+           - interplay with render: automap replaces world render
+           - IDDDT full-map cheat lands here (from 25)
+         DONE WHEN: TAB toggles map; player/level drawn; pan/zoom/
+           follow work.
+         DEPS: 15 (patches for keys/arrows), 13 (ML_SECRET flags
+           meaningful — line flags already exist on load).
+
+  [ ] 21 Menu + skill/episode select + title (m_menu.c)
+         WHY: skill is hardcoded (doom.b:411/561); no New Game/
+           Options/Quit; no title state.
+         SOURCES: m_menu.c (M_Init/M_Drawer/M_Ticker/M_Responder
+           state machine + item defs), m_misc.c (defaults: mouse
+           sens, volume — wire what exists), doomdef.c menu keys,
+           title sequence: d_main.c (D_StartTitle/AdvanceTitle:
+           TITLEPIC / connect screens / demo handoff — shareware
+           shareware title lump = TITLEPIC; verify), M_* menu
+           patches + skull cursor.
+         WORK:
+           - menu state machine per source (read menus as data —
+             item lists are tables; transcribe mechanically)
+           - New Game -> skill 1-5 (replaces hardcoded SK_MEDIUM
+             at both call sites); episode: shareware only E1
+             (enforce per source's shareware branches)
+           - Options: screen size (uses 18), mouse sens (25),
+             sound volume (17), detail? (we render fixed — note),
+             gamma? (palette-based — optional)
+           - Read This (HELP1/HELP2/CREDIT patches), Quit confirm
+           - title screen state: M_Ticker/Advancedemo idle ->
+             TITLEPIC shown before first game (optional demo
+             integration comes with 23)
+           - ESC/keys routing: menu consumes keys before game —
+             restructure doom.b handlekey into responder layers
+             (menu responder, game responder) per vanilla order
+         DONE WHEN: full menu navigation; New Game on any skill
+           changes spawn counts (MTF bits); title screen shows at
+           startup.
+         DEPS: 15 (patches), 18 (options referencing view size),
+           17/25 (volume/sens entries can no-op until then).
+
+  [ ] 22 Finale + screen wipe (f_finale.c + f_wipe.c)
+         WHY: E1M9 completion must show the ending text; state
+           changes are hard cuts.
+         SOURCES: f_finale.c (text screen, F_Ticker typing cadence,
+           background FLOOR4_8 + title patch, E1 end text from
+           dstrings/"ENDTEXT"? verify), f_wipe.c (melt columns
+           algorithm), d_main state hooks (gameaction -> wipe ->
+           drawer).
+         WORK:
+           - wipe: two-buffer melt (preallocate second fb; per-
+             column y offsets table) driven per tic between any
+             two drawers
+           - finale text typing (chars/line, 4 tic cadence? derive),
+             background draw, cast callout NOT in shareware? (vanilla
+             Doom1 shareware end = text only? Ultimate has cast —
+             derive from source and WAD lumps present)
+           - wire into 16's gameaction on E1 completion
+         DONE WHEN: finishing E1 shows the text scroll; level
+           changes melt.
+         DEPS: 15 (patches/fill), 16 (gameaction), wipe optional
+           dependency for 21 title.
+
+  [ ] 23 Demo playback (d_main.c / demo lump format)
+         WHY: DEMO1-3 ship with the wad; also title-loop content.
+         SOURCES: d_main.c (D_DoAdvanceTitle, G_DeferedPlayDemo),
+           g_game.c (G_DeferedPlayDemo/G_PlayDemo: lump header
+           version/skill/ep/map/flags/console/playeringame then
+           ticcmd stream), g_game ticcmd translation.
+         WORK:
+           - demo lump parser (format: version byte + skill +
+             episode + map + 4x playeringame + ticcmds (mom/turn/
+             buttons per player byte format — derive from
+             g_game.c read of raw bytes); record format is
+             symmetric but recording can be a dev extra
+           - playback loop: replace setcmd source with demo
+             stream; end-of-demo -> back to title (21) or exit
+           - demo timer + desync strategy: for single player,
+             watch for ticcmd overruns (vanilla consistancy is
+             netplay — note: for us, a mismatch just looks off;
+             add a debug hash of player x/y per tic to detect
+             breakage during porting)
+           - command-line -playdemo DEMOn (plumbing in doom.b)
+           - title-loop integration (21/22 state machine)
+         DONE WHEN: DEMO1 plays E1M1 exactly as vanilla
+         (side-by-side reference from the original exe? we have no
+           original — validate by the demo completing without
+           "desync debug" flag tripping).
+         DEPS: everything gameplay (8-13) or demos walk into
+           unfinished walls — run after 13 at least; menu entry 21.
+
+================================================================================
+Part E — infrastructure & polish
+================================================================================
+
+  [ ] 24 Blockmap + P_PathTraverse (perf infrastructure)
+         WHY: brute force is fine for E1M1 (475 lines) but later
+           maps + sprites + specials grow tic cost; vanilla
+           intercept machinery also underpins 8-13 paths.
+         SOURCES: p_setup.c (P_LoadBlockThings/Lines: blockmap
+           lump offsets, org/width/height), p_maputl.c
+           (P_BlockLinesIterator, P_BlockThingsIterator,
+           P_PathTraverse DDA walk incl. nudges, earlyout),
+           m_bbox.c.
+         WORK:
+           - parse BLOCKMAP (map.b already finds the lump):
+             header orgx/orgy, width/height, column offset table,
+             0-terminated lists; preallocate
+           - P_BlockLinesIterator / P_BlockThingsIterator per
+             source (offset table indexing quirks — derive)
+           - P_PathTraverse port (the DDA code at p_maputl.c:861+
+             was fully transcribed in design for slide — use it),
+             maxfrac + PT_* flags
+           - convert slide's slidetrace to P_PathTraverse
+             (PT_ADDLINES) with the brute-force path kept behind a
+             debug flag; PARITY TEST: run both over N random
+             traces on E1M1, compare intercept sets and fracs
+             (scriptable, numeric — required before switching)
+           - same for 10's hitscan/use traverses (they were
+             written brute-force — same parity harness)
+           - PIC (things block list) for 9/10/12 perf pass
+         VALIDATE: parity harness above; per-tic timing before/
+           after with a stressed scene (skill 4 full spawn).
+         DONE WHEN: blockmap path is default, brute force is the
+           fallback, parity green, tic time measurably lower.
+         DEPS: 10 (uses traversal), do after 13 so the perf win is
+           measured on the full sim.
+
+  [ ] 25 Cheats, pause, mouse input
+         SOURCES: m_cheat.c (id string buffer + command table),
+           doomdef.c cheat effects (god/idkfa-ish give set, IDDQM
+           oddities, IDCLEV warp, IDDT map), i_input mouse handling
+           (mouseb/mousens), pause in g_game/d_loop.
+         WORK:
+           - typed-string matcher over key events (layer before
+             game responder), commands: god, noclip (CF_NOCHEAT —
+             CF_NOCLIP already honored in playerthink), iddqd,
+             idkfa/idfa give (9's P_Give*), iddt (20), idclev
+             warp (16's loader), mine? (vanilla shareware list —
+             derive), message confirmations via 19
+           - pause key: block ticker runs (tick timer keeps firing
+             — gate game->ticker, keep rendering; no sim advance)
+           - mouse: /dev/pointer reader -> dx turn per tic
+             (scaled by sensitivity), buttons -> BT_ATTACK/BT_USE
+             (mind the 10's bit fix), grab on/off
+           - F1 help? (18), screen size +/- keys (18)
+         DONE WHEN: god/noclip/iddt/warp work with messages; mouse
+           turns smoothly; pause freezes sim, resumes cleanly.
+         DEPS: 16 (warp), 19 (messages), 20 (iddt), 18 (screen
+           size), 10 (button bits).
+
+  [ ] 26 Save/load games [optional — decide before starting]
+         SOURCES: p_saveg.c (save stream: per-mobj, per-special,
+           player, sector heights; vanilla version byte), 
+         WORK IF APPROVED: serialize adt graph to a Limbo file
+           (binfile) — needs explicit field lists per adt (no
+           reflection), special-thinker tagging from 13, version
+           bump discipline; menu slots via 21.
+         DECISION: effort is real; defer unless the user wants it.
+         DEPS: 13 (thinkers), 21 (UI).
+
+  [ ] 27 Music (MUS->audio) [stretch — decision point]
+         SOURCES: mus2mid.c / i_sdlsound music path / m_special? 
+         REALITY CHECK: no synth in-tree.  Options: (a) port a
+           small MUS player + synthesis (large), (b) convert
+           MUS->MIDI and needs a synth anyway, (c) skip music.
+         DEFAULT: skip until gameplay is complete; revisit with a
+           cost estimate.  Sound effects are milestone 17.
+
+  [ ] 28 Final polish: full E1 playthrough + perf/GC audit
+         WORK:
+           - play E1M1..E1M9 start to finish on the port; log every
+             divergence (wrong texture special, monster stuck,
+             sound missing) into PLAN fix entries
+           - perf: fps + tic-time with full combat scenes; GC
+             audit (zero allocations in render/tic hot paths —
+             vissprite pool, message ring, sound buffers, menu
+             strings all preallocated)
+           - input feel: final latency pass (rules in Process)
+           - update PLAN headers/comments (game.m/game.b module
+             docs claim "stubs" — refresh as milestones land)
+           - final accounting: checklist every vanilla p_/r_/s_/st_/
+             hu_/am_/wi_/f_/m_ function against a "ported / N/A /
+             decision" table so nothing is silently dropped
+         DONE WHEN: episode completable twice in a row with sound,
+           bar, HUD, automap, menu; no known crash paths; perf
+           >= realtime on hosted emu.
+
+Scope decisions
+---------------
+  IN: single-player shareware E1, vanilla-faithful behavior and
+      feel, 320x200 fixed, hosted emu.
+  OUT: multiplayer/net (d_net/d_event net parts), DeHackEd,
+      joystick, other IWADs/ports (Plutonia/etc), vanilla
+      memory quirks (intercepts overrun emulation, z_zone),
+      Vanilla demo RECORDING (playback only, 23), statdump.
+  OPTIONAL: save/load (26), music (27), demo recording, mouse
+      (part of 25, cheap).
+
+Dependency order (one line per milestone):
+  8 sprites -> 9 damage/pickups (+sound stub) -> 10 attacks/use ->
+  11 weapons/psprites -> 12 AI -> 13 specials -> 14 special sectors
+  -> 15 patch layer (independent, pull early) -> 16 exit/intermission
+  -> 17 SFX -> 18 status bar -> 19 HUD -> 20 automap -> 21 menu ->
+  22 finale/wipe -> 23 demo -> 24 blockmap -> 25 cheats/pause/mouse
+  -> 26/27 optional -> 28 polish.
 
 Process rule
 ------------
@@ -293,6 +821,16 @@ Process rule
   does not show rotation, movement, or timing behavior and has repeatedly
   led to false "fixed it" claims (plane shear, occlusion).  Make the
   change, rebuild, and hand off; the user reports what they see.
+- ALL piecewise math must be numerically validated from the raw vanilla
+  source (Python, /tmp/opencode/) BEFORE editing Limbo code — derive the
+  FULL pipeline, never trust piecewise verification (the plane-shear
+  postmortem in PLAN.done).
+- Kill emu when done; never leave one running; kill only by explicit
+  PID from `pgrep -a emu` — NEVER `pkill -f` variants or
+  `ps aux|grep|xargs kill`.  Prefer `timeout N cmd`.  No repeated
+  screenshot loops; never hold-decay key timing.
+- Keep finding/fixing bugs until none remain; add each fix entry to
+  PLAN (or PLAN.done for completed-milestone fixes).
 
 Porting notes (C -> Limbo idioms)
 ---------------------------------
@@ -356,6 +894,9 @@ Porting notes (C -> Limbo idioms)
   as `a << (16 / b)` (type clash int/big).  Always parenthesize:
   `(a << 16) / b`.  Mixed big/int arithmetic is also a type clash:
   `big(x) * 16r10000` errors — wrap BOTH sides in big()
+- big vs int comparisons are type clashes: `bigv < 0` fails — use
+  `bigv < big(0)`; hex literals over int32 (16r100000000) are big;
+  int min literal must be written `~2147483647`
 - 16.16 overflow audit rules for the renderer (edge warping bugs):
   * screen-x frac MUST span the ORIGINAL projected endpoints
     (possibly |x|~millions for near-clipped walls); clamping x to
@@ -373,6 +914,10 @@ Porting notes (C -> Limbo idioms)
     screen x — vanilla gets it right via finetangent per column;
     we interpolate u/depth and 1/depth (both linear in x) and
     divide
+  * angle_t arithmetic wraps: Limbo int +,- wraps like C unsigned
+    (verified); use the pattern for BAM (see slidemove/game.b:
+    pointtoangle2) — but u32 COMPARES must be translated: `a >u
+    ANG180` becomes `a < 0 && a != ANG180` when a is s32
 - NEVER chain `ps aux | grep ... | xargs kill` for emu cleanup —
   it hangs and eats the whole command timeout.  Launch every emu
   as `timeout N ./emu ...` so it self-terminates; window id via

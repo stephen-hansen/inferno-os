@@ -195,17 +195,21 @@ parsetexture(r: ref Renderer, d: array of byte, ofs, idx: int,
 	j = 1;
 	while (j * 2 <= width)
 		j <<= 1;
-	tex := ref Texture(name, width, height, j-1, nil);
+	tex := ref Texture(name, width, height, j-1, nil, nil);
 	r.textures[idx] = tex;
 	return gentex(tex, prefs, w);
 }
 
 # compose a texture from its patches into a dense column-major block
-# (vanilla R_GenerateComposite, but eager rather than on first use)
+# (vanilla R_GenerateComposite, but eager rather than on first use).
+# Also derives per-column opaque post runs (topdelta, length in texture
+# space) from write coverage: masked midtextures draw through posts,
+# and gap rows must stay transparent.
 gentex(tex: ref Texture, prefs: array of Patchref,
 		w: ref Wad->File): string
 {
 	data := array[tex.width * tex.height] of byte;
+	cov := array[tex.width * tex.height] of byte;
 	for (j := 0; j < len prefs; j++) {
 		p := prefs[j];
 		if (p.lump < 0)
@@ -228,10 +232,66 @@ gentex(tex: ref Texture, prefs: array of Patchref,
 				continue;
 			drawcolincache(pd, cofs, data, x * tex.height,
 				p.originy, tex.height);
+			markcov(pd, cofs, cov, x * tex.height,
+				p.originy, tex.height);
 		}
 	}
 	tex.data = data;
+	# derive posts: maximal opaque runs per column from coverage
+	tex.posts = array[tex.width] of array of int;
+	for (x := 0; x < tex.width; x++) {
+		base := x * tex.height;
+		np := 0;
+		for (i := 0; i < tex.height; ) {
+			if (int cov[base+i] == 0) {
+				i++;
+				continue;
+			}
+			jj := i;
+			while (jj < tex.height && int cov[base+jj] != 0)
+				jj++;
+			np += 2;
+			i = jj;
+		}
+		posts := array[np] of int;
+		k := 0;
+		for (i = 0; i < tex.height; ) {
+			if (int cov[base+i] == 0) {
+				i++;
+				continue;
+			}
+			start := i;
+			while (i < tex.height && int cov[base+i] != 0)
+				i++;
+			posts[k++] = start;
+			posts[k++] = i - start;
+		}
+		tex.posts[x] = posts;
+	}
 	return nil;
+}
+
+# mark coverage for one patch column, same clip rules as drawcolincache
+markcov(pd: array of byte, pofs: int, cov: array of byte,
+		coff, originy, cacheheight: int)
+{
+	while (pofs >= 0 && pofs + 1 < len pd && int pd[pofs] != 16rff) {
+		length := int pd[pofs+1];
+		position := originy + int pd[pofs];
+		count := length;
+		source := pofs + 3;
+		if (position < 0) {
+			count += position;
+			position = 0;
+		}
+		if (position + count > cacheheight)
+			count = cacheheight - position;
+		if (source + count > len pd)
+			count = len pd - source;
+		for (i := 0; i < count; i++)
+			cov[coff + position + i] = byte 1;
+		pofs += length + 4;
+	}
 }
 
 Renderer.init(r: self ref Renderer, w: ref Wad->File, width, height: int): string
@@ -338,8 +398,7 @@ Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 # vanilla R_DrawSpan (flat is always 64x64)
 Renderer.drawspan(r: self ref Renderer, y, x1, x2, light: int,
 		fl: ref Flat, xfrac, yfrac, xstep, ystep: int)
-{
-	count := x2 - x1;
+{	count := x2 - x1;
 	if (count < 0)
 		return;
 	cm := light * 256;
@@ -352,6 +411,50 @@ Renderer.drawspan(r: self ref Renderer, y, x1, x2, light: int,
 		dest++;
 		fx += xstep;
 		fy += ystep;
+	}
+}
+
+# vanilla R_DrawFuzzColumn (r_draw.c): spectre/invisibility draw.  Reads
+# fb8 at +-w (FUZZOFF) from the current dest through colormap row 6 and
+# writes back; border rows are adjusted (yl 0 -> 1, yh h-1 -> h-2) so the
+# +-w sample never leaves the framebuffer.  fuzzpos advances globally
+# across calls/frames like vanilla.  Signs are vanilla fuzzoffset[], the
+# magnitude is the framebuffer pitch (FUZZOFF = SCREENWIDTH).
+FUZZTABLE:	con 50;
+fuzzsign:	array of int;
+fuzzpos:	int;
+
+initfuzz()
+{
+	fuzzsign = array[] of {1, -1, 1, -1, 1, 1, -1,
+		1, 1, -1, 1, 1, 1, -1,
+		1, 1, 1, -1, -1, -1, -1,
+		1, -1, -1, 1, 1, 1, 1, -1,
+		1, -1, 1, 1, -1, -1, 1,
+		1, -1, -1, -1, -1, 1, 1,
+		1, 1, -1, 1, 1, -1, 1};
+	fuzzpos = 0;
+}
+
+Renderer.drawfuzz(r: self ref Renderer, x, yl, yh: int)
+{
+	if (fuzzsign == nil)
+		initfuzz();
+	if (yl == 0)
+		yl = 1;
+	if (yh == r.h - 1)
+		yh = r.h - 2;
+	if (yl > yh)
+		return;
+	dest := yl * r.w + x;
+	for (i := yl; i <= yh; i++) {
+		src := dest + fuzzsign[fuzzpos] * r.w;
+		if (src >= 0 && src < len r.fb8)
+			r.fb8[dest] = r.colormap[6*256 + int r.fb8[src]];
+		fuzzpos++;
+		if (fuzzpos == FUZZTABLE)
+			fuzzpos = 0;
+		dest += r.w;
 	}
 }
 
@@ -400,4 +503,9 @@ rdrawspan(r: ref Renderer, y, x1, x2, light: int,
 	fl: ref Flat, xfrac, yfrac, xstep, ystep: int)
 {
 	r.drawspan(y, x1, x2, light, fl, xfrac, yfrac, xstep, ystep);
+}
+
+rdrawfuzz(r: ref Renderer, x, yl, yh: int)
+{
+	r.drawfuzz(x, yl, yh);
 }

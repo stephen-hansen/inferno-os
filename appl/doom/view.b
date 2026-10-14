@@ -4,10 +4,16 @@ include "sys.m";
 	sys: Sys;
 include "wad.m";
 	wad: Wad;
+	File: import wad;
 include "rend.m";
 	rend: Rend;
+	Renderer: import rend;
 include "map.m";
 	mapm: Map;
+include "info.m";
+	inf: Info;
+	MobjInfo: import inf;
+include "game.m";
 include "view.m";
 
 # fine-angle table constants (mirror game.m; view.b does not import game.m).
@@ -74,7 +80,88 @@ plfl:	ref Rend->Flat;	# flat bound for the mapplane call below
 zlight:	array of array of int;	# [LIGHTLEVELS][MAXLIGHTZ] colormap row per light band / plane distance band
 scalelight:	array of array of int;	# [LIGHTLEVELS][MAXLIGHTSCALE] row per light band / wall scale index
 
-init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
+# ---- milestone 8: sprites + masked mids (r_things.c / r_segs.c) ----
+MINZ:		con 4 * 16r10000;	# r_things.c:40
+MAXDRAWSEGS:	con 256;		# r_defs.h:51
+MAXVISSPRITES:	con 128;		# r_things.h:25
+FF_FRAMEMASK:	con 16r7fff;		# p_pspr.h:45
+FF_FULLBRIGHT:	con 16r8000;		# p_pspr.h:44
+ML_DONTPEGTOP:	con 8;			# doomdata.h:117
+ML_DONTPEGBOTTOM: con 16;		# doomdata.h:120
+SIL_BOTTOM:	con 1;			# r_defs.h:47
+SIL_TOP:	con 2;			# r_defs.h:48
+ANG45HALF9:	con ~1879048191;	# (ANG45/2)*9 = 0x90000000, r_things.c:515
+INT_MAX:	con 2147483647;
+INT_MIN:	con ~2147483647;	# 0x80000000
+
+wfile:	ref Wad->File;		# open WAD for sprite lumps (set by init)
+gmod:	Game;			# loaded Game module (sprite rotation angles)
+
+# one sprite patch lump: header + raw column data (vanilla reads
+# posts straight from the lump, so keep it raw like R_GetColumn)
+SprPatch: adt {
+	w, h:	int;
+	xoff, yoff:	int;	# left/top offsets, 16.16 (spriteoffset/titetopoffset)
+	colofs:	array of int;	# column directory into raw
+	raw:	array of byte;
+};
+
+# per sprite/frame rotation table (R_InitSpriteDefs)
+SpriteFrame: adt {
+	rotate:	int;		# -1 no patches, 0 all-rotations, 1 eight rots
+	lump:	array of int;	# [8] patch index, -1 = missing
+	flip:	array of int;	# [8]
+};
+
+SprDef: adt {
+	frames:	array of SpriteFrame;
+};
+
+sprdefs:	array of SprDef;	# [Info->NUMSPRITES]
+sprpatch:	array of ref SprPatch;
+sprfirst:	int;		# index of first sprite lump (offset base)
+
+# temp install state (vanilla sprtemp/maxframe globals)
+sprtemp:	array of SpriteFrame;
+sprmaxf:	int;
+sprname:	string;
+
+# vissprite pool (r_things.c)
+Vissprite: adt {
+	x1, x2:	int;
+	gx, gy, gz, gzt:	int;	# world position, 16.16
+	startfrac, scale, xiscale, texturemid: int;
+	patch:	int;		# index into sprpatch
+	light:	int;		# colormap row 0..31, -1 = fuzz draw
+	mobjflags:	int;
+};
+viss:	array of Vissprite;
+nvis:	int;
+ovvis:	Vissprite;		# overflow slot (never drawn, vanilla behavior)
+
+# drawseg pool (r_defs.h drawseg_t): records every drawn wall seg so
+# sprites can clip against it and masked mids can be flushed later
+Drawseg: adt {
+	x1, x2:	int;
+	s1, s2, ox1, tspan: int;	# scale basis, same as the wall loop
+	sil:	int;		# SIL_* bitmask
+	bsilh, tsilh:	int;		# sprite clip height tests
+	segnum:	int;		# lev.segs index for R_PointOnSegSide
+	walllight:	int;		# orientation-adjusted light index
+	midxex:	ref Rend->Texture;	# masked mid (nil = none)
+	tmidbase:	int;		# masked dc_texturemid base
+	mcol, mflag:	array of int;	# per column tex col / state (masked only)
+	top, bot:	array of int;	# clip snapshot (our convention:
+					# top = first open row, bot = one past last)
+};
+dssegs:	array of Drawseg;
+nds:	int;
+
+# per-sprite clip built by the drawseg scan (vanilla cliptop/clipbot)
+sptop, spbot:	array of int;
+
+init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
+		g: Game, width, height: int): string
 {
 	if (sys == nil)
 		sys = load Sys Sys->PATH;
@@ -83,6 +170,10 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 		return "view.init: nil renderer";
 	if (l == nil)
 		return "view.init: nil level";
+	if (wf == nil)
+		return "view.init: nil wad";
+	if (g == nil)
+		return "view.init: nil game module";
 	if (wad == nil)
 		wad = load Wad Wad->PATH;
 	if (mapm == nil)
@@ -95,11 +186,24 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 	buildfsine();	# local sine table, replaces Info dependency
 	r = rr;
 	lev = l;
+	wfile = wf;
+	gmod = g;
 	w = width;
 	h = height;
 	proj = width / 2;		# 90-degree horizontal FOV (raw pixels)
 	centerx = width / 2;
 	solid = array[w * 2] of int;
+
+	# sprite + drawseg pools, sprite clip arrays
+	viss = array[MAXVISSPRITES] of Vissprite;
+	dssegs = array[MAXDRAWSEGS] of Drawseg;
+	sptop = array[w] of int;
+	spbot = array[w] of int;
+
+	# sprite defs from the WAD (Info tables were built by game.init)
+	err := loadsprdefs();
+	if (err != nil)
+		return err;
 
 	# plane texture-mapping table.  yslope[y] = proj/|dy| (16.16) scales
 	# the eye-to-plane vertical distance into a per-row depth; vanilla
@@ -240,7 +344,8 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, width, height: int): string
 	return nil;
 }
 
-render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int)
+render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
+		mobs: array of ref Game->Mobj)
 {
 	if (r == nil || lev == nil)
 		return;
@@ -269,14 +374,20 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int)
 	basexscale = rend->rfixeddiv(vsin, proj << 16);
 	baseyscale = rend->rfixeddiv(vcos, proj << 16);
 	nsegs = ncolumns = nspans = 0;
+	nds = 0;
+	nvis = 0;
+	nsprites = 0;
+	ndrawsegs = 0;
 
 	# clear to black
 	rend->rclear(r, 0);
 
-	# reset occlusion: full screen open in every column
+	# reset occlusion: full screen open in every column.
+	# solid[2x] is the first open row (vanilla ceilingclip+1, init -1+1=0),
+	# solid[2x+1] one past the last (vanilla floorclip = viewheight).
 	for (x := 0; x < w; x++) {
-		solid[2*x] = -1;	# first open row (vanilla ceilingclip+1)
-		solid[2*x+1] = h;	# one past last open row (vanilla floorclip)
+		solid[2*x] = 0;
+		solid[2*x+1] = h;
 	}
 
 	# reset visplanes for this frame
@@ -289,8 +400,23 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int)
 	else if (len lev.subsectors > 0)
 		rendersubsector(0);
 
+	# project thing sprites (vanilla does this per sector during the
+	# walk via R_AddSprites; projecting everything here is equivalent
+	# because offscreen/behind/culled sectors fail the same tests)
+	# project thing sprites (vanilla does this per sector during the
+	# walk via R_AddSprites; projecting everything here is equivalent
+	# because offscreen/behind/culled sectors fail the same tests)
+	if (mobs != nil) {
+		for (i := 0; i < len mobs; i++)
+			projectmo(mobs[i]);
+	}
+	nsprites = nvis;
+
 	# flush accumulated floor/ceiling spans to screen
 	drawplanes();
+
+	# sprites back-to-front, then remaining masked midtextures
+	drawmasked();
 }
 
 # vanilla R_PointOnSide: 0 = front (right), 1 = back (left)
@@ -387,6 +513,10 @@ SKYMID:		con 6553600;	# 100*FRACUNIT, vanilla skytexturemid (r_sky.c)
 # draw one seg as wall columns
 addline(segnum: int)
 {
+	# vanilla R_StoreWallRange overflow check (r_segs.c:383): the whole
+	# seg (wall draw included) is skipped when the drawseg pool is full
+	if (nds >= MAXDRAWSEGS)
+		return;
 	seg := lev.segs[segnum];
 	v1 := lev.vertices[seg.v1];
 	v2 := lev.vertices[seg.v2];
@@ -439,8 +569,10 @@ addline(segnum: int)
 	linelen := 1;
 	if (ldx != 0 || ldy != 0)
 		linelen = isqrt((ldx >> 16) * (ldx >> 16) + (ldy >> 16) * (ldy >> 16)) << 16;
-	u1 = seg.offset;
-	u2 = seg.offset + linelen;
+	# texture u: offset along the line from v1, plus the sidedef's
+	# horizontal texture offset (vanilla rw_offset adds both)
+	u1 = seg.offset + sd.textureoffset;
+	u2 = u1 + linelen;
 
 	# clip endpoints behind the near plane.
 	# interpolation is in wall-parameter space (affine) so linear
@@ -524,20 +656,35 @@ addline(segnum: int)
 	if (walllight >= LIGHTLEVELS)
 		walllight = LIGHTLEVELS - 1;
 
+	# scale basis for the whole seg (both wall loops and the drawseg
+	# record use this same linear-in-x basis)
+	dd1 := d1;
+	dd2 := d2;
+	if (dd1 < FRACUNIT / 4)
+		dd1 = FRACUNIT / 4;
+	if (dd2 < FRACUNIT / 4)
+		dd2 = FRACUNIT / 4;
+	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd1));
+	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd2));
+	tspan := ox2 - ox1;
+
+	# record the wall for sprite clipping / masked flushes
+	dsidx := claimds(segnum, lx1, lx2, s1, s2, ox1, tspan, walllight);
+
 	# choose texture
 	texname := sd.midtexture;
 	if (back != nil) {
-		# two-sided: draw upper and lower, skip middle
-		drawtwosided(sd, lx1, lx2, ox1, ox2, d1, d2, u1, u2,
-			ceilz, floorz, back.ceilingheight, back.floorheight,
-			back.ceilingtexture, pllight, walllight);
+		# two-sided: draw upper and lower, maybe masked middle
+		drawtwosided(dsidx, sd, ld.flags, lx1, lx2, ox1, ox2,
+			d1, d2, u1, u2, ceilz, floorz, back.ceilingheight,
+			back.floorheight, back.ceilingtexture, pllight,
+			walllight);
 		return;
 	}
-	if (texname == "" || texname == "-")
-		return;
-	tex := rend->rtexture(r, texname);
-	if (tex == nil)
-		return;
+
+	# one-sided: terminal clip, SIL_BOTH with constant closed clips
+	# (vanilla r_segs.c:473-477)
+	sil1s(dsidx);
 
 	# intern this sector's floor/ceiling planes for the column loop below.
 	# vanilla R_Subsector only picks a floorplane below the eye and a
@@ -545,6 +692,8 @@ addline(segnum: int)
 	# not visible and claiming with it paints garbage.  checkplane then
 	# decides per seg whether claims join the interned visplane or a
 	# duplicate (vanilla R_CheckPlane), keeping per-column strips exact.
+	# (runs even for untextured walls: the loop still closes solid[]
+	# and claims planes, matching vanilla R_RenderSegLoop)
 	curfloor = -1;
 	if (floorz < vz)
 		curfloor = checkplane(findplane(floorz, sec.floortexture, pllight),
@@ -554,19 +703,11 @@ addline(segnum: int)
 		curceil = checkplane(findplane(ceilz, sec.ceilingtexture, pllight),
 			lx1, lx2);
 
-	# perspective-correct: scale (px per world unit, 16.16) is linear
-	# in screen x; depth is derived per column.  Vanilla steps
-	# rw_scale linearly (r_segs.c).  Linear depth bends wall edges.
-	# clamp depth so scale stays in int32 (near-plane clip can leave
-	# tiny positive depths)
-	dd1 := d1;
-	dd2 := d2;
-	if (dd1 < FRACUNIT / 4)
-		dd1 = FRACUNIT / 4;
-	if (dd2 < FRACUNIT / 4)
-		dd2 = FRACUNIT / 4;
-	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd1));
-	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd2));
+	# nil tex ("" / "-" / unknown) -> run the loop without the column draw
+	tex: ref Rend->Texture;
+	if (texname != "" && texname != "-")
+		tex = rend->rtexture(r, texname);
+
 	# u is linear in wall-parameter, MOBIUS in screen x (vanilla
 	# gets this right via finetangent per column).  u/depth and
 	# 1/depth are both linear in screen x, so interp those and
@@ -577,7 +718,6 @@ addline(segnum: int)
 	id2 := int(16r100000000 / big(dd2));
 
 	# draw columns lx1..lx2; frac spans the ORIGINAL x span
-	tspan := ox2 - ox1;
 	nsegs++;
 	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
@@ -625,18 +765,26 @@ addline(segnum: int)
 		markplane(curceil, x, cclip, yt - 1);
 		markplane(curfloor, x, yb + 1, fclip);
 
-		if (yt <= yb) {
-			# texture mapping
-			col := u >> 16;
-			# iscale: 16.16 texture units per screen pixel = 2^32/scale.
-			# int-safe when scale>=2^16 (result<=2^16); else big (rare: very close walls).
-			iscale: int;
-			if (scale >= 16r10000)
-				iscale = int(big(16r100000000) / big(scale));
-			else
-				iscale = int(16r100000000 / big(scale));
-			# texturemid: world z above eye, 16.16 texels (1 texel = 1 unit)
-			tmid := z1t + rend->fixedmul(z2t - z1t, frac) - vz;
+			if (yt <= yb && tex != nil) {
+				# texture mapping
+				col := u >> 16;
+				# iscale: 16.16 texture units per screen pixel = 2^32/scale.
+				# int-safe when scale>=2^16 (result<=2^16); else big (rare: very close walls).
+				iscale: int;
+				if (scale >= 16r10000)
+					iscale = int(big(16r100000000) / big(scale));
+				else
+					iscale = int(16r100000000 / big(scale));
+				# texturemid: world z above eye, 16.16 texels (1 texel = 1 unit).
+				# vanilla rw_midtexturemid (r_segs.c:459-468): DONTPEGBOTTOM
+				# anchors the texture bottom at the front floor, else top at
+				# the ceiling; both + sidedef rowoffset.
+				tmid: int;
+				if (ld.flags & ML_DONTPEGBOTTOM)
+					tmid = floorz + (tex.height << 16) - vz;
+				else
+					tmid = z1t + rend->fixedmul(z2t - z1t, frac) - vz;
+				tmid += sd.rowoffset;
 			# vanilla wall light: index = rw_scale>>LIGHTSCALESHIFT
 			# (r_segs.c:260-263), clamp MAXLIGHTSCALE-1, row from
 			# scalelight[front lightnum][index]
@@ -655,24 +803,113 @@ addline(segnum: int)
 	}
 }
 
-# two-sided line: draw upper and lower textures where heights differ
+# two-sided line: draw upper and lower textures where heights differ,
+# and store the masked middle for the back-to-front flush.  dsidx is
+# the drawseg claimed in addline (scale basis / clip storage).
 # plight = front sector plane light index; walllight = front sector wall
 # light index (orientation-adjusted, computed in addline).
-drawtwosided(sd: ref Map->Side,
+drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 	lx1, lx2, ox1, ox2, d1, d2, u1, u2: int,
 	fceilz, ffloorz, bceilz, bfloorz: int, bceiltex: string,
 	plight, walllight: int)
 {
+	ds := dssegs[dsidx];
 	nsegs++;
+
+	# masked middle texture: store per-column texture coords for a
+	# back-to-front flush after the walls (r_segs.c:537-579, 604-622).
+	# dc_texturemid (r_segs.c:137-149): hidden peg anchors the texture
+	# at the shared floor plus texture height, else at the higher ceiling.
+	midtex: ref Rend->Texture;
+	if (sd.midtexture != "" && sd.midtexture != "-") {
+		midtex = rend->rtexture(r, sd.midtexture);
+		if (midtex != nil) {
+			ds.midxex = midtex;
+			if (ds.mcol == nil) {
+				ds.mcol = array[w] of int;
+				ds.mflag = array[w] of int;
+			}
+			for (x := lx1; x <= lx2; x++)
+				ds.mflag[x] = 0;
+			if (ldflags & ML_DONTPEGBOTTOM) {
+				base := ffloorz;
+				if (bfloorz > base)
+					base = bfloorz;
+				ds.tmidbase = base + (midtex.height << 16) - vz;
+			} else {
+				top := fceilz;
+				if (bceilz < top)
+					top = bceilz;
+				ds.tmidbase = top - vz;
+			}
+			ds.tmidbase += sd.rowoffset;
+		}
+	}
+
+	# silhouette heights (r_segs.c:485-521): bsilh/tsilh are compared
+	# against sprite world bottom/top; closed windows are terminal clips.
+	# masked segs force both bits so sprites never cut on this wall
+	# (r_segs.c:731-740; the wall itself still clips them via top/bot).
+	ds.sil = 0;
+	ds.bsilh = INT_MAX;
+	ds.tsilh = INT_MIN;
+	topclosed := 0;
+	botclosed := 0;
+	if (ffloorz > bfloorz) {
+		ds.sil |= SIL_BOTTOM;
+		ds.bsilh = ffloorz;
+	} else if (bfloorz > vz) {
+		ds.sil |= SIL_BOTTOM;
+		ds.bsilh = INT_MAX;
+	}
+	if (fceilz < bceilz) {
+		ds.sil |= SIL_TOP;
+		ds.tsilh = fceilz;
+	} else if (bceilz < vz) {
+		ds.sil |= SIL_TOP;
+		ds.tsilh = INT_MIN;
+	}
+	if (bceilz <= ffloorz) {
+		botclosed = 1;
+		ds.bsilh = INT_MAX;
+		ds.sil |= SIL_BOTTOM;
+	}
+	if (bfloorz >= fceilz) {
+		topclosed = 1;
+		ds.tsilh = INT_MIN;
+		ds.sil |= SIL_TOP;
+	}
+	if (midtex != nil) {
+		if (!(ds.sil & SIL_TOP)) {
+			ds.sil |= SIL_TOP;
+			ds.tsilh = INT_MIN;
+		}
+		if (!(ds.sil & SIL_BOTTOM)) {
+			ds.sil |= SIL_BOTTOM;
+			ds.bsilh = INT_MAX;
+		}
+	}
+	# closed windows keep constant terminal clips (vanilla's
+	# screenheightarray/negonearray equivalents)
+	if (topclosed) {
+		for (x := lx1; x <= lx2; x++)
+			ds.top[x] = h;
+	}
+	if (botclosed) {
+		for (x := lx1; x <= lx2; x++)
+			ds.bot[x] = -1;
+	}
+
+	# scale basis from the shared record; perspective-correct u via
+	# u/depth and 1/depth (linear in x), same depth clamp as the record
+	s1 := ds.s1;
+	s2 := ds.s2;
 	dd1 := d1;
 	dd2 := d2;
 	if (dd1 < FRACUNIT / 4)
 		dd1 = FRACUNIT / 4;
 	if (dd2 < FRACUNIT / 4)
 		dd2 = FRACUNIT / 4;
-	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd1));
-	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd2));
-	# perspective-correct u via u/depth and 1/depth (linear in x)
 	ud1 := int((big(u1) << 16) / big(dd1));
 	ud2 := int((big(u2) << 16) / big(dd2));
 	id1 := int(16r100000000 / big(dd1));
@@ -713,6 +950,12 @@ drawtwosided(sd: ref Map->Side,
 		u := int((big(ud) << 16) / big(id));
 		col := u >> 16;
 
+		# record the masked texture column for the later flush
+		if (midtex != nil) {
+			ds.mcol[x] = col;
+			ds.mflag[x] = 1;
+		}
+
 		cclip := solid[2*x];
 		fclip := solid[2*x+1];
 
@@ -722,6 +965,7 @@ drawtwosided(sd: ref Map->Side,
 		lidx := scale >> LIGHTSCALESHIFT;
 		if (lidx >= MAXLIGHTSCALE)
 			lidx = MAXLIGHTSCALE - 1;
+		if (x == lx1)
 		wrow := scalelight[walllight][lidx];
 
 		iscale: int;
@@ -748,9 +992,16 @@ drawtwosided(sd: ref Map->Side,
 				if (yb >= fclip) yb = fclip - 1;
 				if (yb >= h) yb = h - 1;
 				if (yt <= yb) {
-					# upper texture anchored at the top:
-					# texture row 0 at fceilz going down
-					tmid := fceilz - vz;
+					# upper texture anchor (r_segs.c:571-585):
+					# DONTPEGTOP -> row 0 at the front ceiling, else
+					# texture bottom at the back ceiling (vanilla vtop);
+					# both + rowoffset.
+					tmid: int;
+					if (ldflags & ML_DONTPEGTOP)
+						tmid = fceilz - vz;
+					else
+						tmid = bceilz + (tex.height << 16) - vz;
+					tmid += sd.rowoffset;
 					rend->rdrawcolumn(r,x, yt, yb, wrow, tex, col, tmid, iscale);
 					ncolumns++;
 					cclip = yb + 1;
@@ -771,10 +1022,16 @@ drawtwosided(sd: ref Map->Side,
 				if (yb >= fclip) yb = fclip - 1;
 				if (yb >= h) yb = h - 1;
 				if (yt <= yb) {
-					# lower texture anchored at bottom:
-					# texture row 0 at bfloorz going down... vanilla
-					# uses (bfloorz - viewz) but offset by texture height
-					tmid := bfloorz - vz;
+					# lower texture anchor (r_segs.c:591-599):
+					# DONTPEGBOTTOM -> row 0 at the front ceiling,
+					# else top at the back floor (worldlow);
+					# both + rowoffset.
+					tmid: int;
+					if (ldflags & ML_DONTPEGBOTTOM)
+						tmid = fceilz - vz;
+					else
+						tmid = bfloorz - vz;
+					tmid += sd.rowoffset;
 					rend->rdrawcolumn(r,x, yt, yb, wrow, tex, col, tmid, iscale);
 					ncolumns++;
 					fclip = yt;
@@ -813,6 +1070,652 @@ drawtwosided(sd: ref Map->Side,
 		solid[2*x] = cclip;
 		solid[2*x+1] = fclip;
 	}
+
+	# snapshot the final clip for sprite occlusion (r_segs.c:715-740):
+	# sprites need the wall's own clip state per column.  const-closed
+	# columns keep their constants set above (the vanilla pre-clipped
+	# screenheightarray/negonearray is equivalent), everything else
+	# takes the post-loop solid[] state.
+	if (!topclosed && ((ds.sil & SIL_TOP) || ds.midxex != nil)) {
+		for (x = lx1; x <= lx2; x++)
+			ds.top[x] = solid[2*x];
+	}
+	if (!botclosed && ((ds.sil & SIL_BOTTOM) || ds.midxex != nil)) {
+		for (x = lx1; x <= lx2; x++)
+			ds.bot[x] = solid[2*x+1];
+	}
+	# sync scalar/array-field state back into the pool: ds is a value
+	# copy (array contents shared, scalar fields not)
+	dssegs[dsidx].midxex = ds.midxex;
+	dssegs[dsidx].tmidbase = ds.tmidbase;
+	dssegs[dsidx].sil = ds.sil;
+	dssegs[dsidx].bsilh = ds.bsilh;
+	dssegs[dsidx].tsilh = ds.tsilh;
+	dssegs[dsidx].mcol = ds.mcol;
+	dssegs[dsidx].mflag = ds.mflag;
+}
+
+# ---- drawseg pool (r_segs.c R_StoreWallRange bookkeeping) ----
+
+# one-sided line: terminal clip + SIL_BOTH, constant closed clips in
+# every column (vanilla sets sprtopclip=screenheightarray,
+# sprbottomclip=negonearray, bsilheight=INT_MAX, tsilheight=INT_MIN)
+sil1s(dsidx: int)
+{
+	dssegs[dsidx].sil = SIL_BOTTOM | SIL_TOP;
+	dssegs[dsidx].bsilh = INT_MAX;
+	dssegs[dsidx].tsilh = INT_MIN;
+	dssegs[dsidx].midxex = nil;
+	ds := dssegs[dsidx];
+	for (x := 0; x < w; x++) {
+		ds.top[x] = h;
+		ds.bot[x] = -1;
+	}
+}
+
+# claim the next drawseg slot for a wall that passed all clipping;
+# records the scale basis and fills open clips.  The overflow check
+# is at addline entry (vanilla R_StoreWallRange: whole seg skipped).
+claimds(segnum, x1, x2, s1, s2, ox1, tspan, walllight: int): int
+{
+	if (nds >= MAXDRAWSEGS)
+		return -1;
+	# Limbo gotcha: 'ref dssegs[i]' COPIES the element instead of
+	# aliasing it, so scalar/field writes must use the direct path.
+	# Array CONTENTS reached through a value copy ARE shared.
+	dssegs[nds].x1 = x1;
+	dssegs[nds].x2 = x2;
+	dssegs[nds].s1 = s1;
+	dssegs[nds].s2 = s2;
+	dssegs[nds].ox1 = ox1;
+	dssegs[nds].tspan = tspan;
+	dssegs[nds].segnum = segnum;
+	dssegs[nds].walllight = walllight;
+	dssegs[nds].sil = 0;
+	dssegs[nds].bsilh = 0;
+	dssegs[nds].tsilh = 0;
+	dssegs[nds].midxex = nil;
+	dssegs[nds].tmidbase = 0;
+	if (dssegs[nds].top == nil) {
+		dssegs[nds].top = array[w] of int;
+		dssegs[nds].bot = array[w] of int;
+	}
+	ds := dssegs[nds];
+	for (x := 0; x < w; x++) {
+		ds.top[x] = 0;
+		ds.bot[x] = h;
+	}
+	nds++;
+	ndrawsegs = nds;
+	return nds - 1;
+}
+
+# wall scale (px per world unit) at screen column x: same linear-in-x
+# basis the column loops use (validated against vanilla stepping)
+evalscale(ds: Drawseg, x: int): int
+{
+	frac := 0;
+	if (ds.tspan > 0)
+		frac = int(((big(x) - big(ds.ox1)) << 16) / big(ds.tspan));
+	return ds.s1 + rend->fixedmul(ds.s2 - ds.s1, frac);
+}
+
+# vanilla R_PointOnSegSide (r_main.c): 0 = right/front side, 1 = left.
+# exact transcription incl. the sign-bit fast path (validated vs C on
+# 200k random inputs); ~2147483647 is the 0x80000000 mask as an int.
+pointonsegside(x, y, segnum: int): int
+{
+	seg := lev.segs[segnum];
+	v1 := lev.vertices[seg.v1];
+	v2 := lev.vertices[seg.v2];
+	ldx := v2.x - v1.x;
+	ldy := v2.y - v1.y;
+	if (ldx == 0) {
+		if (x <= v1.x) {
+			if (ldy > 0)
+				return 1;
+			return 0;
+		}
+		if (ldy < 0)
+			return 1;
+		return 0;
+	}
+	if (ldy == 0) {
+		if (y <= v1.y) {
+			if (ldx < 0)
+				return 1;
+			return 0;
+		}
+		if (ldx > 0)
+			return 1;
+		return 0;
+	}
+	dx := x - v1.x;
+	dy := y - v1.y;
+	if (((ldy ^ ldx ^ dx ^ dy) & ~2147483647) != 0) {
+		if (((ldy ^ dx) & ~2147483647) != 0)
+			return 1;
+		return 0;
+	}
+	left := rend->fixedmul(ldy >> 16, dx);
+	right := rend->fixedmul(dy, ldx >> 16);
+	if (right < left)
+		return 0;
+	return 1;
+}
+
+# ---- masked post draw (r_draw.c R_DrawMaskedColumn + colfunc) ----
+# draws one opaque post [yl..yh] already clipped to the caller's clip
+# arrays; light < 0 selects vanilla R_DrawFuzzColumn.  src[soff + k]
+# with k = frac>>16 clamped to [0,len) (safe vs vanilla's unchecked
+# read; identical when the screen math is exact, which it is).
+maskpost(x, yl, yh, light, tmid, iscale: int,
+		src: array of byte, soff, npx: int)
+{
+	if (yl > yh)
+		return;
+	if (light < 0) {
+		r.drawfuzz(x, yl, yh);
+		ncolumns++;
+		return;
+	}
+	if (npx <= 0 || soff < 0 || soff + npx > len src)
+		return;
+	cm := light * 256;
+	frac := tmid + (yl - r.centery) * iscale;
+	dest := yl * r.w + x;
+	for (i := yl; i <= yh; i++) {
+		k := frac >> 16;
+		if (k < 0)
+			k = 0;
+		if (k >= npx)
+			k = npx - 1;
+		r.fb8[dest] = r.colormap[cm + int src[soff + k]];
+		dest += r.w;
+		frac += iscale;
+	}
+	ncolumns++;
+}
+
+# ---- thing sprites (r_things.c) ----
+
+# project one mobj into the vissprite pool (vanilla R_ProjectSprite)
+projectmo(mo: ref Game->Mobj)
+{
+	if (mo == nil || mo.removed || mo.subsector == nil)
+		return;
+	if (mo.sprite < 0 || mo.sprite >= len sprdefs)
+		return;
+	trx := mo.x - vx;
+	TRY := mo.y - vy;
+	gxt := rend->fixedmul(trx, vcos);
+	gyt := -rend->fixedmul(TRY, vsin);
+	tz := gxt - gyt;
+	if (tz < MINZ)
+		return;
+	xscale := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(tz));
+	if (xscale <= 0)
+		return;
+	gxt = -rend->fixedmul(trx, vsin);
+	gyt = rend->fixedmul(TRY, vcos);
+	tx := -(gyt + gxt);
+	atx := tx;
+	if (atx < 0)
+		atx = -atx;
+	if (atx > (tz << 2))
+		return;
+	sd := sprdefs[mo.sprite];
+	f := mo.frame & FF_FRAMEMASK;
+	if (f < 0 || f >= len sd.frames)
+		return;
+	sfr := sd.frames[f];
+	if (len sfr.lump == 0)
+		return;
+	rot := 0;
+	flip := 0;
+	if (sfr.rotate == 1) {
+		if (gmod == nil)
+			return;
+		ang := gmod->pointtoangle2(vx, vy, mo.x, mo.y);
+		rot = ((ang - mo.angle + ANG45HALF9) >> 29) & 7;
+		if (sfr.lump[rot] < 0)
+			return;
+		flip = sfr.flip[rot];
+	} else {
+		if (sfr.lump[0] < 0)
+			return;
+	}
+	lp := sfr.lump[rot];
+	sp := sprpatch[lp];
+	if (sp == nil)
+		return;
+	cx := centerx << 16;
+	txm := tx - sp.xoff;		# tx -= spriteoffset (16.16)
+	x1 := (cx + rend->fixedmul(txm, xscale)) >> 16;
+	if (x1 > w)
+		return;
+	txm += sp.w << 16;		# tx += spritewidth (16.16)
+	x2 := ((cx + rend->fixedmul(txm, xscale)) >> 16) - 1;
+	if (x2 < 0)
+		return;
+
+	vis: ref Vissprite;
+	if (nvis >= MAXVISSPRITES)
+		vis = ref ovvis;	# overflow: discarded, vanilla behavior
+	else {
+		vis = ref viss[nvis];
+		nvis++;
+	}
+	vis.x1 = x1;
+	if (vis.x1 < 0)
+		vis.x1 = 0;
+	vis.x2 = x2;
+	if (vis.x2 >= w)
+		vis.x2 = w - 1;
+	vis.gx = mo.x;
+	vis.gy = mo.y;
+	vis.gz = mo.z;
+	vis.gzt = mo.z + sp.yoff;
+	vis.texturemid = vis.gzt - vz;
+	vis.scale = xscale;
+	iscale := int(16r100000000 / big(xscale));
+	if (flip != 0) {
+		vis.startfrac = (sp.w << 16) - 1;
+		vis.xiscale = -iscale;
+	} else {
+		vis.startfrac = 0;
+		vis.xiscale = iscale;
+	}
+	if (vis.x1 > x1)
+		vis.startfrac += vis.xiscale * (vis.x1 - x1);
+	vis.patch = lp;
+	vis.mobjflags = mo.flags;
+
+	# light (vanilla R_ProjectSprite): fuzz / fullbright / dim from the
+	# thing's SECTOR lightnum (no orientation hack, that is walls only)
+	if (mo.flags & Info->MF_SHADOW) {
+		vis.light = -1;
+	} else if (mo.frame & FF_FULLBRIGHT) {
+		vis.light = 0;
+	} else {
+		sec := mo.subsector.sector;
+		if (sec == nil)
+			return;
+		lnum := sec.lightlevel >> LIGHTSEGSHIFT;
+		if (lnum < 0)
+			lnum = 0;
+		if (lnum >= LIGHTLEVELS)
+			lnum = LIGHTLEVELS - 1;
+		idx := xscale >> LIGHTSCALESHIFT;
+		if (idx >= MAXLIGHTSCALE)
+			idx = MAXLIGHTSCALE - 1;
+		vis.light = scalelight[lnum][idx];
+	}
+}
+
+# draw one vissprite through the clip arrays built by drawspscan
+# (vanilla R_DrawVisSprite + R_DrawMaskedColumn)
+drawvis(vis: ref Vissprite)
+{
+	if (vis.x1 > vis.x2)
+		return;
+	sp := sprpatch[vis.patch];
+	if (sp == nil)
+		return;
+	frac := vis.startfrac;
+	iscale := vis.xiscale;
+	if (iscale < 0)
+		iscale = -iscale;
+	sprtop := (r.centery << 16) - rend->fixedmul(vis.texturemid, vis.scale);
+	for (x := vis.x1; x <= vis.x2; x++) {
+		tc := frac >> 16;
+		frac += vis.xiscale;
+		if (tc < 0)
+			tc = 0;
+		if (tc >= sp.w)
+			tc = sp.w - 1;
+		pos := sp.colofs[tc];
+		# walk the column's posts (vanilla: topdelta != 0xff)
+		while (pos >= 0 && pos + 3 < len sp.raw) {
+			td := int sp.raw[pos];
+			if (td == 16rff)
+				break;
+			ln := int sp.raw[pos + 1];
+			if (ln <= 0 || pos + 3 + ln > len sp.raw)
+				break;
+			topscreen := sprtop + vis.scale * td;
+			bottomscreen := topscreen + vis.scale * ln;
+			yl := (topscreen + 65535) >> 16;
+			yh := (bottomscreen - 1) >> 16;
+			if (yl < sptop[x])
+				yl = sptop[x];
+			if (yh > spbot[x] - 1)
+				yh = spbot[x] - 1;
+			if (yl <= yh)
+				maskpost(x, yl, yh, vis.light,
+					vis.texturemid - (td << 16),
+					iscale, sp.raw, pos + 3, ln);
+			pos += ln + 4;
+		}
+	}
+}
+
+# scan drawsegs for clipping, then draw (vanilla R_DrawSprite):
+# newest seg first; behind-segs flush their masked mid and drop out;
+# silhouette bits clear when the sprite is beyond them; first writer
+# wins per column; remaining columns default to fully open.
+drawspscan(vis: ref Vissprite)
+{
+	if (vis.x1 > vis.x2)
+		return;
+	for (x := vis.x1; x <= vis.x2; x++) {
+		sptop[x] = -2;
+		spbot[x] = -2;
+	}
+	for (i := nds - 1; i >= 0; i--) {
+		ds := dssegs[i];
+		if (ds.x1 > vis.x2 || ds.x2 < vis.x1
+		    || (ds.sil == 0 && ds.midxex == nil))
+			continue;
+		r1 := ds.x1;
+		if (r1 < vis.x1)
+			r1 = vis.x1;
+		r2 := ds.x2;
+		if (r2 > vis.x2)
+			r2 = vis.x2;
+		e1 := evalscale(ds, ds.x1);
+		e2 := evalscale(ds, ds.x2);
+		scale := e1;
+		lowscale := e2;
+		if (e2 > e1) {
+			scale = e2;
+			lowscale = e1;
+		}
+		if (scale < vis.scale
+		    || (lowscale < vis.scale
+		        && pointonsegside(vis.gx, vis.gy, ds.segnum) == 0)) {
+			# seg is behind the sprite: draw its masked mid first
+			if (ds.midxex != nil)
+				flushmask(i, r1, r2);
+			continue;
+		}
+		sil := ds.sil;
+		if (vis.gz >= ds.bsilh)
+			sil &= ~SIL_BOTTOM;
+		if (vis.gzt <= ds.tsilh)
+			sil &= ~SIL_TOP;
+		if ((sil & SIL_BOTTOM) != 0) {
+			for (x = r1; x <= r2; x++)
+				if (spbot[x] == -2)
+					spbot[x] = ds.bot[x];
+		}
+		if ((sil & SIL_TOP) != 0) {
+			for (x = r1; x <= r2; x++)
+				if (sptop[x] == -2)
+					sptop[x] = ds.top[x];
+		}
+	}
+	for (x = vis.x1; x <= vis.x2; x++) {
+		if (spbot[x] == -2)
+			spbot[x] = h;
+		if (sptop[x] == -2)
+			sptop[x] = 0;
+	}
+	drawvis(vis);
+}
+
+# flush one drawseg's masked mid columns [x1..x2] (vanilla
+# R_RenderMaskedSegRange): per-column scale/light from the shared
+# basis, texturemid base set at claim time, mflag makes it idempotent
+# (vanilla's maskedtexturecol = SHRT_MAX marker)
+flushmask(dsidx, x1, x2: int)
+{
+	ds := dssegs[dsidx];
+	if (ds.midxex == nil || ds.mcol == nil || x1 > x2)
+		return;
+	tex := ds.midxex;
+	posts := tex.posts;
+	if (posts == nil)
+		return;
+	for (x := x1; x <= x2; x++) {
+		if (ds.mflag[x] != 1)
+			continue;
+		s := evalscale(ds, x);
+		if (s <= 0)
+			continue;
+		lidx := s >> LIGHTSCALESHIFT;
+		if (lidx >= MAXLIGHTSCALE)
+			lidx = MAXLIGHTSCALE - 1;
+		light := scalelight[ds.walllight][lidx];
+		iscale := int(16r100000000 / big(s));
+		col := ds.mcol[x];
+		col %= tex.width;
+		if (col < 0)
+			col += tex.width;
+		sprtop := (r.centery << 16)
+			- rend->fixedmul(ds.tmidbase, s);
+		p := posts[col];
+		if (p == nil) {
+			ds.mflag[x] = 2;
+			continue;
+		}
+		for (j := 0; j + 1 < len p; j += 2) {
+			td := p[j];
+			ln := p[j + 1];
+			topscreen := sprtop + s * td;
+			bottomscreen := topscreen + s * ln;
+			yl := (topscreen + 65535) >> 16;
+			yh := (bottomscreen - 1) >> 16;
+			if (yl < ds.top[x])
+				yl = ds.top[x];
+			if (yh > ds.bot[x] - 1)
+				yh = ds.bot[x] - 1;
+			if (yl <= yh)
+				maskpost(x, yl, yh, light,
+					ds.tmidbase - (td << 16),
+					iscale, tex.data,
+					col * tex.height + td, ln);
+		}
+		ds.mflag[x] = 2;
+	}
+}
+
+# vanilla R_DrawMasked: sprites back-to-front (ascending scale, far
+# first), then any masked mid not yet flushed.  psprites come later
+# (weapon milestone).
+drawmasked()
+{
+	if (nvis > 1) {
+		ord := array[nvis] of int;
+		for (i := 0; i < nvis; i++)
+			ord[i] = i;
+		for (i = 0; i < nvis; i++) {
+			best := i;
+			for (j := i + 1; j < nvis; j++)
+				if (viss[ord[j]].scale < viss[ord[best]].scale)
+					best = j;
+			if (best != i) {
+				t := ord[i];
+				ord[i] = ord[best];
+				ord[best] = t;
+			}
+		}
+		for (i = 0; i < nvis; i++)
+			drawspscan(ref viss[ord[i]]);
+	} else if (nvis == 1) {
+		drawspscan(ref viss[0]);
+	}
+	for (i := nds - 1; i >= 0; i--) {
+		if (dssegs[i].midxex != nil)
+			flushmask(i, dssegs[i].x1, dssegs[i].x2);
+	}
+}
+
+# ---- sprite defs from the WAD (r_data.c R_InitSpriteDefs) ----
+
+le16(d: array of byte, o: int): int
+{
+	return int d[o] | (int d[o + 1] << 8);
+}
+
+le16s(d: array of byte, o: int): int
+{
+	v := int d[o] | (int d[o + 1] << 8);
+	if (v >= 32768)
+		v -= 65536;
+	return v;
+}
+
+le32(d: array of byte, o: int): int
+{
+	return int d[o] | (int d[o + 1] << 8)
+		| (int d[o + 2] << 16) | (int d[o + 3] << 24);
+}
+
+# read + parse one sprite patch lump (header + column directory kept
+# with the raw bytes: posts are walked from raw like vanilla)
+loadsprpatch(idx: int): (string, ref SprPatch)
+{
+	(d, err) := wfile.read(idx);
+	if (err != nil)
+		return (err, nil);
+	if (len d < 8)
+		return ("short patch header", nil);
+	pw := le16(d, 0);
+	ph := le16(d, 2);
+	if (pw <= 0 || ph <= 0 || pw > 1024 || ph > 1024)
+		return ("bad patch size", nil);
+	if (len d < 8 + 4 * pw)
+		return ("short columnofs", nil);
+	xoff := le16s(d, 4) << 16;	# leftoffset -> 16.16
+	yoff := le16s(d, 6) << 16;	# topoffset -> 16.16
+	colofs := array[pw] of int;
+	for (i := 0; i < pw; i++) {
+		colofs[i] = le32(d, 8 + 4 * i);
+		if (colofs[i] < 8 + 4 * pw || colofs[i] >= len d)
+			return ("bad columnofs", nil);
+	}
+	return (nil, ref SprPatch(pw, ph, xoff, yoff, colofs, d));
+}
+
+# vanilla R_InstallSpriteLump; errors degrade to skipping the entry
+# (vanilla I_Errors -- our final completeness check drops the sprite)
+instlump(frame, rot, lumpidx, flipped: int)
+{
+	if (frame < 0 || frame >= 29 || rot < 0 || rot > 8)
+		return;
+	if (frame > sprmaxf)
+		sprmaxf = frame;
+	if (rot == 0) {
+		if (sprtemp[frame].rotate != -1)
+			return;	# dup/conflict: keep the first (vanilla errors)
+		sprtemp[frame].rotate = 0;
+		for (ri := 0; ri < 8; ri++) {
+			sprtemp[frame].lump[ri] = lumpidx;
+			sprtemp[frame].flip[ri] = flipped;
+		}
+		return;
+	}
+	if (sprtemp[frame].rotate == 0)
+		return;
+	sprtemp[frame].rotate = 1;
+	ri := rot - 1;
+	if (sprtemp[frame].lump[ri] >= 0)
+		return;		# duplicate rotation: keep first
+	sprtemp[frame].lump[ri] = lumpidx;
+	sprtemp[frame].flip[ri] = flipped;
+}
+
+# build sprdefs[] from S_START..S_END lumps vs Info->sprnames
+# (vanilla R_InitSpriteDefs)
+loadsprdefs(): string
+{
+	if (inf == nil) {
+		inf = load Info Info->PATH;
+		if (inf == nil)
+			return "view: can't load Info module";
+		# each load gets a fresh module value: build our tables
+		ierr := inf->init();
+		if (ierr != nil)
+			return ierr;
+	}
+	names := inf->sprnames;
+	if (names == nil || len names == 0)
+		return "view: no sprnames in Info";
+	s0 := wfile.find("S_START");
+	s1 := wfile.find("S_END");
+	if (s0 < 0 || s1 < 0 || s1 <= s0)
+		return "view: no S_START/S_END markers in WAD";
+	sprfirst = s0 + 1;
+	nlumps := s1 - s0 - 1;
+	sprpatch = array[nlumps] of ref SprPatch;
+	for (i := 0; i < nlumps; i++) {
+		(perr, p) := loadsprpatch(sprfirst + i);
+		if (perr != nil)
+			return sys->sprint("view: sprite lump %d: %s",
+				sprfirst + i, perr);
+		sprpatch[i] = p;
+	}
+	sprdefs = array[len names] of SprDef;
+	sprtemp = array[29] of SpriteFrame;
+	for (si := 0; si < len names; si++) {
+		sprname = names[si];
+		for (f := 0; f < 29; f++) {
+			sprtemp[f].rotate = -1;
+			sprtemp[f].lump = array[8] of int;
+			sprtemp[f].flip = array[8] of int;
+			for (ri := 0; ri < 8; ri++) {
+				sprtemp[f].lump[ri] = -1;
+				sprtemp[f].flip[ri] = 0;
+			}
+		}
+		sprmaxf = -1;
+		for (l := sprfirst; l < sprfirst + nlumps; l++) {
+			ln := wfile.lumps[l].name;
+			if (len ln < 6 || !samename(ln, sprname))
+				continue;
+			instlump(int ln[4] - int 'A',
+				int ln[5] - int '0', l - sprfirst, 0);
+			if (len ln > 7 && ln[6] != 0) {
+				instlump(int ln[6] - int 'A',
+					int ln[7] - int '0', l - sprfirst, 1);
+			}
+		}
+		if (sprmaxf < 0) {
+			sprdefs[si].frames = array[0] of SpriteFrame;
+			continue;
+		}
+		# completeness: vanilla I_Errors; we drop the sprite (invisible)
+		bad := 0;
+		for (f = 0; f <= sprmaxf; f++) {
+			if (sprtemp[f].rotate == -1)
+				bad = 1;
+			if (sprtemp[f].rotate == 1) {
+				for (ri := 0; ri < 8; ri++)
+					if (sprtemp[f].lump[ri] < 0)
+						bad = 1;
+			}
+		}
+		if (bad) {
+			sys->print("view: sprite %s incomplete frames, skipped\n",
+				sprname);
+			sprdefs[si].frames = array[0] of SpriteFrame;
+			continue;
+		}
+		frames := array[sprmaxf + 1] of SpriteFrame;
+		for (f = 0; f <= sprmaxf; f++)
+			frames[f] = sprtemp[f];
+		sprdefs[si].frames = frames;
+	}
+	return nil;
+}
+
+# first 4 chars equal (lump name vs 4-char sprite name)
+samename(s, p: string): int
+{
+	if (len p != 4 || len s < 4)
+		return 0;
+	return s[0] == p[0] && s[1] == p[1] && s[2] == p[2] && s[3] == p[3];
 }
 
 # Find or create a visplane for the given z/flat/light.  Returns the

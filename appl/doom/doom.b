@@ -13,8 +13,6 @@ include "video.m";
 include "rend.m";
 	rend: Rend;
 	Renderer: import rend;
-include "view.m";
-	view: View;
 include "map.m";
 	map: Map;
 	Level: import map;
@@ -25,6 +23,8 @@ include "game.m";
 	game: Game;
 	Player: import game;
 	Mobj: import game;
+include "view.m";
+	view: View;
 
 Doom: module
 {
@@ -554,7 +554,7 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 		view = load View "view.dis";
 	if (view == nil)
 		fail(sys->sprint("can't load View module: %r"));
-	err = view->init(rr, l, vid_w, vid_h);
+	err = view->init(rr, l, w, game, vid_w, vid_h);
 	if (err != nil)
 		fail(err);
 
@@ -694,7 +694,8 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 		# render: update view from player, walk BSP, present
 		game->setview();
 		view->render(game->viewx, game->viewy, game->viewz,
-			game->viewangle, game->viewcos, game->viewsin);
+			game->viewangle, game->viewcos, game->viewsin,
+			game->mobjs);
 		rr.convert(v.fb);
 		v.present();
 
@@ -723,7 +724,8 @@ walltest(rr: ref Renderer, v: ref Context, mo: ref Mobj)
 		game->ticker();
 		game->setview();
 		view->render(game->viewx, game->viewy, game->viewz,
-			game->viewangle, game->viewcos, game->viewsin);
+			game->viewangle, game->viewcos, game->viewsin,
+			game->mobjs);
 		rr.convert(v.fb);
 		v.present();
 		sys->sleep(1000 / 35);
@@ -735,7 +737,8 @@ walltest(rr: ref Renderer, v: ref Context, mo: ref Mobj)
 		game->ticker();
 		game->setview();
 		view->render(game->viewx, game->viewy, game->viewz,
-			game->viewangle, game->viewcos, game->viewsin);
+			game->viewangle, game->viewcos, game->viewsin,
+			game->mobjs);
 		rr.convert(v.fb);
 		v.present();
 		sys->print("  step %2d angle %d deg\n", s + 1, bamdegrees(mo.angle));

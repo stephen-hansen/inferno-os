@@ -14,6 +14,8 @@ Rend: module {
 		width, height:	int;
 		mask:	int;		# largest power of two <= width, minus 1
 		data:	array of byte;	# column-major composite; col c at c*height
+		posts:	array of array of int;	# per column: (topdelta, length) pairs,
+					# opaque runs in texture space (for masked mids)
 	};
 
 	Flat: adt {
@@ -50,6 +52,10 @@ Rend: module {
 		drawspan:	fn(r: self ref Renderer, y, x1, x2, light: int,
 					fl: ref Flat, xfrac, yfrac, xstep, ystep: int);
 
+		# vanilla R_DrawFuzzColumn: rows yl..yh at column x, no source;
+		# samples fb8 at +-w offsets through colormap row 6 (r_draw.c)
+		drawfuzz:	fn(r: self ref Renderer, x, yl, yh: int);
+
 		# palette-map fb8 into dst as BGRX quadruplets for XRGB32
 		# (len dst >= w*h*4)
 		convert:	fn(r: self ref Renderer, dst: array of byte);
@@ -72,4 +78,5 @@ Rend: module {
 				tex: ref Texture, col, texturemid, iscale: int);
 	rdrawspan:	fn(r: ref Renderer, y, x1, x2, light: int,
 				fl: ref Flat, xfrac, yfrac, xstep, ystep: int);
+	rdrawfuzz:	fn(r: ref Renderer, x, yl, yh: int);
 };
