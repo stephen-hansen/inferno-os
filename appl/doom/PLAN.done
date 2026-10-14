@@ -373,8 +373,67 @@ Milestones (each independently testable)
          R_SpawnMapThing only turns playeringame slots into
          players; single-player has start 1 only.  Now types 2-4
          return without spawning (type 1 still spawns).
-         BUG FIX (defense): maskpost now clamps yl/yh to the
-         screen ([0, h-1]) before the fb8 write loop - a garbage
-         spbot>sptop clip is a hard array-bounds crash otherwise.
-         SMOKE: timeout 30s emu run to t=350, clean
-         (spr 15 ds 176 mid 0 at spawn), no emu left.
+          BUG FIX (defense): maskpost now clamps yl/yh to the
+          screen ([0, h-1]) before the fb8 write loop - a garbage
+          spbot>sptop clip is a hard array-bounds crash otherwise.
+          SMOKE: timeout 30s emu run to t=350, clean
+          (spr 15 ds 176 mid 0 at spawn), no emu left.
+
+       [ ] 8c follow-up (model switch; fresh source diff r_things.c /
+          r_segs.c / r_bsp.c / r_draw.c / r_main.c vs view.b + rend.b):
+          User: sprites still vanish / partial-width at some
+          positions/angles/elevations; background walls (E1M1 stairs)
+          draw over foreground sprites (pillar).
+          BUG FIX (sprite vanish at elevations / walls over sprites):
+          addline's markfloor/markceiling implemented vanilla's
+          shared-plane compare (r_segs.c:536-560) + closed-door force
+          but NOT the view-plane gates that follow in the same
+          function (r_segs.c:630-642): front floor >= viewz ->
+          markfloor false; front ceiling <= viewz (non-sky) ->
+          markceiling false.  At steps/pits/ledges seen from below/
+          above the textureless clip advance closed rows vanilla
+          leaves open, and the drawseg snapshot then clipped sprites
+          behind (feet vanish; the wall shows through where the
+          sprite should be).  Validated BEFORE editing
+          (/tmp/opencode/markgate_check.py): port marks vs vanilla
+          marks over all two-sided sides x all reachable eye heights
+          on E1M1..E1M9 (4564 sides) -> 42764 floor + 25453 ceiling
+          divergences, all port=true/vanilla=false; with the two
+          gate statements added the same script reports zero
+          divergences.  markfloor/markceiling feed only the advance
+          (view.b:1094/1096); plane interning already gates on viewz
+          directly.  One-sided segs need no change (vanilla 1S branch
+          ignores marks for clips; our interning gates match).
+          BUG FIX (wall light banding): drawtwosided computed the
+          per-column light index but assigned wrow only at x == lx1,
+          so whole segs shaded with the first column's row.  Vanilla
+          (r_segs.c:260-263) picks dc_colormap per column as rw_scale
+          steps.  Now assigned every column (1S loop already was).
+          BUG FIX (drawseg pool exhaustion): addline never culled
+          occluded segs (no R_ClipSolidWallSegment/R_ClipPassWallSegment
+          equivalent), so fully-hidden segs burned pool slots; real
+          frames saturated the 256 pool (E1M5 demo: ds 256 on every
+          sample) and later visible segs - walls and sprite clips -
+          were dropped entirely.  addline now skips segs whose
+          [lx1,lx2] is entirely closed in solid[] (first-open >=
+          one-past-last = vanilla ceilingclip >= floorclip), exactly
+          the ranges vanilla never sends to R_StoreWallRange.  Skip
+          is pixel-exact: closed columns draw nothing (yt/yb clamp
+          to empty), markplane drops empty strips, advances keep the
+          column closed; culled mids match vanilla (never recorded).
+          A/B (deterministic DEMO1, old vs new build): player
+          pos/angle/spr identical every sample; ds 256 -> 2..28;
+          PROJ streams identical (zero removed lines); clip checker
+          (evalscale/behind-rule/WAD geometry) clean on 79566 new
+          detail lines; 18271/18283 clip sets identical, 0 profile
+          changes, 12 sets differ with same invisible outcome
+          (nearer legit writer wins now that overflow no longer drops
+          far segs).  E1M1 walltest (-p) sample clean (559 lines).
+          SMOKE: build clean (pre-existing warnings only); timeout
+          45s demo + 100s walltest runs, no emu left.
+          TEMP instrumentation retained (PDROP/PROJ/CMISS/POFF behind
+          doom -v): still hunting the residual partial-WIDTH reports;
+          sprite projection/clip/sort/flush/asset code all diffed
+          clean against vanilla this pass (scale units, xiscale,
+          flip, rotation >>29&7, sil/snapshot gates, maskpost frac,
+          drawfuzz, R_GetColumn wrap, pool overflow, calcheight).

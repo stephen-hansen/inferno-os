@@ -647,6 +647,25 @@ addline(segnum: int)
 	if (lx2 >= w)
 		lx2 = w - 1;
 
+	# vanilla R_ClipSolidWallSegment/R_ClipPassWallSegment: a range
+	# fully covered by solid columns never reaches R_StoreWallRange
+	# (no drawseg slot, no wall draw, no plane claims).  A column is
+	# closed when first-open >= one-past-last (vanilla ceilingclip >=
+	# floorclip).  Skipping is pixel-exact: closed columns draw
+	# nothing (yt/yb clamp to empty), markplane drops empty strips,
+	# and advances keep the column closed.  It also keeps occluded
+	# segs from burning drawseg pool slots: real frames saturate the
+	# 256 pool, after which visible segs (walls + sprite clips) are
+	# dropped entirely.
+	shut := 1;
+	for (cx := lx1; cx <= lx2; cx++)
+		if (solid[2*cx] < solid[2*cx+1]) {
+			shut = 0;
+			break;
+		}
+	if (shut)
+		return;
+
 	# vanilla light indices (r_segs.c R_StoreWallRange + r_plane.c).
 	# plane claims use the sector index i = lightlevel>>LIGHTSEGSHIFT
 	# with extralight = 0; wall columns additionally get the orientation
@@ -707,6 +726,17 @@ addline(segnum: int)
 			markfloor = 1;
 			markceiling = 1;
 		}
+		# vanilla view-plane gates (r_segs.c:630-642): a front plane
+		# on the wrong side of the view plane is definitely invisible
+		# and must not advance the clip.  Without these, a shared-
+		# height step seen from below/above (stairs, pits, ledges)
+		# closes rows vanilla leaves open, and the snapshot clips
+		# sprites standing behind (feet vanish; the wall shows
+		# through where the sprite should be).
+		if (floorz >= vz)
+			markfloor = 0;
+		if (ceilz <= vz && sec.ceilingtexture != SKYFLAT)
+			markceiling = 0;
 		# two-sided: draw upper and lower, maybe masked middle
 		drawtwosided(dsidx, sd, ld.flags, lx1, lx2, ox1, ox2,
 			d1, d2, u1, u2, ceilz, floorz, back.ceilingheight,
@@ -994,11 +1024,11 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 
 		# vanilla wall light: index = rw_scale>>LIGHTSCALESHIFT
 		# (r_segs.c:260-263), clamp MAXLIGHTSCALE-1, row from
-		# scalelight[front lightnum][index]
+		# scalelight[front lightnum][index] -- per column (vanilla
+		# recomputes dc_colormap every column as rw_scale steps).
 		lidx := scale >> LIGHTSCALESHIFT;
 		if (lidx >= MAXLIGHTSCALE)
 			lidx = MAXLIGHTSCALE - 1;
-		if (x == lx1)
 		wrow := scalelight[walllight][lidx];
 
 		iscale: int;
