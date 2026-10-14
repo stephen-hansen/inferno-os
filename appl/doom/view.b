@@ -675,11 +675,33 @@ addline(segnum: int)
 	# choose texture
 	texname := sd.midtexture;
 	if (back != nil) {
+		# vanilla markfloor/markceiling (r_segs.c:536-560): a plane is
+		# marked when back differs on z/pic/light, or the door is closed.
+		# The sky hack makes equal-sky ceilings always z-equal (vanilla
+		# rewrites worldtop = worldhigh before the compare).  These gate
+		# drawtwosided's textureless clip advance (r_segs.c:315, 345).
+		markfloor := 1;
+		markceiling := 1;
+		if (back.floorheight == floorz
+			&& back.floortexture == sec.floortexture
+			&& back.lightlevel == sec.lightlevel)
+			markfloor = 0;
+		if (sec.ceilingtexture == SKYFLAT && back.ceilingtexture == SKYFLAT) {
+			if (back.lightlevel == sec.lightlevel)
+				markceiling = 0;
+		} else if (back.ceilingheight == ceilz
+			&& back.ceilingtexture == sec.ceilingtexture
+			&& back.lightlevel == sec.lightlevel)
+			markceiling = 0;
+		if (back.ceilingheight <= floorz || back.floorheight >= ceilz) {
+			markfloor = 1;
+			markceiling = 1;
+		}
 		# two-sided: draw upper and lower, maybe masked middle
 		drawtwosided(dsidx, sd, ld.flags, lx1, lx2, ox1, ox2,
 			d1, d2, u1, u2, ceilz, floorz, back.ceilingheight,
 			back.floorheight, back.ceilingtexture, pllight,
-			walllight);
+			walllight, markfloor, markceiling);
 		return;
 	}
 
@@ -812,7 +834,7 @@ addline(segnum: int)
 drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 	lx1, lx2, ox1, ox2, d1, d2, u1, u2: int,
 	fceilz, ffloorz, bceilz, bfloorz: int, bceiltex: string,
-	plight, walllight: int)
+	plight, walllight, markfloor, markceiling: int)
 {
 	ds := dssegs[dsidx];
 	nsegs++;
@@ -1048,15 +1070,33 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 		# advance the column clips to the front edges where no texture
 		# covered them.  An upper/lower texture draw above already set
 		# cclip/fclip past these edges, so the max/min are no-ops there.
-		# This mirrors vanilla's "no top/bottom wall" clip branches
-		# (ceilingclip = yl-1, floorclip = yh+1); vanilla gates those on
-		# markceiling/markfloor, but the gate only suppresses the advance
-		# when both sides share the plane, and then the next seg claims
-		# with identical z/flat/light and joins the same visplane anyway.
-		if (fctop > cclip)
+		# This is vanilla's "no top/bottom wall" clip branches
+		# (ceilingclip = yl-1, floorclip = yh+1) INCLUDING their
+		# markceiling/markfloor gates (r_segs.c:315, 345): at a portal
+		# where both sides share the plane vanilla leaves the clip OPEN,
+		# and the sprite clipper must not cut either -- sprites behind
+		# stand on that plane and project past this seg's edge row (feet
+		# below a shared floor; entirely when the shared floor is above
+		# the eye, flbot < 0 closed the whole column).  The gate only
+		# skips the advance when the planes match, and then the next
+		# seg behind claims with identical z/flat/light and joins the
+		# same visplane anyway.
+		if (markceiling && fctop > cclip)
 			cclip = fctop;
-		if (flbot + 1 < fclip)
+		if (markfloor && flbot + 1 < fclip)
 			fclip = flbot + 1;
+		# clamp to the screen window: projy extremes for near-camera
+		# geometry must not escape [0..h], and one unclamped write
+		# inverts the visible region (yt > yb) for the rest of the
+		# frame.  fclip <= cclip is just a closed column either way.
+		if (cclip < 0)
+			cclip = 0;
+		if (cclip > h)
+			cclip = h;
+		if (fclip < 0)
+			fclip = 0;
+		if (fclip > h)
+			fclip = h;
 
 		# mark the front sector's planes in the strips above the upper
 		# wall and below the lower wall; markplane clamps both to the
@@ -1213,6 +1253,12 @@ pointonsegside(x, y, segnum: int): int
 maskpost(x, yl, yh, light, tmid, iscale: int,
 		src: array of byte, soff, npx: int)
 {
+	# belt-and-braces screen clamp: a clip read from a drawseg is
+	# already in [0..h], but an fb8 write outside it is a hard crash.
+	if (yl < 0)
+		yl = 0;
+	if (yh >= h)
+		yh = h - 1;
 	if (yl > yh)
 		return;
 	if (light < 0) {

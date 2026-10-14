@@ -302,8 +302,13 @@ spawnmapthing(t: Thing)
 		return;
 	if (t.typ <= 0)
 		return;
-	if (t.typ <= 4) {		# player start
-		spawnplayer(t);
+	# player start: vanilla R_SpawnMapThing only turns slots into
+	# players when playeringame[skill slot] is set; single-player has
+	# only start 1.  spawning 2-4 as mobjs put three extra doom guys
+	# at the E1M1 start.
+	if (t.typ <= 4) {
+		if (t.typ == 1)
+			spawnplayer(t);
 		return;
 	}
 

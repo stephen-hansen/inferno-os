@@ -336,3 +336,45 @@ Milestones (each independently testable)
          midtex renamed midxex (all code uses midxex), rotation
          locals renamed ri (r shadowed the global Renderer).
          SMOKE: timeout 30s emu run to t=350, clean, no emu left.
+
+      [ ] 8b follow-up (user visual feedback round 1):
+         User: sprites mostly render, but at some player rotations
+         (esp. 45/135 deg) they vanish or come out partial in
+         WIDTH, sometimes background walls draw over them; plus
+         three extra doomguys at the E1M1 start.
+         BUG FIX (sprite vanish/partial at rotation angles):
+         drawtwosided's textureless window advance (cclip = fctop,
+         fclip = flbot+1) was UNGATED, but vanilla only does
+         ceilingclip = yl-1 / floorclip = yh+1 when
+         markceiling/markfloor (r_segs.c:315/345), which are false
+         when both sides share the plane - same floor z/pic/light
+         (r_segs.c:536-544; sky-sky ceilings are z-equal after the
+         worldtop=worldhigh hack; closed doors force both true).
+         At shared-plane portals vanilla leaves the clip OPEN while
+         we closed it to the seg's floor/ceiling edge row: sprites
+         behind stand on that same plane and project PAST the
+         edge row (feet below a shared floor line; when the shared
+         floor was above the eye flbot < 0 drove fclip negative
+         and blanked the whole sprite column) - exactly the
+         rotation-dependent vanish/partial-width and walls-over-
+         sprites symptoms (which segs are on screen depends on
+         view angle).  addline now computes markfloor/markceiling
+         with the vanilla formula (sec/back sector fields; the
+         existing sky hack in drawtwosided no longer needs to
+         guard the ceiling advance - the gate does it) and passes
+         them to drawtwosided; the advance is gated, and cclip/
+         fclip are clamped to [0..h] at the solid[] store (PLAN
+         porting-note requirement; fclip<=cclip is a closed column
+         either way).  Vanilla raw-source basis: r_segs.c 440-575
+         (markfloor/markceiling), 285-355 (clip stores).
+         BUG FIX (three extra doomguys at spawn): game.b
+         spawnmapthing spawned EVERY player start (t.typ <= 4 ->
+         spawnplayer), so co-op starts 2-4 became mobjs.  Vanilla
+         R_SpawnMapThing only turns playeringame slots into
+         players; single-player has start 1 only.  Now types 2-4
+         return without spawning (type 1 still spawns).
+         BUG FIX (defense): maskpost now clamps yl/yh to the
+         screen ([0, h-1]) before the fb8 write loop - a garbage
+         spbot>sptop clip is a hard array-bounds crash otherwise.
+         SMOKE: timeout 30s emu run to t=350, clean
+         (spr 15 ds 176 mid 0 at spawn), no emu left.
