@@ -38,4 +38,12 @@ View: module {
 	# vissprites, drawsegs, clip arrays and fb8 to path for
 	# offline replay.  tic is recorded in the log header.
 	snapshot:	fn(path: string, tic: int): string;
+
+	# frame-history ring (F2 review): the last ~35 rendered frames
+	# are retained; step through them frozen and snapshot any one.
+	# Indices are logical (0 = oldest).  tic is dbgframes at capture.
+	ringlen:	fn(): int;
+	ringtic:	fn(i: int): int;
+	ringrestore:	fn(i: int): string;	# copy ring fb to renderer fb8
+	ringsnap:	fn(path: string, htic: int, i: int): string;
 };

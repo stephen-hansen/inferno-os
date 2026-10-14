@@ -496,6 +496,7 @@ Down:	con KView|3;
 Left:	con KView|4;
 Right:	con KView|5;
 Snap:	con KView|6;	# F1: dump a frame snapshot log for offline replay
+Rev:	con KView|7;	# F2: toggle frame-history review (step with Left/Right)
 LCtrl:	con KShift|2;
 RCtrl:	con KShift|3;
 
@@ -515,11 +516,17 @@ XK_Left:	con 113;
 XK_Right:	con 114;
 XK_Down:	con 116;
 XK_F1:	con 67;	# evdev 59 + 8
+XK_F2:	con 68;	# evdev 60 + 8
 
 keystate:	array of int;
 keych:		chan of int;
 snapreq:	int;		# F1 pressed: dump a frame snapshot after present
 snapno:		int;		# snapshot file sequence number
+revreq:		int;		# F2 pressed: toggle frame-history review
+review:		int;		# -1 = live; else logical ring index under review
+revshow:	int;		# review frame needs presenting
+prevleft, prevright:	int;	# nav edge state in review
+navhold:	int;		# held-nav repeat counter in review
 demosrc:	array of byte;	# TEMP demo playback stream (DEMO1 lump)
 demoofs:	int;
 verbose:	int;		# TEMP: -v enables view sprite diagnostics
@@ -642,7 +649,7 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context, demo1: int)
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
 	mo := p.mo;
-	sys->print("play: E1M1 skill medium: arrows/wasd move, space=use, esc=quit, F1=snapshot\n");
+	sys->print("play: E1M1 skill medium: arrows/wasd move, space=use, esc=quit, F1=snapshot, F2=review\n");
 	sys->print("  player at %d,%d angle %d deg\n",
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
 
@@ -691,8 +698,16 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context, demo1: int)
 			if (!drain || quit)
 				break;
 		}
-		if (quit)
-			break;
+		if (quit) {
+			if (review != -1) {
+				# Esc in review exits review instead of quitting
+				quit = 0;
+				review = -1;
+				keystate[Esc] = 0;
+				sys->print("review: resumed live\n");
+			} else
+				break;
+		}
 		# idle: block for the next key or tic; keys arriving while
 		# waiting are handled immediately, exactly as before
 		alt {
@@ -701,11 +716,104 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context, demo1: int)
 		<-tick =>
 			dotic = 1;
 		}
-		if (quit)
-			break;
+		if (quit) {
+			if (review != -1) {
+				# Esc in review exits review instead of quitting
+				quit = 0;
+				review = -1;
+				keystate[Esc] = 0;
+				sys->print("review: resumed live\n");
+			} else
+				break;
+		}
 		if (!dotic)
 			continue;
 		dotic = 0;
+
+		# frame-history review (F2): sim frozen, step through the
+		# ring with Left/Right (tap = step, hold = scroll), F1
+		# snapshots the shown frame, F2/Esc resumes live play.
+		if (revreq) {
+			revreq = 0;
+			if (review != -1) {
+				review = -1;
+				sys->print("review: resumed live\n");
+			} else {
+				rn := view->ringlen();
+				if (rn > 0) {
+					review = rn - 1;
+					revshow = 1;
+				} else
+					sys->print("review: no frames yet\n");
+			}
+		}
+		if (review != -1) {
+			rvn := view->ringlen();
+			if (rvn <= 0) {
+				review = -1;
+			} else {
+				if (review >= rvn)
+					review = rvn - 1;
+				rvni := review;
+				rvstep := 0;
+				if (keystate[Left] && !prevleft) {
+					rvni--;
+					rvstep = 1;
+				}
+				if (keystate[Right] && !prevright) {
+					rvni++;
+					rvstep = 1;
+				}
+				if (!rvstep) {
+					if (keystate[Left] || keystate[Right])
+						navhold++;
+					else
+						navhold = 0;
+					if (navhold >= 5) {
+						if (keystate[Left])
+							rvni--;
+						if (keystate[Right])
+							rvni++;
+						navhold = 0;
+					}
+				} else
+					navhold = 0;
+				prevleft = keystate[Left];
+				prevright = keystate[Right];
+				if (rvni < 0)
+					rvni = 0;
+				if (rvni >= rvn)
+					rvni = rvn - 1;
+				if (snapreq) {
+					snapreq = 0;
+					rpath := sys->sprint("doomsnap%d.log", snapno);
+					snapno++;
+					rerr := view->ringsnap(rpath, tic, rvni);
+					if (rerr != nil)
+						sys->print("snapshot FAILED: %s\n", rerr);
+					else
+						sys->print("snapshot %s written (review %d/%d, frame tic %d)\n",
+							rpath, rvni, rvn, view->ringtic(rvni));
+				}
+				if (rvni != review || revshow) {
+					revshow = 0;
+					review = rvni;
+					perr := view->ringrestore(rvni);
+					if (perr != nil) {
+						sys->print("review: %s\n", perr);
+						review = -1;
+					} else {
+						rr.convert(v.fb);
+						v.present();
+						sys->print("review %d/%d frame tic %d\n",
+							rvni, rvn, view->ringtic(rvni));
+					}
+				}
+			}
+			continue;
+		}
+		prevleft = keystate[Left];
+		prevright = keystate[Right];
 
 		tic++;
 
@@ -790,8 +898,8 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context, demo1: int)
 			p = game->consoleplayer();
 			if (p != nil && p.mo != nil)
 				mo = p.mo;
-			sys->print("t=%d pos %d,%d angle %d deg health %d spr %d ds %d mid %d\n",
-				tic, mo.x >> 16, mo.y >> 16,
+			sys->print("t=%d pos %d,%d,%d angle %d deg health %d spr %d ds %d mid %d\n",
+				tic, mo.x >> 16, mo.y >> 16, mo.z >> 16,
 				bamdegrees(mo.angle), mo.health,
 				view->nsprites, view->ndrawsegs, view->nmasked);
 		}
@@ -870,6 +978,8 @@ keysym(code: int): int
 		return Right;
 	XK_F1 =>
 		return Snap;
+	XK_F2 =>
+		return Rev;
 	* =>
 		return -1;
 	}
@@ -932,6 +1042,8 @@ handlekey(k: int): int
 		keystate[k] = 1;
 		if (k == Snap)
 			snapreq = 1;	# edge: one snapshot per press
+		if (k == Rev)
+			revreq = 1;	# edge: toggle review per press
 	}
 	return 0;
 }

@@ -454,3 +454,42 @@ Milestones (each independently testable)
           XTEST F1 injection: 3 taps -> 3 logs with tic/pos/angle
           confirmations; content parsed and validated (92 mobjs,
           15 vis, 43 segs, 200 hex rows at spawn).
+          FRAME-HISTORY REVIEW (F2): for 1-frame glitches too fast to
+          catch with F1.  Every render captures full state into a
+          preallocated 35-slot ring (zero per-frame allocation):
+          camera, fb8, vissprites, drawseg scalars + packed clip
+          slices, compact mobjs (sector as index+heights+light),
+          final solid clips.  F2 freezes the sim and reviews the
+          ring: Left/Right step (tap) or scroll (hold), F1 snapshots
+          the shown frame to doomsnapN.log, F2/Esc resumes live.
+          view->snapshot() refactored to capture()+snapshotfrom()
+          shared by live F1 and ring; SPTOP/SPBOT omitted from ring
+          files (per-sprite scratch, re-derived offline).  Validated
+          headless (auto snapshot+ringsnap+ringrestore at tic 100,
+          then removed): ring retains 35 frames, files parse with
+          existing tools, basis oracle clean.  Mid stored as texture
+          index (name resolved at emit); sector as index via
+          height/light/flat tuple match.
+          BUG FIX (ROOT CAUSE of the sprite glitches - user snapshots
+          doomsnap0-2): addline never did vanilla R_AddLine's
+          backface cull (r_bsp.c:265-276, span >= ANG180).  Backfacing
+          twins of visible walls entered the drawseg pool (41 of ~110
+          slots in every snapshot) and their clip snapshots hid
+          sprites standing geometrically in front (gibbed-marine
+          corpse fully/partially invisible in snaps 0/1 via backfacing
+          seg 293 while twin seg 320 was correctly stored+skipped),
+          or opened rows showing sprites through walls (snap2 pillar
+          base cols 189-197).  Offline drawspscan replay from the
+          snapshot data matches the engine bit-for-bit and predicts
+          the fix (corpse columns all open post-cull).  Fix: span =
+          angle1-angle2 via gmod->pointtoangle2 (bit-exact vanilla
+          tantoangle table, verified zero table-vs-atan disagreements
+          on snap0/2 and 4 boundary keeps on snap1); return when
+          signed span < 0 (== u32 span >= ANG180).  Also verified:
+          map.b preserves SEGS lump vertex order (side test inputs
+          genuine); vanilla R_ScaleFromGlobalAngle degenerates to
+          64*FRACUNIT for such oblique segs so vanilla culls rather
+          than clips - matching our cull.  A/B on deterministic
+          DEMO1: sim identical, PROJ identical, clip checker clean
+          (80396 lines, 0 violations), pool 256->~20.  USER-CONFIRMED
+          FIXED.

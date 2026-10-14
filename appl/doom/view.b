@@ -204,6 +204,14 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
 	sptop = array[w] of int;
 	spbot = array[w] of int;
 
+	# frame-history ring (F2 review) + live snapshot scratch record
+	ring = array[RINGSZ] of ref RingRec;
+	for (rk := 0; rk < RINGSZ; rk++)
+		ring[rk] = allocrec();
+	scratch = allocrec();
+	ringhead = 0;
+	ringcount = 0;
+
 	# sprite defs from the WAD (Info tables were built by game.init)
 	err := loadsprdefs();
 	if (err != nil)
@@ -429,6 +437,17 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 
 	# sprites back-to-front, then remaining masked midtextures
 	drawmasked();
+
+	# record this frame in the history ring (F2 review)
+	if (ring != nil && ringhead >= 0 && ringhead < RINGSZ
+	    && ring[ringhead] != nil) {
+		capture(ring[ringhead]);
+		ringhead++;
+		if (ringhead >= RINGSZ)
+			ringhead = 0;
+		if (ringcount < RINGSZ)
+			ringcount++;
+	}
 }
 
 # vanilla R_PointOnSide: 0 = front (right), 1 = back (left)
@@ -714,6 +733,17 @@ addline(segnum: int)
 	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd1));
 	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd2));
 	tspan := ox2 - ox1;
+	# TEMP tripwire for the 1-frame wall-glitch hunt: log insane
+	# projection/scale basis values (near-plane singularities,
+	# degenerate spans, vanilla would clamp scale to 64*FRACUNIT).
+	if (dbgprints != 0) {
+		if (ox1 < -100000 || ox1 > 100000 + w || ox2 < -100000
+		    || ox2 > 100000 + w || tspan <= 0 || s1 < 0
+		    || s2 < 0 || s1 > 4194304 || s2 > 4194304)
+			sys->print("TRIP f=%d seg=%d d1=%d d2=%d ox1=%d ox2=%d tspan=%d s1=%d s2=%d u1=%d u2=%d\n",
+				dbgframes, segnum, d1, d2, ox1, ox2, tspan,
+				s1, s2, u1, u2);
+	}
 
 	# record the wall for sprite clipping / masked flushes
 	dsidx := claimds(segnum, lx1, lx2, s1, s2, ox1, tspan, walllight);
@@ -1784,12 +1814,235 @@ lastmobs:	array of ref Game->Mobj;	# mobjs passed to last render()
 snapfd:		ref Sys->FD;
 snaperr:	string;
 
+# ---- frame-history ring for glitch review (F2 in doom.b) ----
+# Every render captures its full state into a ring slot (preallocated,
+# zero per-frame allocation); review mode steps through slots and
+# snapshots any of them.  Per-seg clip slices are packed (span lengths
+# vary); a frame whose clips exceed CLIPPOOL is marked invalid.
+RINGSZ:		con 35;		# ~1s of history at 35Hz
+RINGMOBS:	con 256;	# max mobjs stored per frame
+CLIPPOOL:	con 8192;	# packed top/bot ints per frame
+MIDPOOL:	con 2048;	# packed masked col/flag ints per frame
+RingRec: adt {
+	valid, tic:	int;	# tic = dbgframes at capture
+	vx, vy, vz, vangle, vcos, vsin:	int;
+	nvis:	int;
+	vis:	array of Vissprite;	# [MAXVISSPRITES]
+	nds:	int;
+	# per-seg scalars [MAXDRAWSEGS]:
+	qx1, qx2, qs1, qs2, qox1, qtspan, qsil, qbsilh, qtsilh, qseg, qwl, qtmid: array of int;
+	qmid:	array of int;	# texture index into r.textures, -1 = none
+	coff:	array of int;	# [MAXDRAWSEGS+1] prefix offsets into ctop/cbot
+	ctop, cbot:	array of int;	# [CLIPPOOL] packed top/bot over each span
+	moff:	array of int;	# [MAXDRAWSEGS+1] prefix offsets into mcolp/mflagp
+	mcolp, mflagp:	array of int;	# [MIDPOOL] packed masked col/flag
+	nmob:	int;
+	# per-mobj scalars [RINGMOBS]; sector as index+heights+light:
+	mtyp, mx, my, mz, mang, mspr, mframe, mflags, mhealth, mstate, mrem: array of int;
+	mrad, mhgt, mflr, mceil, mmomx, mmomy, mmomz, msec, msubflr, msubceil, msublight, mhasp: array of int;
+	fb:	array of byte;	# [w*h] framebuffer
+	sol:	array of int;	# [2*w] final solid clips
+};
+ring:		array of ref RingRec;
+ringhead, ringcount: int;
+scratch:	ref RingRec;	# scratch record for live (F1) snapshots
+
 bamdeg(a: int): int
 {
 	ua := big a;
 	if (ua < big 0)
 		ua = ua + big 16r100000000;
 	return int(ua * big 360 / big 16r100000000);
+}
+
+# allocate one history record (called at init; never per frame)
+allocrec(): ref RingRec
+{
+	rec := ref RingRec;
+	rec.fb = array[w * h] of byte;
+	rec.vis = array[MAXVISSPRITES] of Vissprite;
+	rec.qx1 = array[MAXDRAWSEGS] of int;
+	rec.qx2 = array[MAXDRAWSEGS] of int;
+	rec.qs1 = array[MAXDRAWSEGS] of int;
+	rec.qs2 = array[MAXDRAWSEGS] of int;
+	rec.qox1 = array[MAXDRAWSEGS] of int;
+	rec.qtspan = array[MAXDRAWSEGS] of int;
+	rec.qsil = array[MAXDRAWSEGS] of int;
+	rec.qbsilh = array[MAXDRAWSEGS] of int;
+	rec.qtsilh = array[MAXDRAWSEGS] of int;
+	rec.qseg = array[MAXDRAWSEGS] of int;
+	rec.qwl = array[MAXDRAWSEGS] of int;
+	rec.qtmid = array[MAXDRAWSEGS] of int;
+	rec.qmid = array[MAXDRAWSEGS] of int;
+	rec.coff = array[MAXDRAWSEGS + 1] of int;
+	rec.ctop = array[CLIPPOOL] of int;
+	rec.cbot = array[CLIPPOOL] of int;
+	rec.moff = array[MAXDRAWSEGS + 1] of int;
+	rec.mcolp = array[MIDPOOL] of int;
+	rec.mflagp = array[MIDPOOL] of int;
+	rec.mtyp = array[RINGMOBS] of int;
+	rec.mx = array[RINGMOBS] of int;
+	rec.my = array[RINGMOBS] of int;
+	rec.mz = array[RINGMOBS] of int;
+	rec.mang = array[RINGMOBS] of int;
+	rec.mspr = array[RINGMOBS] of int;
+	rec.mframe = array[RINGMOBS] of int;
+	rec.mflags = array[RINGMOBS] of int;
+	rec.mhealth = array[RINGMOBS] of int;
+	rec.mstate = array[RINGMOBS] of int;
+	rec.mrem = array[RINGMOBS] of int;
+	rec.mrad = array[RINGMOBS] of int;
+	rec.mhgt = array[RINGMOBS] of int;
+	rec.mflr = array[RINGMOBS] of int;
+	rec.mceil = array[RINGMOBS] of int;
+	rec.mmomx = array[RINGMOBS] of int;
+	rec.mmomy = array[RINGMOBS] of int;
+	rec.mmomz = array[RINGMOBS] of int;
+	rec.msec = array[RINGMOBS] of int;
+	rec.msubflr = array[RINGMOBS] of int;
+	rec.msubceil = array[RINGMOBS] of int;
+	rec.msublight = array[RINGMOBS] of int;
+	rec.mhasp = array[RINGMOBS] of int;
+	rec.sol = array[2 * w] of int;
+	return rec;
+}
+
+# copy live render state into rec (zero allocation: all preallocated).
+# Frames whose clips overflow the packs are marked invalid.
+capture(rec: ref RingRec)
+{
+	rec.valid = 1;
+	rec.tic = dbgframes;
+	rec.vx = vx;
+	rec.vy = vy;
+	rec.vz = vz;
+	rec.vangle = vangle;
+	rec.vcos = vcos;
+	rec.vsin = vsin;
+	if (len rec.fb == len r.fb8)
+		rec.fb[0:] = r.fb8;
+	else
+		rec.valid = 0;
+	rec.nvis = nvis;
+	for (i := 0; i < nvis && i < MAXVISSPRITES; i++)
+		rec.vis[i] = viss[i];
+	rec.nds = nds;
+	co := 0;
+	mpo := 0;
+	for (i = 0; i < nds && i < MAXDRAWSEGS; i++) {
+		ds := dssegs[i];
+		rec.qx1[i] = ds.x1;
+		rec.qx2[i] = ds.x2;
+		rec.qs1[i] = ds.s1;
+		rec.qs2[i] = ds.s2;
+		rec.qox1[i] = ds.ox1;
+		rec.qtspan[i] = ds.tspan;
+		rec.qsil[i] = ds.sil;
+		rec.qbsilh[i] = ds.bsilh;
+		rec.qtsilh[i] = ds.tsilh;
+		rec.qseg[i] = ds.segnum;
+		rec.qwl[i] = ds.walllight;
+		rec.qtmid[i] = ds.tmidbase;
+		if (ds.midxex == nil) {
+			rec.qmid[i] = -1;
+		} else {
+			rec.qmid[i] = -1;
+			for (t := 0; t < len r.textures; t++)
+				if (r.textures[t] != nil && r.textures[t].name == ds.midxex.name) {
+					rec.qmid[i] = t;
+					break;
+				}
+		}
+		n := ds.x2 - ds.x1 + 1;
+		rec.coff[i] = co;
+		if (n > 0 && ds.top != nil && ds.bot != nil && co + n <= CLIPPOOL) {
+			for (k := 0; k < n; k++) {
+				rec.ctop[co + k] = ds.top[ds.x1 + k];
+				rec.cbot[co + k] = ds.bot[ds.x1 + k];
+			}
+			co += n;
+		} else if (n > 0) {
+			rec.valid = 0;
+			return;
+		}
+		rec.moff[i] = mpo;
+		if (ds.midxex != nil && ds.mcol != nil && ds.mflag != nil) {
+			if (mpo + n > MIDPOOL) {
+				rec.valid = 0;
+				return;
+			}
+			for (j := 0; j < n; j++) {
+				rec.mcolp[mpo + j] = ds.mcol[ds.x1 + j];
+				rec.mflagp[mpo + j] = ds.mflag[ds.x1 + j];
+			}
+			mpo += n;
+		}
+	}
+	if (nds <= MAXDRAWSEGS)
+		rec.coff[nds] = co;
+	rec.nmob = 0;
+	if (lastmobs != nil) {
+		nm := len lastmobs;
+		if (nm > RINGMOBS)
+			nm = RINGMOBS;
+		rec.nmob = nm;
+		for (i = 0; i < nm; i++) {
+			mo := lastmobs[i];
+			if (mo == nil) {
+				rec.mtyp[i] = -1;
+				continue;
+			}
+			secidx := -1;
+			sflr := -1;
+			sceil := -1;
+			slight := -1;
+			if (mo.subsector != nil && mo.subsector.sector != nil) {
+				sec := mo.subsector.sector;
+				sflr = sec.floorheight;
+				sceil = sec.ceilingheight;
+				slight = sec.lightlevel;
+				for (s := 0; s < len lev.sectors; s++) {
+					cs := lev.sectors[s];
+					if (cs != nil && cs.floorheight == sflr
+					    && cs.ceilingheight == sceil
+					    && cs.lightlevel == slight
+					    && cs.floortexture == sec.floortexture
+					    && cs.ceilingtexture == sec.ceilingtexture) {
+						secidx = s;
+						break;
+					}
+				}
+			}
+			rec.mtyp[i] = mo.typ;
+			rec.mx[i] = mo.x;
+			rec.my[i] = mo.y;
+			rec.mz[i] = mo.z;
+			rec.mang[i] = mo.angle;
+			rec.mspr[i] = mo.sprite;
+			rec.mframe[i] = mo.frame;
+			rec.mflags[i] = mo.flags;
+			rec.mhealth[i] = mo.health;
+			rec.mstate[i] = mo.state;
+			rec.mrem[i] = mo.removed;
+			rec.mrad[i] = mo.radius;
+			rec.mhgt[i] = mo.height;
+			rec.mflr[i] = mo.floorz;
+			rec.mceil[i] = mo.ceilingz;
+			rec.mmomx[i] = mo.momx;
+			rec.mmomy[i] = mo.momy;
+			rec.mmomz[i] = mo.momz;
+			rec.msec[i] = secidx;
+			rec.msubflr[i] = sflr;
+			rec.msubceil[i] = sceil;
+			rec.msublight[i] = slight;
+			if (mo.player != nil)
+				rec.mhasp[i] = 1;
+			else
+				rec.mhasp[i] = 0;
+		}
+	}
+	if (len rec.sol == len solid)
+		rec.sol[0:] = solid;
 }
 
 emit(s: string)
@@ -1801,61 +2054,105 @@ emit(s: string)
 		snaperr = sys->sprint("snapshot write: %r");
 }
 
+# logical ring index (0 = oldest) -> physical slot; -1 when empty
+ringslot(i: int): int
+{
+	if (ringcount <= 0 || i < 0 || i >= ringcount)
+		return -1;
+	p := (ringhead - ringcount + i) % RINGSZ;
+	if (p < 0)
+		p += RINGSZ;
+	return p;
+}
+
+# history accessors for review mode (doom.b F2)
+ringlen(): int
+{
+	return ringcount;
+}
+
+ringtic(i: int): int
+{
+	p := ringslot(i);
+	if (p < 0 || ring[p] == nil || ring[p].valid == 0)
+		return -1;
+	return ring[p].tic;
+}
+
+# restore a history framebuffer for display (review stepping)
+ringrestore(i: int): string
+{
+	p := ringslot(i);
+	if (p < 0 || ring[p] == nil || ring[p].valid == 0)
+		return "ringrestore: no such frame";
+	rec := ring[p];
+	if (len rec.fb != len r.fb8)
+		return "ringrestore: size mismatch";
+	r.fb8[0:] = rec.fb;
+	return nil;
+}
+
+# write a history slot to a snapshot file (review F1)
+ringsnap(path: string, htic: int, i: int): string
+{
+	p := ringslot(i);
+	if (p < 0 || ring[p] == nil || ring[p].valid == 0)
+		return "ringsnap: no such frame";
+	return snapshotfrom(path, htic, ring[p]);
+}
+
 snapshot(path: string, tic: int): string
 {
 	if (r == nil || lev == nil)
 		return "snapshot: no frame rendered yet";
+	capture(scratch);
+	return snapshotfrom(path, tic, scratch);
+}
+
+# shared emitter: snapshot file from a record (live scratch or ring).
+# SPTOP/SPBOT are intentionally absent: they are per-sprite scratch
+# reused across sprites within a frame, so no single stored copy is
+# meaningful; the offline replay re-derives them from the DST clips.
+snapshotfrom(path: string, htic: int, rec: ref RingRec): string
+{
+	if (r == nil || lev == nil)
+		return "snapshot: no frame rendered yet";
+	if (rec == nil || rec.valid == 0)
+		return "snapshot: invalid frame record";
 	fd := sys->create(path, sys->OWRITE, 8r666);
 	if (fd == nil)
 		return sys->sprint("snapshot: can't create %s: %r", path);
 	snapfd = fd;
 	snaperr = nil;
-	emit(sys->sprint("SNAP tic=%d w=%d h=%d proj=%d centerx=%d centery=%d\n",
-		tic, w, h, proj, centerx, r.centery));
+	emit(sys->sprint("SNAP tic=%d render=%d w=%d h=%d proj=%d centerx=%d centery=%d\n",
+		htic, rec.tic, w, h, proj, centerx, r.centery));
 	emit(sys->sprint("CAM vx=%d vy=%d vz=%d vangle=%d vangledeg=%d vcos=%d vsin=%d\n",
-		vx, vy, vz, vangle, bamdeg(vangle), vcos, vsin));
-	# mobjs (stashed by render)
-	nm := 0;
-	if (lastmobs != nil)
-		nm = len lastmobs;
-	emit(sys->sprint("MOBS n=%d\n", nm));
-	for (i := 0; i < nm; i++) {
-		mo := lastmobs[i];
-		if (mo == nil) {
+		rec.vx, rec.vy, rec.vz, rec.vangle, bamdeg(rec.vangle),
+		rec.vcos, rec.vsin));
+	# mobjs
+	emit(sys->sprint("MOBS n=%d\n", rec.nmob));
+	for (i := 0; i < rec.nmob; i++) {
+		if (rec.mtyp[i] == -1) {
 			emit(sys->sprint("MOB i=%d nil\n", i));
 			continue;
 		}
-		sflr := -1;
-		sceil := -1;
-		slight := -1;
-		sfl := "";
-		sce := "";
-		if (mo.subsector != nil && mo.subsector.sector != nil) {
-			sec := mo.subsector.sector;
-			sflr = sec.floorheight;
-			sceil = sec.ceilingheight;
-			slight = sec.lightlevel;
-			sfl = sec.floortexture;
-			sce = sec.ceilingtexture;
-		}
-		hp := 0;
-		if (mo.player != nil)
-			hp = 1;
 		fb := 0;
-		if ((mo.frame & FF_FULLBRIGHT) != 0)
+		if ((rec.mframe[i] & FF_FULLBRIGHT) != 0)
 			fb = 1;
-		emit(sys->sprint("MOB i=%d typ=%d x=%d y=%d z=%d ang=%d angdeg=%d spr=%d frame=%d/%d bright=%d flags=%d health=%d state=%d rem=%d rad=%d hgt=%d flr=%d ceil=%d momx=%d momy=%d momz=%d subflr=%d subceil=%d sublight=%d subfl=%s subce=%s hasplayer=%d\n",
-			i, mo.typ, mo.x, mo.y, mo.z, mo.angle,
-			bamdeg(mo.angle), mo.sprite, mo.frame,
-			mo.frame & FF_FRAMEMASK, fb, mo.flags, mo.health,
-			mo.state, mo.removed, mo.radius, mo.height,
-			mo.floorz, mo.ceilingz, mo.momx, mo.momy, mo.momz,
-			sflr, sceil, slight, sfl, sce, hp));
+		emit(sys->sprint("MOB i=%d typ=%d x=%d y=%d z=%d ang=%d angdeg=%d spr=%d frame=%d/%d bright=%d flags=%d health=%d state=%d rem=%d rad=%d hgt=%d flr=%d ceil=%d momx=%d momy=%d momz=%d subflr=%d subceil=%d sublight=%d sec=%d hasplayer=%d\n",
+			i, rec.mtyp[i], rec.mx[i], rec.my[i], rec.mz[i],
+			rec.mang[i], bamdeg(rec.mang[i]), rec.mspr[i],
+			rec.mframe[i], rec.mframe[i] & FF_FRAMEMASK, fb,
+			rec.mflags[i], rec.mhealth[i], rec.mstate[i],
+			rec.mrem[i], rec.mrad[i], rec.mhgt[i], rec.mflr[i],
+			rec.mceil[i], rec.mmomx[i], rec.mmomy[i],
+			rec.mmomz[i], rec.msubflr[i], rec.msubceil[i],
+			rec.msublight[i], rec.msec[i], rec.mhasp[i]));
 	}
 	# vissprites
-	emit(sys->sprint("VIS n=%d\n", nvis));
-	for (i = 0; i < nvis; i++) {
-		vis := viss[i];
+	emit(sys->sprint("VIS n=%d\n", rec.nvis));
+	for (i = 0; i < rec.nvis; i++) {
+		vis := rec.vis[i];
 		pw := -1;
 		ph := -1;
 		xo := 0;
@@ -1874,66 +2171,60 @@ snapshot(path: string, tic: int): string
 			vis.mobjflags));
 	}
 	# drawsegs
-	emit(sys->sprint("DS n=%d\n", nds));
-	for (i = 0; i < nds; i++) {
-		ds := dssegs[i];
-		sg := lev.segs[ds.segnum];
+	emit(sys->sprint("DS n=%d\n", rec.nds));
+	for (i = 0; i < rec.nds; i++) {
+		sg := lev.segs[rec.qseg[i]];
 		v1 := lev.vertices[sg.v1];
 		v2 := lev.vertices[sg.v2];
 		mn := "-";
-		if (ds.midxex != nil)
-			mn = ds.midxex.name;
+		if (rec.qmid[i] >= 0 && rec.qmid[i] < len r.textures
+		    && r.textures[rec.qmid[i]] != nil)
+			mn = r.textures[rec.qmid[i]].name;
 		emit(sys->sprint("DS i=%d seg=%d v1=%d,%d v2=%d,%d ld=%d side=%d x1=%d x2=%d s1=%d s2=%d ox1=%d tspan=%d sil=%d bsilh=%d tsilh=%d wl=%d mid=%s tmidbase=%d\n",
-			i, ds.segnum, v1.x, v1.y, v2.x, v2.y, sg.linedef,
-			sg.side, ds.x1, ds.x2, ds.s1, ds.s2, ds.ox1,
-			ds.tspan, ds.sil, ds.bsilh, ds.tsilh,
-			ds.walllight, mn, ds.tmidbase));
-		if (ds.top != nil && ds.bot != nil) {
+			i, rec.qseg[i], v1.x, v1.y, v2.x, v2.y, sg.linedef,
+			sg.side, rec.qx1[i], rec.qx2[i], rec.qs1[i],
+			rec.qs2[i], rec.qox1[i], rec.qtspan[i], rec.qsil[i],
+			rec.qbsilh[i], rec.qtsilh[i], rec.qwl[i], mn,
+			rec.qtmid[i]));
+		n := rec.qx2[i] - rec.qx1[i] + 1;
+		o := rec.coff[i];
+		if (n > 0 && o >= 0 && o + n <= CLIPPOOL) {
 			s := sys->sprint("DST i=%d x1=%d x2=%d top=",
-				i, ds.x1, ds.x2);
-			for (x := ds.x1; x <= ds.x2; x++)
-				s += sys->sprint("%d ", ds.top[x]);
+				i, rec.qx1[i], rec.qx2[i]);
+			for (x := 0; x < n; x++)
+				s += sys->sprint("%d ", rec.ctop[o + x]);
 			s += "bot=";
-			for (x = ds.x1; x <= ds.x2; x++)
-				s += sys->sprint("%d ", ds.bot[x]);
+			for (x = 0; x < n; x++)
+				s += sys->sprint("%d ", rec.cbot[o + x]);
 			emit(s + "\n");
 		}
-		if (ds.midxex != nil && ds.mcol != nil && ds.mflag != nil) {
+		mo := rec.moff[i];
+		if (rec.qmid[i] >= 0 && n > 0 && mo >= 0 && mo + n <= MIDPOOL) {
 			s := sys->sprint("DSM i=%d mcol=", i);
-			for (x := ds.x1; x <= ds.x2; x++)
-				s += sys->sprint("%d ", ds.mcol[x]);
+			for (x := 0; x < n; x++)
+				s += sys->sprint("%d ", rec.mcolp[mo + x]);
 			s += "mflag=";
-			for (x = ds.x1; x <= ds.x2; x++)
-				s += sys->sprint("%d ", ds.mflag[x]);
+			for (x = 0; x < n; x++)
+				s += sys->sprint("%d ", rec.mflagp[mo + x]);
 			emit(s + "\n");
 		}
 	}
-	# clip arrays (full width)
-	if (sptop != nil && spbot != nil) {
-		s := "SPTOP";
-		for (x := 0; x < w; x++)
-			s += sys->sprint(" %d", sptop[x]);
-		emit(s + "\n");
-		s = "SPBOT";
-		for (x = 0; x < w; x++)
-			s += sys->sprint(" %d", spbot[x]);
-		emit(s + "\n");
-	}
-	if (solid != nil) {
+	if (len rec.sol == 2 * w) {
 		s := "SOLID";
 		for (x := 0; x < 2 * w; x++)
-			s += sys->sprint(" %d", solid[x]);
+			s += sys->sprint(" %d", rec.sol[x]);
 		emit(s + "\n");
 	}
+
 	# framebuffer as hex rows
-	if (r.fb8 != nil && len r.fb8 >= w * h) {
+	if (len rec.fb >= w * h) {
 		emit(sys->sprint("FB8BEGIN w=%d h=%d\n", w, h));
 		hex := "0123456789abcdef";
 		for (y := 0; y < h; y++) {
 			row := "";
 			base := y * w;
 			for (x := 0; x < w; x++) {
-				b := int r.fb8[base + x];
+				b := int rec.fb[base + x];
 				row += sys->sprint("%c%c", hex[b >> 4], hex[b & 15]);
 			}
 			emit(row + "\n");
