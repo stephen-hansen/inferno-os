@@ -437,3 +437,20 @@ Milestones (each independently testable)
           clean against vanilla this pass (scale units, xiscale,
           flip, rotation >>29&7, sil/snapshot gates, maskpost frac,
           drawfuzz, R_GetColumn wrap, pool overflow, calcheight).
+          USER SNAPSHOT (F1): at the user's request, a gameplay
+          snapshot for offline replay of glitch frames.  F1 during
+          play (also demo) writes doomsnapN.log in the emu cwd after
+          present: SNAP header (tic, w/h/proj/centery), CAM (view
+          xyz/angle/cos/sin), MOBS (all thinkers: typ/xyz/angle/
+          sprite/frame/flags/health/state/radius/floorz/subsector
+          heights+light), VIS (vissprite pool), DS (drawseg pool:
+          seg verts/linedef/side/x-range/scale basis/sil heights/
+          light/mid+tmidbase), DST (per-seg clip snapshot over its
+          range), DSM (masked col/flag), SPTOP/SPBOT/SOLID (full
+          width clip arrays), FB8 (framebuffer as hex rows for
+          pixel-level sprite-vs-wall analysis).  view->snapshot()
+          (view.b/view.m) + F1 binding (doom.b keysym/handlekey,
+          edge-triggered, game continues).  Tested headless via
+          XTEST F1 injection: 3 taps -> 3 logs with tic/pos/angle
+          confirmations; content parsed and validated (92 mobjs,
+          15 vis, 43 segs, 200 hex rows at spawn).

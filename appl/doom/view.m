@@ -33,4 +33,9 @@ View: module {
 	nsprites, ndrawsegs:		int;
 	nmasked:			int;	# masked mid segs flushed last frame
 	dbgprints:			int;	# TEMP: 1 enables sprite diagnostics
+
+	# user-triggered frame snapshot (F1): dump camera, mobjs,
+	# vissprites, drawsegs, clip arrays and fb8 to path for
+	# offline replay.  tic is recorded in the log header.
+	snapshot:	fn(path: string, tic: int): string;
 };

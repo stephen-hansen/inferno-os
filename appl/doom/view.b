@@ -417,6 +417,7 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 	# walk via R_AddSprites; projecting everything here is equivalent
 	# because offscreen/behind/culled sectors fail the same tests)
 	if (mobs != nil) {
+		lastmobs = mobs;
 		for (i := 0; i < len mobs; i++)
 			projectmo(mobs[i]);
 	}
@@ -531,6 +532,22 @@ addline(segnum: int)
 	seg := lev.segs[segnum];
 	v1 := lev.vertices[seg.v1];
 	v2 := lev.vertices[seg.v2];
+
+	# vanilla R_AddLine backface cull (r_bsp.c:265-276): a seg whose
+	# angular span winds clockwise around the viewer (span >= ANG180
+	# as u32, i.e. signed span < 0) faces away and is never stored.
+	# Without this, backfacing twins of visible walls entered the
+	# drawseg pool (41 of 110 slots in real frames) and their clip
+	# snapshots hid sprites standing geometrically in front of the
+	# wall (corpse/pillar vanishes), or opened rows that showed
+	# sprites through walls.  gmod->pointtoangle2 is bit-exact
+	# vanilla (exact tantoangle table), so span matches vanilla.
+	if (gmod != nil) {
+		ba1 := gmod->pointtoangle2(vx, vy, v1.x, v1.y);
+		ba2 := gmod->pointtoangle2(vx, vy, v2.x, v2.y);
+		if (ba1 - ba2 < 0)
+			return;
+	}
 
 	# transform both endpoints
 	(d1, l1) := toworld(v1.x, v1.y);
@@ -1757,6 +1774,174 @@ drawmasked()
 			nmasked++;
 		}
 	}
+}
+
+# ---- user-triggered frame snapshot (F1 in doom.b) ----
+# Dumps the full render state for the frame just drawn so it can be
+# replayed offline: camera, mobjs, vissprites, drawsegs (with clip
+# snapshots), clip arrays, and the fb8 framebuffer as hex rows.
+lastmobs:	array of ref Game->Mobj;	# mobjs passed to last render()
+snapfd:		ref Sys->FD;
+snaperr:	string;
+
+bamdeg(a: int): int
+{
+	ua := big a;
+	if (ua < big 0)
+		ua = ua + big 16r100000000;
+	return int(ua * big 360 / big 16r100000000);
+}
+
+emit(s: string)
+{
+	if (snaperr != nil || snapfd == nil)
+		return;
+	b := array of byte s;
+	if (sys->write(snapfd, b, len b) != len b)
+		snaperr = sys->sprint("snapshot write: %r");
+}
+
+snapshot(path: string, tic: int): string
+{
+	if (r == nil || lev == nil)
+		return "snapshot: no frame rendered yet";
+	fd := sys->create(path, sys->OWRITE, 8r666);
+	if (fd == nil)
+		return sys->sprint("snapshot: can't create %s: %r", path);
+	snapfd = fd;
+	snaperr = nil;
+	emit(sys->sprint("SNAP tic=%d w=%d h=%d proj=%d centerx=%d centery=%d\n",
+		tic, w, h, proj, centerx, r.centery));
+	emit(sys->sprint("CAM vx=%d vy=%d vz=%d vangle=%d vangledeg=%d vcos=%d vsin=%d\n",
+		vx, vy, vz, vangle, bamdeg(vangle), vcos, vsin));
+	# mobjs (stashed by render)
+	nm := 0;
+	if (lastmobs != nil)
+		nm = len lastmobs;
+	emit(sys->sprint("MOBS n=%d\n", nm));
+	for (i := 0; i < nm; i++) {
+		mo := lastmobs[i];
+		if (mo == nil) {
+			emit(sys->sprint("MOB i=%d nil\n", i));
+			continue;
+		}
+		sflr := -1;
+		sceil := -1;
+		slight := -1;
+		sfl := "";
+		sce := "";
+		if (mo.subsector != nil && mo.subsector.sector != nil) {
+			sec := mo.subsector.sector;
+			sflr = sec.floorheight;
+			sceil = sec.ceilingheight;
+			slight = sec.lightlevel;
+			sfl = sec.floortexture;
+			sce = sec.ceilingtexture;
+		}
+		hp := 0;
+		if (mo.player != nil)
+			hp = 1;
+		fb := 0;
+		if ((mo.frame & FF_FULLBRIGHT) != 0)
+			fb = 1;
+		emit(sys->sprint("MOB i=%d typ=%d x=%d y=%d z=%d ang=%d angdeg=%d spr=%d frame=%d/%d bright=%d flags=%d health=%d state=%d rem=%d rad=%d hgt=%d flr=%d ceil=%d momx=%d momy=%d momz=%d subflr=%d subceil=%d sublight=%d subfl=%s subce=%s hasplayer=%d\n",
+			i, mo.typ, mo.x, mo.y, mo.z, mo.angle,
+			bamdeg(mo.angle), mo.sprite, mo.frame,
+			mo.frame & FF_FRAMEMASK, fb, mo.flags, mo.health,
+			mo.state, mo.removed, mo.radius, mo.height,
+			mo.floorz, mo.ceilingz, mo.momx, mo.momy, mo.momz,
+			sflr, sceil, slight, sfl, sce, hp));
+	}
+	# vissprites
+	emit(sys->sprint("VIS n=%d\n", nvis));
+	for (i = 0; i < nvis; i++) {
+		vis := viss[i];
+		pw := -1;
+		ph := -1;
+		xo := 0;
+		yo := 0;
+		sp := sprpatch[vis.patch];
+		if (sp != nil) {
+			pw = sp.w;
+			ph = sp.h;
+			xo = sp.xoff;
+			yo = sp.yoff;
+		}
+		emit(sys->sprint("VIS i=%d x1=%d x2=%d gx=%d gy=%d gz=%d gzt=%d sc=%d tmid=%d startfrac=%d xisc=%d patch=%d pw=%d ph=%d xoff=%d yoff=%d light=%d mflags=%d\n",
+			i, vis.x1, vis.x2, vis.gx, vis.gy, vis.gz, vis.gzt,
+			vis.scale, vis.texturemid, vis.startfrac,
+			vis.xiscale, vis.patch, pw, ph, xo, yo, vis.light,
+			vis.mobjflags));
+	}
+	# drawsegs
+	emit(sys->sprint("DS n=%d\n", nds));
+	for (i = 0; i < nds; i++) {
+		ds := dssegs[i];
+		sg := lev.segs[ds.segnum];
+		v1 := lev.vertices[sg.v1];
+		v2 := lev.vertices[sg.v2];
+		mn := "-";
+		if (ds.midxex != nil)
+			mn = ds.midxex.name;
+		emit(sys->sprint("DS i=%d seg=%d v1=%d,%d v2=%d,%d ld=%d side=%d x1=%d x2=%d s1=%d s2=%d ox1=%d tspan=%d sil=%d bsilh=%d tsilh=%d wl=%d mid=%s tmidbase=%d\n",
+			i, ds.segnum, v1.x, v1.y, v2.x, v2.y, sg.linedef,
+			sg.side, ds.x1, ds.x2, ds.s1, ds.s2, ds.ox1,
+			ds.tspan, ds.sil, ds.bsilh, ds.tsilh,
+			ds.walllight, mn, ds.tmidbase));
+		if (ds.top != nil && ds.bot != nil) {
+			s := sys->sprint("DST i=%d x1=%d x2=%d top=",
+				i, ds.x1, ds.x2);
+			for (x := ds.x1; x <= ds.x2; x++)
+				s += sys->sprint("%d ", ds.top[x]);
+			s += "bot=";
+			for (x = ds.x1; x <= ds.x2; x++)
+				s += sys->sprint("%d ", ds.bot[x]);
+			emit(s + "\n");
+		}
+		if (ds.midxex != nil && ds.mcol != nil && ds.mflag != nil) {
+			s := sys->sprint("DSM i=%d mcol=", i);
+			for (x := ds.x1; x <= ds.x2; x++)
+				s += sys->sprint("%d ", ds.mcol[x]);
+			s += "mflag=";
+			for (x = ds.x1; x <= ds.x2; x++)
+				s += sys->sprint("%d ", ds.mflag[x]);
+			emit(s + "\n");
+		}
+	}
+	# clip arrays (full width)
+	if (sptop != nil && spbot != nil) {
+		s := "SPTOP";
+		for (x := 0; x < w; x++)
+			s += sys->sprint(" %d", sptop[x]);
+		emit(s + "\n");
+		s = "SPBOT";
+		for (x = 0; x < w; x++)
+			s += sys->sprint(" %d", spbot[x]);
+		emit(s + "\n");
+	}
+	if (solid != nil) {
+		s := "SOLID";
+		for (x := 0; x < 2 * w; x++)
+			s += sys->sprint(" %d", solid[x]);
+		emit(s + "\n");
+	}
+	# framebuffer as hex rows
+	if (r.fb8 != nil && len r.fb8 >= w * h) {
+		emit(sys->sprint("FB8BEGIN w=%d h=%d\n", w, h));
+		hex := "0123456789abcdef";
+		for (y := 0; y < h; y++) {
+			row := "";
+			base := y * w;
+			for (x := 0; x < w; x++) {
+				b := int r.fb8[base + x];
+				row += sys->sprint("%c%c", hex[b >> 4], hex[b & 15]);
+			}
+			emit(row + "\n");
+		}
+		emit("FB8END\n");
+	}
+	snapfd = nil;
+	return snaperr;
 }
 
 # ---- sprite defs from the WAD (r_data.c R_InitSpriteDefs) ----

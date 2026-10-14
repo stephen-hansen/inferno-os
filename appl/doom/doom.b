@@ -495,6 +495,7 @@ Up:	con KView|2;
 Down:	con KView|3;
 Left:	con KView|4;
 Right:	con KView|5;
+Snap:	con KView|6;	# F1: dump a frame snapshot log for offline replay
 LCtrl:	con KShift|2;
 RCtrl:	con KShift|3;
 
@@ -513,9 +514,12 @@ XK_Up:	con 111;
 XK_Left:	con 113;
 XK_Right:	con 114;
 XK_Down:	con 116;
+XK_F1:	con 67;	# evdev 59 + 8
 
 keystate:	array of int;
 keych:		chan of int;
+snapreq:	int;		# F1 pressed: dump a frame snapshot after present
+snapno:		int;		# snapshot file sequence number
 demosrc:	array of byte;	# TEMP demo playback stream (DEMO1 lump)
 demoofs:	int;
 verbose:	int;		# TEMP: -v enables view sprite diagnostics
@@ -638,7 +642,7 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context, demo1: int)
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
 	mo := p.mo;
-	sys->print("play: E1M1 skill medium: arrows/wasd move, space=use, esc=quit\n");
+	sys->print("play: E1M1 skill medium: arrows/wasd move, space=use, esc=quit, F1=snapshot\n");
 	sys->print("  player at %d,%d angle %d deg\n",
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
 
@@ -767,6 +771,21 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context, demo1: int)
 		rr.convert(v.fb);
 		v.present();
 
+		# user snapshot (F1): dump the frame just presented for
+		# offline replay; game continues normally.
+		if (snapreq) {
+			snapreq = 0;
+			spath := sys->sprint("doomsnap%d.log", snapno);
+			snapno++;
+			serr := view->snapshot(spath, tic);
+			if (serr != nil)
+				sys->print("snapshot FAILED: %s\n", serr);
+			else
+				sys->print("snapshot %s written at t=%d pos %d,%d angle %d deg\n",
+					spath, tic, mo.x >> 16, mo.y >> 16,
+					bamdegrees(mo.angle));
+		}
+
 		if (tic % 70 == 0) {
 			p = game->consoleplayer();
 			if (p != nil && p.mo != nil)
@@ -849,6 +868,8 @@ keysym(code: int): int
 		return Left;
 	XK_Right =>
 		return Right;
+	XK_F1 =>
+		return Snap;
 	* =>
 		return -1;
 	}
@@ -907,8 +928,11 @@ handlekey(k: int): int
 		k &= ~16r10000;
 		if (k >= 0 && k < NKEYS)
 			keystate[k] = 0;
-	} else if (k >= 0 && k < NKEYS)
+	} else if (k >= 0 && k < NKEYS) {
 		keystate[k] = 1;
+		if (k == Snap)
+			snapreq = 1;	# edge: one snapshot per press
+	}
 	return 0;
 }
 
