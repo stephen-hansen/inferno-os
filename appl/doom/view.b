@@ -411,6 +411,7 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 			projectmo(mobs[i]);
 	}
 	nsprites = nvis;
+	nmasked = 0;
 
 	# flush accumulated floor/ceiling spans to screen
 	drawplanes();
@@ -1299,13 +1300,11 @@ projectmo(mo: ref Game->Mobj)
 	if (x2 < 0)
 		return;
 
-	vis: ref Vissprite;
 	if (nvis >= MAXVISSPRITES)
-		vis = ref ovvis;	# overflow: discarded, vanilla behavior
-	else {
-		vis = ref viss[nvis];
-		nvis++;
-	}
+		return;			# overflow: discarded, vanilla behavior
+	# build a local value and commit with a whole-struct assign at the
+	# end: `ref viss[nvis]` COPIES the element instead of aliasing
+	vis: Vissprite;
 	vis.x1 = x1;
 	if (vis.x1 < 0)
 		vis.x1 = 0;
@@ -1351,6 +1350,8 @@ projectmo(mo: ref Game->Mobj)
 			idx = MAXLIGHTSCALE - 1;
 		vis.light = scalelight[lnum][idx];
 	}
+	viss[nvis] = vis;
+	nvis++;
 }
 
 # draw one vissprite through the clip arrays built by drawspscan
@@ -1546,8 +1547,10 @@ drawmasked()
 		drawspscan(ref viss[0]);
 	}
 	for (i := nds - 1; i >= 0; i--) {
-		if (dssegs[i].midxex != nil)
+		if (dssegs[i].midxex != nil) {
 			flushmask(i, dssegs[i].x1, dssegs[i].x2);
+			nmasked++;
+		}
 	}
 }
 

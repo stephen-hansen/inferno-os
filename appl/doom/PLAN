@@ -956,6 +956,22 @@ Porting notes (C -> Limbo idioms)
 - `break` inside an `alt` case exits the ALT, not the enclosing loop
   (alt pushes its own break target, limbo/com.c — like Go's select).
   To leave a loop from an alt case, set a flag and break after the alt.
+- `ref <adt-expr>` (INCLUDING `ref arr[i]`) NEVER aliases: it
+  allocates a new instance and copies the value (C `new` semantics).
+  `d := ref dssegs[i]; d.x1 = 5;` silently writes a detached copy
+  (verified: d := ref arr[0]; d.a = 9 leaves arr[0].a == 0).  To
+  mutate pool elements use the direct path `dssegs[i].x1 = 5`, or
+  fill a local value and commit with a whole-struct assign
+  (`viss[nvis] = vis; nvis++`).  Array CONTENTS reached through a
+  VALUE copy are shared (`v := arr[0]; v.p[3] = 42` writes
+  arr[0].p[3]) — only scalar fields and field refs are not.
+- adt method calls need `Type: import Mod;` AND `x.method(...)` with
+  a dot — `x->method` is a syntax error (`->` is module-only).
+  Limbo has no `bool` type (use int) and no `abs()` builtin.
+- `load Mod Mod->PATH` from a second module may NOT return the first
+  module's instance: view.b's Info load came back without sprnames
+  even though game.b had called inf->init() on its own — always call
+  `m->init()` after load if the module needs table setup.
 
 Licensing
 ---------

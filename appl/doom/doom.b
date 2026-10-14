@@ -703,9 +703,10 @@ play(path: string, autopilot: int, wmctxt: ref Draw->Context)
 			p = game->consoleplayer();
 			if (p != nil && p.mo != nil)
 				mo = p.mo;
-			sys->print("t=%d pos %d,%d angle %d deg health %d\n",
+			sys->print("t=%d pos %d,%d angle %d deg health %d spr %d ds %d mid %d\n",
 				tic, mo.x >> 16, mo.y >> 16,
-				bamdegrees(mo.angle), mo.health);
+				bamdegrees(mo.angle), mo.health,
+				view->nsprites, view->ndrawsegs, view->nmasked);
 		}
 	}
 	v.close();

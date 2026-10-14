@@ -31,4 +31,5 @@ View: module {
 	# debug stats from the last render
 	nsegs, ncolumns, nspans:	int;
 	nsprites, ndrawsegs:		int;
+	nmasked:			int;	# masked mid segs flushed last frame
 };

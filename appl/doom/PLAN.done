@@ -259,3 +259,80 @@ Milestones (each independently testable)
     [ ] 8  SFX: Doom mixer (8 x 8-bit unsigned channels)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback
+
+  [ ] 8  Thing sprites + masked two-sided midtextures
+         (IMPLEMENTATION COMPLETE - build clean, 350-tic startup
+          smoke no crash, no process left; user visual validation
+          pending, PLAN checkbox stays [ ] until then)
+         - sprites: raw sprite patch lumps eager-loaded into
+           SprPatch{w,h,xoff,yoff 16.16,colofs,raw}; sprnames ->
+           frame/rotate table built like R_InitSpriteDefs (483
+           lumps, all formats, flips, rot-0 + 8-dir coverage,
+           checked against vanilla tables before editing);
+           rotation from gmod->pointtoangle2 with the Game module
+           passed into view->init (cross-module load sharing of
+           game.dis was not guaranteed); projectmo culls tz<MINZ,
+           |tx|>tz*4, offscreen x1>w / x2<0, then commits one
+           Vissprite per frame (local value + whole-struct assign);
+           drawvis/drawspscan clip rows through the drawseg top/bot
+           snapshots (open-window convention: top=first open row,
+           bot=one-past-last; defaults 0/h, closed h/-1); light:
+           MF_SHADOW -> drawfuzz, FF_FULLBRIGHT -> row 0, else
+           scalelight of the thing's sector lightnum
+         - masked 2S mids: per-column texture column + ready/drawn
+           state recorded into drawseg mcol/mflag (0 pending,
+           1 ready, 2 drawn - idempotent), tmidbase from vanilla
+           peg anchors; flushmask runs AFTER all sprites
+           (R_DrawMasked order: sprites ascending scale, then
+           remaining mids), col %= width, posts coverage pairs
+           sample the composite texture column; maskpost shared by
+           1S/2S posters with the fuzz passthrough
+         - drawseg bookkeeping: claimds at addline entry (overflow
+           check at entry = vanilla R_StoreWallRange whole-seg
+           skip), sil/bsilh/tsilh from r_segs.c:485-521 + masked
+           force bits (731-740), 1S via sil1s (SIL_BOTH + constant
+           terminal clips), closed windows keep constant clips,
+           end-of-seg snapshot of solid[] into top/bot gated
+           !closed && (sil bit || masked)
+         - vanilla peg/rowoffset/textureoffset fixes: upper
+           DONTPEGTOP -> fceilz-vz else bceilz+(tex.height<<16)-vz;
+           lower DONTPEGBOTTOM -> fceilz-vz else bfloorz-vz; 1S mid
+           DONTPEGBOTTOM -> floorz+(tex.height<<16)-vz else z1t;
+           all three + sd.rowoffset; u1 = seg.offset +
+           sd.textureoffset
+         - numeric validation BEFORE editing (/tmp/opencode/
+           sprite_model.py): rotation identity, clip translation,
+           closed windows, x1/x2 + tz*4 frustum, post row bounds,
+           PointOnSegSide 200k random, fuzz offsets, scale basis,
+           masked ordering - all PASS; asset checks: 483 sprite
+           lumps / 138 sprnames / 128 flips / 211 rot-0 all
+           consistent; E1M1 mids BRNBIGL/R/C + BROWNGRN all in
+           TEXTURE1
+         BUG FIX (frame-1 crash "array bounds error"): Limbo
+         `ref arr[i]` COPIES the element instead of aliasing it -
+         `ref <adt-expr>` allocates a new instance like C's new
+         (standalone test /tmp/opencode/reftest: d := ref arr[0];
+         d.a = 9 leaves arr[0].a == 0).  claimds/sil1s wrote all
+         drawseg state into detached copies, the pool's top/bot
+         stayed nil, and the first 2S seg's clip snapshot
+         nil-indexed.  Fixed: direct path writes
+         (dssegs[i].field = v), array CONTENTS through a value
+         copy are shared (v := arr[0]; v.p[3]=42 reaches the pool),
+         drawtwosided syncs its scalar/array-field state back into
+         the pool at end; projectmo restructured to local-value +
+         whole-struct commit (also stops leaving a zeroed viss
+         slot behind on the sec==nil early return).
+         BUG FIX: view.init failed "no sprnames in Info" - view.b's
+         `load Info Info->PATH` did NOT return game.b's inited
+         instance; loadsprdefs now calls inf->init() on its own
+         fresh load.
+         BUG FIX (compile): Limbo has no bool (samename: int, no
+         FALSE), no abs() (manual in projectmo), adt methods are
+         dot-called (r.drawfuzz, never r->drawfuzz; `->` is
+         module-only), File/Renderer imports needed for wfile.find/
+         r.drawfuzz, for-init vars leak into fn scope (drawspscan
+         x, drawmasked i -> redeclare with `=`), param named `len`
+         shadowed the builtin (maskpost npx), Drawseg field
+         midtex renamed midxex (all code uses midxex), rotation
+         locals renamed ri (r shadowed the global Renderer).
+         SMOKE: timeout 30s emu run to t=350, clean, no emu left.
