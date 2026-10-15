@@ -482,9 +482,10 @@ play(path: string, wmctxt: ref Draw->Context)
 		game->setcmd(fm, sm, at, btn);
 		game->ticker();
 
-		# level-exit flag (S1 exit switch; intermission is
-		# milestone 16, so just announce once for now)
-		if (game->levexit() != 0 && exitshown == 0) {
+		# level-exit flags (S1 exit / secret exit; intermission
+		# is milestone 16, so just announce once for now)
+		if ((game->levexit() != 0 || game->secretexit() != 0) &&
+		    exitshown == 0) {
 			exitshown = 1;
 			sys->print("level complete\n");
 		}

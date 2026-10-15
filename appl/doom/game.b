@@ -80,6 +80,7 @@ Floor: adt {			# vanilla floormove_t (subset)
 };
 Plat: adt {			# vanilla plat_t (subset)
 	sec:	ref Map->Sector;
+	pltype:	int;		# PL_* (downWaitUpStay/raiseToNearestAndChange)
 	speed:	int;
 	low, high:	int;	# 16.16
 	wait:	int;		# tics at each end
@@ -107,6 +108,7 @@ buttonlist: array of ref Button;	# [MAXBUTTONS], timer-ordered use
 spechit: array of int;	# crossed special linedefs (p_map.c)
 nspechit: int;
 exited: int;		# G_ExitLevel flag (consumed by milestone 16)
+sexited: int;		# G_SecretExitLevel flag (S1 special 51)
 
 # switch texture pairs (vanilla p_switch.c alphSwitchList,
 # shareware episode 1 set, as P_InitSwitchList loads it).
@@ -339,6 +341,7 @@ init(): string
 	spechit = array[MAXSPECIALCROSS] of int;
 	nspechit = 0;
 	exited = 0;
+	sexited = 0;
 	switchpairs = array[] of {
 		("SW1BRCOM", "SW2BRCOM"),
 		("SW1BRN1", "SW2BRN1"),
@@ -418,6 +421,7 @@ setuplevel(l: ref Map->Level, skill: int): string
 		buttonlist[bi] = ref Button(-1, 0, "", 0);
 	nspechit = 0;
 	exited = 0;
+	sexited = 0;
 	for (i := 0; i < MAXPLAYERS; i++)
 		players[i] = nil;
 
@@ -1076,8 +1080,9 @@ evdodoor(li, dtype: int): int
 
 # manual door specials from p_switch.c P_UseSpecialLine
 # (1/26/27/28/31-34/117/118) + S1 exit (11), S1 donut (9),
-# SR plat (62), S1 open door (103), all with texture handling;
-# walkover (except 36/88) / shoot cases later
+# SR plat (62), S1 open door (103), SR raise door (63),
+# S1 raise-to-nearest plat (20), S1 secret exit (51);
+# remaining switches / shoot cases later
 usespecialline(mo: ref Mobj, li, side: int): int
 {
 	ld := lev.lines[li];
@@ -1103,6 +1108,21 @@ usespecialline(mo: ref Mobj, li, side: int): int
 	if (ld.special == 103) {	# S1 open door (stay open)
 		if (evdodoor(li, VLD_OPEN) != 0)
 			changeswitchtexture(li, 0);
+		return 1;
+	}
+	if (ld.special == 63) {		# SR raise door (keeps working)
+		if (evdodoor(li, VLD_NORMAL) != 0)
+			changeswitchtexture(li, 1);
+		return 1;
+	}
+	if (ld.special == 20) {		# S1 raise-to-nearest + change
+		if (evdoplat(li, PL_RAISETONEARESTANDCHANGE, 0) != 0)
+			changeswitchtexture(li, 0);
+		return 1;
+	}
+	if (ld.special == 51) {		# S1 secret exit
+		changeswitchtexture(li, 0);
+		gsecretexitlevel();
 		return 1;
 	}
 	if (ld.special == 1 || ld.special == 26 || ld.special == 27 ||
@@ -1303,6 +1323,86 @@ sectorthinker(sec: ref Map->Sector, th: ref Thinker)
 	sec.specialdata = n;
 }
 
+# vanilla P_FindNextHighestFloor (p_spec.c): lowest floor above
+# currentheight among touching sectors.  The >20-neighbour stack
+# overflow emulation is skipped (vanilla memory quirk, OUT scope).
+findnexthighestfloor(sec: ref Map->Sector, cur: int): int
+{
+	height := cur;
+	for (i := 0; i < len lev.lines; i++) {
+		ld := lev.lines[i];
+		other := ld.frontsector;
+		if (ld.frontsector == sec) {
+			if (ld.backsector == sec)
+				continue;
+			other = ld.backsector;
+		} else if (ld.backsector == sec) {
+			other = ld.frontsector;
+		} else
+			continue;
+		if (other == nil)
+			continue;
+		if (other.floorheight > height &&
+		    (height == cur || other.floorheight < height))
+			height = other.floorheight;
+	}
+	return height;
+}
+
+# vanilla EV_BuildStairs build8 (p_floor.c): step the tagged sector
+# up 8u at quarter speed, then chase two-sided lines whose side 0
+# is the current sector into same-pic neighbours (+8 each, skip
+# movers).  fltype is raiseFloor: vanilla leaves the malloc garbage
+# and T_MoveFloor defaults anything non-donut on arrival.
+evbuildstairs(li: int): int
+{
+	rtn := 0;
+	secnum := findsectorfromlinetag(li, -1);
+	while (secnum >= 0) {
+		sec := lev.sectors[secnum];
+		if (sec.specialdata == -1) {
+			rtn = 1;
+			speed := FLOORSPEED / 4;
+			stairsize := 8 * FRACUNIT;
+			height := sec.floorheight + stairsize;
+			f := ref Floor(sec, FL_RAISEFLOOR, height, speed,
+				1, 0, "", 0);
+			th := ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+			sectorthinker(sec, th);
+			texture := sec.floortexture;
+			for (;;) {
+				found := 0;
+				for (i := 0; i < len lev.lines; i++) {
+					ld := lev.lines[i];
+					if ((ld.flags & ML_TWOSIDED) == 0)
+						continue;
+					if (!(ld.frontsector == sec))
+						continue;
+					tsec := ld.backsector;
+					if (tsec == nil || tsec == sec)
+						continue;
+					if (tsec.floortexture != texture)
+						continue;
+					if (tsec.specialdata != -1)
+						continue;
+					height += stairsize;
+					sec = tsec;
+					f = ref Floor(sec, FL_RAISEFLOOR, height,
+						speed, 1, 0, "", 0);
+					th = ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+					sectorthinker(sec, th);
+					found = 1;
+					break;
+				}
+				if (found == 0)
+					break;
+			}
+		}
+		secnum = findsectorfromlinetag(li, secnum);
+	}
+	return rtn;
+}
+
 # vanilla EV_DoFloor (p_floor.c): turboLower only this slice
 # (other floor_e types with their milestones); returns 1 if any
 # sector started moving
@@ -1401,14 +1501,20 @@ evdodonut(li: int): int
 	return rtn;
 }
 
-# vanilla T_PlatRaise (p_plats.c), downWaitUpStay subset: the
-# stnmov-on-up branch only applies to raiseAndChange types
+# vanilla T_PlatRaise (p_plats.c): stnmov hums on UP for the
+# raiseAndChange family; arrival unlinks the leaving types
+# (downWaitUpStay + raise family) but perpetualRaise keeps cycling
 tplatraise(th: ref Thinker)
 {
 	pl := th.plat;
 	sec := pl.sec;
 	if (pl.status == PLS_UP) {
 		res := tmoveplane(sec, pl.speed, pl.high, pl.crush, 1, 1);
+		if (pl.pltype == PL_RAISEANDCHANGE ||
+		    pl.pltype == PL_RAISETONEARESTANDCHANGE) {
+			if ((lvltime & 7) == 0)
+				sound->startsound(0, 0, sound->SFX_STNMOV);
+		}
 		if (res == RES_CRUSHED && pl.crush == 0) {
 			pl.count = pl.wait;
 			pl.status = PLS_DOWN;
@@ -1417,7 +1523,10 @@ tplatraise(th: ref Thinker)
 			pl.count = pl.wait;
 			pl.status = PLS_WAITING;
 			sound->startsound(0, 0, sound->SFX_PSTOP);
-			premoveactiveplat(th);
+			if (pl.pltype == PL_DOWNWAITUPSTAY ||
+			    pl.pltype == PL_RAISEANDCHANGE ||
+			    pl.pltype == PL_RAISETONEARESTANDCHANGE)
+				premoveactiveplat(th);
 		}
 	} else if (pl.status == PLS_DOWN) {
 		res := tmoveplane(sec, pl.speed, pl.low, 0, 1, -1);
@@ -1481,10 +1590,19 @@ evdoplat(li, pltype, amount: int): int
 			rtn = 1;
 			pl := ref Plat;
 			pl.sec = sec;
+			pl.pltype = pltype;
 			pl.crush = 0;
 			pl.count = 0;
 			pl.tag = lev.lines[li].tag;
-			if (pltype == PL_DOWNWAITUPSTAY) {
+			if (pltype == PL_RAISETONEARESTANDCHANGE) {
+				pl.speed = PLATSPEED / 2;
+				pl.sec.floortexture = lev.lines[li].sides[0].sector.floortexture;
+				pl.high = findnexthighestfloor(sec, sec.floorheight);
+				pl.wait = 0;
+				pl.status = PLS_UP;
+				sec.special = 0;
+				sound->startsound(0, 0, sound->SFX_STNMOV);
+			} else if (pltype == PL_DOWNWAITUPSTAY) {
 				pl.speed = 4 * PLATSPEED;
 				pl.low = findlowestfloorsec(sec);
 				if (pl.low > sec.floorheight)
@@ -1511,10 +1629,11 @@ evdoplat(li, pltype, amount: int): int
 }
 
 # vanilla P_CrossSpecialLine walkover subset (p_spec.c): 36 W1
-# turboLower (clears) + 88 WR plat (retrigger, stays).  The
-# non-player gate allows only teleport/door/plat specials (the
-# missile-type inner gate comes with weapons, milestone 9);
-# secrets count in milestone 14.
+# turboLower (clears) + 88 WR plat (retrigger, stays) + 2 W1 open
+# door (clears) + 90 WR raise door (retrigger) + 8 W1 stairs
+# (clears).  The non-player gate allows only teleport/door/plat
+# specials (the missile-type inner gate comes with weapons,
+# milestone 9); secrets count in milestone 14.
 crossspecialline(mo: ref Mobj, li, side: int)
 {
 	ld := lev.lines[li];
@@ -1528,6 +1647,18 @@ crossspecialline(mo: ref Mobj, li, side: int)
 	if (ld.special == 36) {
 		evdofloor(li, FL_TURBOLOWER);
 		lc := lev.lines[li];	# Lines are values: copy back
+		lc.special = 0;
+		lev.lines[li] = lc;
+	} else if (ld.special == 2) {		# W1 open door (stay open)
+		evdodoor(li, VLD_OPEN);
+		lc := lev.lines[li];
+		lc.special = 0;
+		lev.lines[li] = lc;
+	} else if (ld.special == 90) {		# WR raise door (retrigger)
+		evdodoor(li, VLD_NORMAL);
+	} else if (ld.special == 8) {		# W1 stairs
+		evbuildstairs(li);
+		lc := lev.lines[li];
 		lc.special = 0;
 		lev.lines[li] = lc;
 	} else if (ld.special == 88) {
@@ -1607,6 +1738,18 @@ gexitlevel()
 levexit(): int
 {
 	return exited;
+}
+
+# vanilla G_SecretExitLevel (g_game.c): shareware has no MAP31 so
+# the commercial-only guard never fires here; flag only like above
+gsecretexitlevel()
+{
+	sexited = 1;
+}
+
+secretexit(): int
+{
+	return sexited;
 }
 
 # ---------------------------------------------------------------------------

@@ -799,3 +799,35 @@ Milestones (each independently testable)
           swapped correctly).  Single-approach + immediate read fixed
           it.  Rule: assert repeatable-switch textures within 35 tics
           of the firing USE.
+          E1M3 WALKOVER/SWITCH SLICE, PART 2 (W1 open doors 2, W1
+          stairs 8, WR raise doors 90, S1 raise door 63, S1
+          raise-to-nearest plats 20, S1 secret exit 51): EV_BuildStairs
+          build8 (tag loop + side0-chase through same-pic neighbours,
+          +8u at FLOORSPEED/4, skip movers, ML_TWOSIDED gating like
+          vanilla; fltype raiseFloor since vanilla leaves malloc
+          garbage and T_MoveFloor defaults), P_FindNextHighestFloor
+          (no >20-neighbour overflow emulation - OUT scope),
+          EV_DoPlat raiseToNearestAndChange (side-0 pic copy, sec
+          special clear, half speed, wait-0 rise, stnmov), T_PlatRaise
+          UP hum for the raise family + arrival unlink allowlisted by
+          type (perpetualRaise keeps cycling later), crossspecialline
+          2/90/8 (W1 clear, WR retain), usespecialline 63/20/51
+          (repeatable/one-shot/secret-flag), G_SecretExitLevel flag +
+          doom.b announcement.  Source correction logged: special 35
+          is Lights-Very-Dark, not a floor - belongs to the lights
+          slice.  Also logged: several E1M3 W1-2 lines (54/231/292)
+          sit ON their zero-height door tracks and can never fire in
+          vanilla either (tripwire needs standable floor both sides);
+          tested the crossable ones (61/88/988).  Validated headless
+          (throwaway harness): doors to 188/132/276 exactly, stairs
+          sec16..13 to 56..128 exactly, plats -32->88/0->64 with pic
+          changes, secret flag set without normal exit.  SPECTEST3
+          PASS (36/36).  Two harness-only traps hit and documented:
+          (a) repeatable-switch texture must be read within 35 tics
+          of its USE; (b) USE-trace shadows - manual door line 490
+          stands 8u in front of switch line 520 on the same sector,
+          so west-side USEs open via 490 and poison started-checks;
+          test from side 0 only.  No emu left running; harness/logs
+          removed from the tree.  Remaining 13: floors (31/others),
+          ceilings/crushers, lights (incl. 35), teleport (39/97),
+          full walkover table, S1-62-style timers elsewhere.

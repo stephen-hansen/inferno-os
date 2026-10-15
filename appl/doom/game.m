@@ -89,6 +89,7 @@ Game: module {
 
 	# floor mover types (p_spec.h floor_e positions)
 	FL_LOWERFLOOR, FL_LOWERFLOORTOWELOWEST, FL_TURBOLOWER: con iota;
+	FL_RAISEFLOOR:	con 3;
 	FL_DONUTRAISE:	con 11;
 
 	# switch-button positions (p_spec.h bwhere_e order) and timing
@@ -96,8 +97,11 @@ Game: module {
 	BUTTONTIME:	con 35;
 	MAXBUTTONS:	con 16;
 
-	# plat types (p_spec.h plattype_e positions; others later)
+	# plat types (p_spec.h plattype_e positions)
+	PL_PERPETUALRAISE:	con 0;
 	PL_DOWNWAITUPSTAY:	con 1;
+	PL_RAISEANDCHANGE:	con 2;
+	PL_RAISETONEARESTANDCHANGE:	con 3;
 
 	# plat status (p_spec.h plat_e order)
 	PLS_UP, PLS_DOWN, PLS_WAITING, PLS_STASIS: con iota;
@@ -195,6 +199,9 @@ Game: module {
 	# level-exit flag (G_ExitLevel): set by the exit switch (S1
 	# special 11); consumed by the intermission milestone (16)
 	levexit:	fn(): int;
+
+	# secret-exit flag (G_SecretExitLevel, S1 special 51)
+	secretexit:	fn(): int;
 
 	# introspection for tests
 	nummobjs:	fn(): int;
