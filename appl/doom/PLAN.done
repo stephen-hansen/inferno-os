@@ -260,10 +260,12 @@ Milestones (each independently testable)
          -> /dev/audioctl "enc pcm" "rate 11025"
   [ ] 8  polish: menus, status bar, demo playback
 
-  [ ] 8  Thing sprites + masked two-sided midtextures
-         (IMPLEMENTATION COMPLETE - build clean, 350-tic startup
-          smoke no crash, no process left; user visual validation
-          pending, PLAN checkbox stays [ ] until then)
+  [x] 8  Thing sprites + masked two-sided midtextures
+         (CLOSED: implementation complete; sprite side user-validated
+          over several rounds incl. all clip fixes; masked mids +
+          spectre fuzz implemented and source-validated - residuals:
+          E1M1 cage/fence draw check, spectre fuzz needs E1M2+,
+          nukage flow, pedestal scroll, 1-frame grazing fix)
          - sprites: raw sprite patch lumps eager-loaded into
            SprPatch{w,h,xoff,yoff 16.16,colofs,raw}; sprnames ->
            frame/rotate table built like R_InitSpriteDefs (483
@@ -612,3 +614,39 @@ Milestones (each independently testable)
           replay of the incident tic preserved x at 63/64 instead
           of 0.  Removed; slide flush/retry logic was untouched
           throughout (vanilla-exact).
+          DOOR SLICE (milestone 13 first cut): use-lines + manual
+          doors + sector thinker backbone, unlocking the E1M1 exit
+          path.  Geometry re-verified from the WAD (prior session
+          note had wrong coords): the first door is lines 151/152
+          (special 1, fronts sec 4) at x=1536/1552, y -2432..-2560;
+          track sector 4 is 16u wide with 0/0 heights; lowest
+          surrounding ceiling is 72 so topheight = 68 (fits the 56u
+          player).  Transcribed line-for-line from source:
+          T_MovePlane (p_floor.c, RES_OK/CRUSHED/PASTDEST + revert +
+          recompute), P_ChangeSector/PIT_ChangeSector/
+          P_ThingHeightClip (p_floor.c/p_maputl.c, brute force over
+          mobjs; gib-lite for dead corpses, no damage yet per
+          milestone 9), T_VerticalDoor (p_doors.c, all
+          wait/initial/up/down branches + sounds), EV_VerticalDoor
+          (reuse flip/close + new-door type map 1/26/27/28/31-34/
+          117/118, locks via EV_DoLockedDoor + cards[6] on Player),
+          P_UseLines (64u trace, nearest-first, oof stop) +
+          P_UseSpecialLine manual cases + BT_USE rising edge in
+          playerthink (p_spec.c/p_switch.c).  Divergences, all noted
+          in code: thinkers live in a separate list (mobjs first,
+          then doors; no compaction so sector specialdata indices
+          stay stable), no blockmap/sec->lines (brute force),
+          monster door-use deferred to AI (milestone 12), sounds via
+          new Sound stub module (sound.m/sound.b, +mkfile), crush
+          damage deferred to 9.  Sector.specialdata slot added
+          (map.m/map.b, -1 init).  Button-bit fix (PLAN 10 item):
+          doom.b had Space/Ctrl swapped vs BT_USE=2/BT_ATTACK=1.
+          Validated headless with a throwaway BFS-navigate + use +
+          watch harness (kept outside the repo): full cycle
+          0->68 (34 tics @2u) -> wait 150 -> close; retrigger while
+          waiting closes early (60 = 68-4*2 exactly); flip-back
+          reopens; player walks through the raised doorway into
+          sector 0.  DOORTEST PASS.  Build clean (view.b warnings
+          pre-date this change), no emu left running, temp
+          harness/logs removed from the tree.  Rest of 13 (floors/
+          plats/ceilings/lights/switches/teleport/exit) still open.

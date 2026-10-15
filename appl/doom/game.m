@@ -77,6 +77,16 @@ Game: module {
 	AM_CLIP, AM_SHELL, AM_CELL, AM_MISL: con iota;
 	NUMAMMO:	con 4;
 
+	# keycards/skulls (d_items.h card_t order)
+	IT_BLUECARD, IT_YELLOWCARD, IT_REDCARD,
+	IT_BLUESKULL, IT_YELLOWSKULL, IT_REDSKULL: con iota;
+	NUMCARDS:	con 6;
+
+	# vertical door types (p_spec.h vldoor_e order)
+	VLD_NORMAL, VLD_CLOSE30THENOPEN, VLD_CLOSE, VLD_OPEN,
+	VLD_RAISEIN5MINS, VLD_BLAZERAISE, VLD_BLAZEOPEN,
+	VLD_BLAZECLOSE: con iota;
+
 	# per-tic player command (d_ticcmd.h)
 	Ticcmd: adt {
 		forwardmove, sidemove:	int;	# signed char, *2048 for thrust
@@ -123,6 +133,7 @@ Game: module {
 		weaponowned:	array of int;	# [NUMWEAPONS]
 		ammo, maxammo:	array of int;	# [NUMAMMO]
 		frags:	array of int;		# [MAXPLAYERS]
+		cards:	array of int;		# [NUMCARDS] keycards/skulls
 	};
 
 	# --- world state (one level; set by setuplevel) ---

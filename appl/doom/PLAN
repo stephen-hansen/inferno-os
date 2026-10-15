@@ -121,7 +121,14 @@ New milestones: gameplay first (visibility -> damage -> guns -> AI
 Part A — world visibility
 ================================================================================
 
-  [ ] 8  Thing sprites + masked two-sided midtextures
+  [x] 8  Thing sprites + masked two-sided midtextures
+          (CLOSED this session: implementation complete, sprite side
+          user-validated over several rounds incl. clip fixes; masked
+          mids + spectre fuzz implemented and source-validated but
+          never observed in a tested view - residuals: E1M1 cage/
+          fence draw check, spectre fuzz (no spectres on E1M1, needs
+          E1M2+), nukage flow, pedestal scroll, 1-frame grazing fix.
+          Detail in PLAN.done 8/8b/8c.)
          WHY: the world is empty — monsters/items never render;
          two-sided midtextures (fences, grates) are skipped.
          SOURCES: r_things.c (R_InitSpriteDefs, R_InstallSpriteLump,

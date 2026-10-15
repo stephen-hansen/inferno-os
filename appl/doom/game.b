@@ -1,8 +1,10 @@
 # Play simulation.  Reference: doomgeneric p_mobj.c p_map.c
-# p_maputl.c p_user.c p_tick.c (GPL-2).  Collision walks every
-# line/thing each check (no blockmap); P_SlideMove traces its
-# three leading corners brute-force over all lines; action
-# routines and specials are no-op stubs for now.
+# p_maputl.c p_user.c p_tick.c p_doors.c p_spec.c p_switch.c
+# p_floor.c (GPL-2).  Collision walks every line/thing each check
+# (no blockmap); P_SlideMove traces its three leading corners
+# brute-force over all lines; doors + use-lines are in (milestone
+# 13 slice).  Item pickup, weapons/psprites and AI actions are
+# no-op stubs for now.
 
 implement Game;
 
@@ -20,6 +22,8 @@ include "info.m";
 	inf: Info;
 	MobjInfo: import inf;
 include "game.m";
+include "sound.m";
+	sound: Sound;
 
 # collision temporaries (vanilla module globals in p_map.c)
 tmthing: ref Mobj;
@@ -37,6 +41,33 @@ bestslideline, secondslideline: int;	# linedef index
 tmxmove, tmymove: int;
 tantoangle: array of int;		# 2049; vanilla tables.c table
 SLOPERANGE: con 2048;
+
+# --- sector thinkers (p_tick.c subset, milestone 13 slice) ---
+# vanilla keeps one thinker list for mobjs and special sectors;
+# ours runs mobjs first, then sector thinkers (1-tic ordering
+# difference is unobservable at door speeds).
+THINK_DOOR: con 0;
+RES_OK: con 0;			# T_MovePlane result_e
+RES_CRUSHED: con 1;
+RES_PASTDEST: con 2;
+VDOORSPEED: con 2*FRACUNIT;	# p_spec.h
+VDOORWAIT: con 150;
+USERANGE: con 64*FRACUNIT;	# P_UseLines reach (p_local.h)
+Door: adt {			# vanilla vldoor_t
+	sec:	ref Map->Sector;
+	dtype:	int;		# VLD_*
+	topheight:	int;	# 16.16
+	speed:	int;		# 16.16 per tic
+	direction:	int;	# 0 wait, 1 up, 2 wait-then-open, -1 down
+	topwait:	int;	# tics at top before closing
+	topcountdown:	int;
+};
+Thinker: adt {
+	kind:	int;		# THINK_DOOR (floors/plats/ceilings later)
+	door:	ref Door;	# valid when kind == THINK_DOOR
+	removed:	int;		# lazy unlink, like mobjs
+};
+thinkers: array of ref Thinker;
 
 init(): string
 {
@@ -68,6 +99,16 @@ init(): string
 			map = load Map "map.dis";
 		if (map == nil)
 			return "can't load Map module";
+	}
+	if (sound == nil) {
+		sound = load Sound Sound->PATH;
+		if (sound == nil)
+			sound = load Sound "sound.dis";
+		if (sound == nil)
+			return "can't load Sound module";
+		err := sound->init();
+		if (err != nil)
+			return err;
 	}
 	if (tmbbox == nil)
 		tmbbox = array[4] of int;
@@ -246,6 +287,7 @@ init(): string
 	16r1feb96a0, 16r1fee24e0, 16r1ff0b2e0, 16r1ff34080, 16r1ff5cde0, 16r1ff85ae0, 16r1ffae7a0, 16r1ffd7400, 16r20000000
 		};
 	mobjs = array[0] of ref Mobj;
+	thinkers = array[0] of ref Thinker;
 	players = array[MAXPLAYERS] of ref Player;
 	lvltime = 0;
 	prndindex = 0;
@@ -288,6 +330,7 @@ setuplevel(l: ref Map->Level, skill: int): string
 	totalkills = 0;
 	totalitems = 0;
 	mobjs = array[0] of ref Mobj;
+	thinkers = array[0] of ref Thinker;
 	for (i := 0; i < MAXPLAYERS; i++)
 		players[i] = nil;
 
@@ -367,7 +410,7 @@ spawnplayer(t: Thing)
 	if (players[i] == nil) {
 		np := ref Player(nil, Ticcmd(0, 0, 0, 0), PST_REBORN,
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			nil, nil, nil, nil);
+			nil, nil, nil, nil, nil);
 		players[i] = np;
 	}
 	p := players[i];
@@ -403,6 +446,7 @@ playerreborn(p: ref Player)
 	p.maxammo[AM_CELL] = 300;
 	p.maxammo[AM_MISL] = 50;
 	p.frags = array[MAXPLAYERS] of int;
+	p.cards = array[NUMCARDS] of int;
 	p.usedown = 1;
 	p.attackdown = 1;
 	p.killcount = 0;
@@ -531,29 +575,454 @@ runthinkers()
 {
 	# snapshot the list: thinkers may spawn; removed are compacted
 	n := len mobjs;
-	if (n == 0)
-		return;
-	snap := array[n] of ref Mobj;
-	snap[0:] = mobjs;
-	for (i := 0; i < n; i++) {
-		mo := snap[i];
+	if (n != 0) {
+		snap := array[n] of ref Mobj;
+		snap[0:] = mobjs;
+		for (i := 0; i < n; i++) {
+			mo := snap[i];
+			if (mo.removed)
+				continue;
+			mobjthinker(mo);
+		}
+		# compact removed (lazy unlink, vanilla P_RunThinkers free)
+		kept := 0;
+		for (i = 0; i < n; i++)
+			if (!snap[i].removed)
+				kept++;
+		nm := array[kept] of ref Mobj;
+		k := 0;
+		for (i = 0; i < n; i++)
+			if (!snap[i].removed) {
+				nm[k] = snap[i];
+				k++;
+			}
+		mobjs = nm;
+	}
+
+	# sector thinkers (doors for now).  No compaction here:
+	# sectors hold thinker indices (specialdata), so slots must
+	# stay stable; removed thinkers are just skipped (a level
+	# creates only a handful).
+	nt := len thinkers;
+	for (i := 0; i < nt; i++) {
+		th := thinkers[i];
+		if (th.removed)
+			continue;
+		if (th.kind == THINK_DOOR)
+			tverticaldoor(th);
+	}
+}
+
+# ---------------------------------------------------------------------------
+# sector movers: doors + use-lines (milestone 13 slice).
+# Reference: doomgeneric p_floor.c (T_MovePlane), p_maputl.c
+# (PIT_ChangeSector, P_ThingHeightClip), p_doors.c, p_spec.c
+# (P_UseLines, PTR_UseTraverse, P_UseSpecialLine), p_switch.c
+# (manual door cases).  Transcribed line-for-line except: thinker
+# list is separate from mobjs (no unlink dance; sectors hold
+# stable indices), brute-force line/sector scans (no blockmap,
+# no sec->lines), damage-on-crush deferred to milestone 9
+# (P_ChangeSector never damages yet), monster door-use deferred
+# to AI (milestone 12), sounds are stubs.
+# ---------------------------------------------------------------------------
+
+# vanilla P_FindLowestCeilingSurrounding (p_floor.c) over all lines
+findlowestceilingsurrounding(sec: ref Map->Sector): int
+{
+	height := ONCEILINGZ;
+	for (i := 0; i < len lev.lines; i++) {
+		ld := lev.lines[i];
+		other := ld.frontsector;
+		if (ld.frontsector == sec) {
+			if (ld.backsector == sec)
+				continue;	# self-referencing: getNextSector nil
+			other = ld.backsector;
+		} else if (ld.backsector == sec) {
+			other = ld.frontsector;
+		} else
+			continue;		# line doesn't touch sec
+		if (other == nil)
+			continue;
+		if (other.ceilingheight < height)
+			height = other.ceilingheight;
+	}
+	return height;
+}
+
+# vanilla P_ThingHeightClip (p_maputl.c): refit mo to its sector
+# stack after a height change; returns fit (1) or crushed (0).
+# The checkposition result is discarded like vanilla (globals keep
+# partial state, recomputed on revert).
+thingheightclip(mo: ref Mobj): int
+{
+	onfloor := 0;
+	if (mo.z == mo.floorz)
+		onfloor = 1;
+	checkposition(mo, mo.x, mo.y);
+	mo.floorz = tmfloorz;
+	mo.ceilingz = tmceilingz;
+	if (onfloor != 0)
+		mo.z = mo.floorz;
+	else if (mo.z + mo.height > mo.ceilingz)
+		mo.z = mo.ceilingz - mo.height;
+	if (mo.ceilingz - mo.floorz >= mo.height)
+		return 1;
+	return 0;
+}
+
+# vanilla PIT_ChangeSector (p_maputl.c): 1 = keep scanning, 0 = nofit
+pitchangesector(mo: ref Mobj): int
+{
+	if (thingheightclip(mo) != 0)
+		return 1;
+	if (mo.health <= 0) {		# gib stuck corpses (no damage yet)
+		setmobjstate(mo, inf->S_GIBS);
+		mo.flags = mo.flags & ~inf->MF_SOLID;
+		mo.height = 0;
+		mo.radius = 0;
+		return 1;
+	}
+	if ((mo.flags & inf->MF_DROPPED) != 0) {
+		removemobj(mo);		# unreachable in shareware
+		return 1;
+	}
+	if ((mo.flags & inf->MF_SHOOTABLE) == 0)
+		return 1;
+	return 0;
+}
+
+# vanilla P_ChangeSector (p_floor.c): refit every thing in sec;
+# returns nofit (1 = blocked/crushed)
+pchangesector(sec: ref Map->Sector): int
+{
+	nofit := 0;
+	for (i := 0; i < len mobjs; i++) {
+		mo := mobjs[i];
 		if (mo.removed)
 			continue;
-		mobjthinker(mo);
+		if (mo.subsector == nil)
+			continue;
+		if (!(mo.subsector.sector == sec))
+			continue;
+		if (pitchangesector(mo) == 0)
+			nofit = 1;
 	}
-	# compact removed (lazy unlink, vanilla P_RunThinkers free)
-	kept := 0;
-	for (i = 0; i < n; i++)
-		if (!snap[i].removed)
-			kept++;
-	nm := array[kept] of ref Mobj;
-	k := 0;
-	for (i = 0; i < n; i++)
-		if (!snap[i].removed) {
-			nm[k] = snap[i];
-			k++;
+	return nofit;
+}
+
+# vanilla T_MovePlane (p_floor.c): move sec floor (floor != 0) or
+# ceiling toward dest at speed; RES_OK / RES_CRUSHED / RES_PASTDEST
+tmoveplane(sec: ref Map->Sector, speed, dest: int, crush, floor, direction: int): int
+{
+	lastpos := 0;
+	if (floor != 0) {
+		if (direction == -1) {		# DOWN
+			if (sec.floorheight - speed < dest) {
+				lastpos = sec.floorheight;
+				sec.floorheight = dest;
+				if (pchangesector(sec) != 0) {
+					sec.floorheight = lastpos;
+					pchangesector(sec);
+				}
+				return RES_PASTDEST;
+			}
+			lastpos = sec.floorheight;
+			sec.floorheight = sec.floorheight - speed;
+			if (pchangesector(sec) != 0) {
+				sec.floorheight = lastpos;
+				pchangesector(sec);
+				return RES_CRUSHED;
+			}
+			return RES_OK;
 		}
-	mobjs = nm;
+		if (sec.floorheight + speed > dest) {	# UP
+			lastpos = sec.floorheight;
+			sec.floorheight = dest;
+			if (pchangesector(sec) != 0) {
+				sec.floorheight = lastpos;
+				pchangesector(sec);
+			}
+			return RES_PASTDEST;
+		}
+		lastpos = sec.floorheight;
+		sec.floorheight = sec.floorheight + speed;
+		pchangesector(sec);
+		return RES_OK;
+	}
+	if (direction == -1) {		# CEILING DOWN
+		if (sec.ceilingheight - speed < dest) {
+			lastpos = sec.ceilingheight;
+			sec.ceilingheight = dest;
+			if (pchangesector(sec) != 0) {
+				sec.ceilingheight = lastpos;
+				pchangesector(sec);
+			}
+			return RES_PASTDEST;
+		}
+		lastpos = sec.ceilingheight;
+		sec.ceilingheight = sec.ceilingheight - speed;
+		if (pchangesector(sec) != 0) {
+			if (crush != 0)
+				return RES_CRUSHED;	# stay crushed (milestone 9)
+			sec.ceilingheight = lastpos;
+			pchangesector(sec);
+			return RES_CRUSHED;
+		}
+		return RES_OK;
+	}
+	if (sec.ceilingheight + speed > dest) {	# CEILING UP
+		lastpos = sec.ceilingheight;
+		sec.ceilingheight = dest;
+		if (pchangesector(sec) != 0) {
+			sec.ceilingheight = lastpos;
+			pchangesector(sec);
+		}
+		return RES_PASTDEST;
+	}
+	lastpos = sec.ceilingheight;
+	sec.ceilingheight = sec.ceilingheight + speed;
+	pchangesector(sec);
+	return RES_OK;
+}
+
+# vanilla T_VerticalDoor (p_doors.c); th carries the Door plus the
+# removal flag (lazy unlink instead of P_RemoveThinker)
+tverticaldoor(th: ref Thinker)
+{
+	d := th.door;
+	sec := d.sec;
+	if (d.direction == 0) {		# WAITING at top
+		d.topcountdown = d.topcountdown - 1;
+		if (d.topcountdown == 0) {
+			if (d.dtype == VLD_BLAZEOPEN)
+				d.direction = 1;
+			else if (d.dtype == VLD_NORMAL)
+				d.direction = -1;
+			else if (d.dtype == VLD_CLOSE30THENOPEN)
+				d.direction = 1;
+			if (d.direction == 1)
+				sound->startsound(0, 0, sound->SFX_DOROPN);
+			else if (d.direction == -1)
+				sound->startsound(0, 0, sound->SFX_DORCLS);
+		}
+		return;
+	}
+	if (d.direction == 2) {		# INITIAL WAIT (raiseIn5Mins/close30)
+		d.topcountdown = d.topcountdown - 1;
+		if (d.topcountdown != 0)
+			return;
+		if (d.dtype == VLD_RAISEIN5MINS)
+			d.direction = 1;
+		else if (d.dtype == VLD_CLOSE30THENOPEN)
+			d.direction = 1;
+		sound->startsound(0, 0, sound->SFX_DOROPN);
+		return;
+	}
+	if (d.direction == -1) {	# DOWN
+		res := tmoveplane(sec, d.speed, sec.floorheight, 0, 0, d.direction);
+		if (res == RES_PASTDEST) {
+			if (d.dtype == VLD_BLAZECLOSE || d.dtype == VLD_NORMAL) {
+				sec.specialdata = -1;
+				th.removed = 1;
+				sound->startsound(0, 0, sound->SFX_DORCLS);
+			} else if (d.dtype == VLD_CLOSE30THENOPEN) {
+				d.direction = 2;
+				d.topcountdown = 30 * TICRATE;
+			}
+		} else if (res == RES_CRUSHED) {
+			if (d.dtype == VLD_BLAZECLOSE || d.dtype == VLD_CLOSE) {
+			} else {
+				d.direction = 1;
+				sound->startsound(0, 0, sound->SFX_DOROPN);
+			}
+		}
+		return;
+	}
+	res := tmoveplane(sec, d.speed, d.topheight, 0, 0, d.direction);
+	if (res == RES_PASTDEST) {
+		if (d.dtype == VLD_BLAZEOPEN || d.dtype == VLD_NORMAL) {
+			d.direction = 0;	# wait at top, then close
+			d.topcountdown = d.topwait;
+		} else if (d.dtype == VLD_CLOSE30THENOPEN || d.dtype == VLD_RAISEIN5MINS) {
+			sec.specialdata = -1;
+			th.removed = 1;
+		}
+	}
+}
+
+# vanilla EV_DoLockedDoor (p_doors.c): card/skull check for
+# 26/27/28/32/33/34; 1 = may proceed
+evdolockeddoor(li: int, mo: ref Mobj): int
+{
+	ld := lev.lines[li];
+	p := mo.player;
+	if (p == nil)
+		return 0;
+	if (ld.special == 26 || ld.special == 32) {
+		if (p.cards[IT_BLUECARD] == 0 && p.cards[IT_BLUESKULL] == 0) {
+			sound->startsound(mo.x, mo.y, sound->SFX_OOF);
+			return 0;
+		}
+	}
+	if (ld.special == 27 || ld.special == 34) {
+		if (p.cards[IT_YELLOWCARD] == 0 && p.cards[IT_YELLOWSKULL] == 0) {
+			sound->startsound(mo.x, mo.y, sound->SFX_OOF);
+			return 0;
+		}
+	}
+	if (ld.special == 28 || ld.special == 33) {
+		if (p.cards[IT_REDCARD] == 0 && p.cards[IT_REDSKULL] == 0) {
+			sound->startsound(mo.x, mo.y, sound->SFX_OOF);
+			return 0;
+		}
+	}
+	return 1;
+}
+
+# vanilla EV_VerticalDoor (p_doors.c): manual + retrigger use;
+# side forced 0 (front), so the door sector is sides[1]
+evverticaldoor(li: int, mo: ref Mobj): int
+{
+	ld := lev.lines[li];
+	if (ld.sides[1] == nil)
+		return 0;
+	sec := ld.sides[1].sector;
+	if (sec == nil)
+		return 0;
+	if (sec.specialdata != -1) {	# active thinker: flip or close
+		d := thinkers[sec.specialdata].door;
+		if (d.dtype == VLD_NORMAL || d.dtype == VLD_CLOSE30THENOPEN ||
+		    d.dtype == VLD_BLAZERAISE || d.dtype == VLD_BLAZEOPEN ||
+		    d.dtype == VLD_BLAZECLOSE ||
+		    ld.special == 1 || ld.special == 26 || ld.special == 27 ||
+		    ld.special == 28 || ld.special == 117) {
+			if (d.direction == -1)
+				d.direction = 1;	# start opening again
+			else {
+				if (mo.player == nil)
+					return 0;	# monsters don't close
+				d.direction = -1;
+				sound->startsound(0, 0, sound->SFX_DORCLS);
+			}
+			return 1;
+		}
+		return 0;
+	}
+	if (ld.special == 26 || ld.special == 27 || ld.special == 28 ||
+	    ld.special == 32 || ld.special == 33 || ld.special == 34) {
+		if (evdolockeddoor(li, mo) == 0)
+			return 0;
+	}
+	d := ref Door;
+	d.sec = sec;
+	d.direction = 1;
+	d.topwait = VDOORWAIT;
+	d.speed = VDOORSPEED;
+	if (ld.special == 117 || ld.special == 118) {
+		d.speed = 4 * FRACUNIT;
+		sound->startsound(0, 0, sound->SFX_BDOPN);
+	} else
+		sound->startsound(0, 0, sound->SFX_DOROPN);
+	if (ld.special == 1 || ld.special == 26 || ld.special == 27 ||
+	    ld.special == 28)
+		d.dtype = VLD_NORMAL;
+	else if (ld.special == 31 || ld.special == 32 || ld.special == 33 ||
+	    ld.special == 34) {
+		d.dtype = VLD_OPEN;
+		sec.special = 0;
+	} else if (ld.special == 117)
+		d.dtype = VLD_BLAZEOPEN;
+	else					# 118
+		d.dtype = VLD_BLAZEOPEN;
+	if (d.dtype == VLD_OPEN || d.dtype == VLD_BLAZEOPEN)
+		d.topheight = findlowestceilingsurrounding(sec);
+	else
+		d.topheight = findlowestceilingsurrounding(sec) - 4 * FRACUNIT;
+	d.topcountdown = 0;
+	th := ref Thinker(THINK_DOOR, d, 0);
+	n := len thinkers;
+	nt := array[n + 1] of ref Thinker;
+	if (n > 0)
+		nt[0:] = thinkers;
+	nt[n] = th;
+	thinkers = nt;
+	sec.specialdata = n;
+	return 1;
+}
+
+# manual door specials from p_switch.c P_UseSpecialLine
+# (1/26/27/28/31-34/117/118); walkover/switch/shoot cases later
+usespecialline(mo: ref Mobj, li, side: int): int
+{
+	ld := lev.lines[li];
+	if (side != 0)
+		return 0;		# 124 only (unused); vanilla early-out
+	if (mo.player == nil)
+		return 0;		# monster use (1/32/33/34) with AI later
+	if (ld.special == 1 || ld.special == 26 || ld.special == 27 ||
+	    ld.special == 28 || ld.special == 31 || ld.special == 32 ||
+	    ld.special == 33 || ld.special == 34 ||
+	    ld.special == 117 || ld.special == 118) {
+		evverticaldoor(li, mo);
+		return 1;
+	}
+	return 0;
+}
+
+# vanilla P_UseLines (p_spec.c): 64u trace from the player; lines
+# crossed nearest-first (insertion sort = P_TraverseIntercepts
+# order); non-special blocking lines oof and stop, special lines
+# dispatch and stop
+uselines(p: ref Player)
+{
+	mo := p.mo;
+	a := (mo.angle >> ANGLETOFINESHIFT) & FINEMASK;
+	x1 := mo.x;
+	y1 := mo.y;
+	# vanilla: x2 = x1 + (USERANGE>>FRACBITS)*finecosine etc.
+	dx := 64 * inf->finesine[(a + 2048) & FINEMASK];
+	dy := 64 * inf->finesine[a];
+	x2 := x1 + dx;
+	y2 := y1 + dy;
+	nh := 0;
+	hfrac := array[len lev.lines] of int;
+	hline := array[len lev.lines] of int;
+	for (i := 0; i < len lev.lines; i++) {
+		s1 := pointonlineside(x1, y1, i);
+		s2 := pointonlineside(x2, y2, i);
+		if (s1 == s2)
+			continue;	# line isn't crossed
+		v1 := lev.vertices[lev.lines[i].v1];
+		frac := interceptvector(x1, y1, dx, dy,
+			v1.x, v1.y, lev.lines[i].dx, lev.lines[i].dy);
+		if (frac < 0 || frac > FRACUNIT)
+			continue;
+		j := nh;
+		while (j > 0 && hfrac[j-1] > frac) {
+			hfrac[j] = hfrac[j-1];
+			hline[j] = hline[j-1];
+			j--;
+		}
+		hfrac[j] = frac;
+		hline[j] = i;
+		nh++;
+	}
+	for (i = 0; i < nh; i++) {
+		li := hline[i];
+		if (lev.lines[li].special == 0) {
+			lineopening(li);
+			if (openrange <= 0) {
+				sound->startsound(mo.x, mo.y, sound->SFX_OOF);
+				return;
+			}
+		} else {
+			side := 0;
+			if (pointonlineside(mo.x, mo.y, li) == 1)
+				side = 1;
+			usespecialline(mo, li, side);
+			return;
+		}
+	}
 }
 
 # ---------------------------------------------------------------------------
@@ -663,7 +1132,17 @@ playerthink(p: ref Player)
 
 	calcheight(p);
 
-	# P_PlayerInSpecialSector / weapon change / use lines: later
+	# use-lines on the BT_USE rising edge (vanilla P_PlayerThink);
+	# weapon change / specials damage later
+	if ((p.cmd.buttons & BT_USE) != 0) {
+		if (p.usedown == 0) {
+			uselines(p);
+			p.usedown = 1;
+		}
+	} else
+		p.usedown = 0;
+
+	# P_PlayerInSpecialSector: later
 }
 
 xymovement(mo: ref Mobj)

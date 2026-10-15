@@ -101,7 +101,8 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 		sectors[i] = ref Sector(
 			le16(b, o) << 16, le16(b, o+2) << 16,
 			name8(b, o+4), name8(b, o+12),
-			le16(b, o+20), le16(b, o+22), le16(b, o+24));
+			le16(b, o+20), le16(b, o+22), le16(b, o+24),
+			-1);	# specialdata: no active thinker
 	}
 	l.sectors = sectors;
 

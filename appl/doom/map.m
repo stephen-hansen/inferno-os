@@ -23,6 +23,7 @@ Map: module {
 		floorheight, ceilingheight:	int;	# 16.16
 		floortexture, ceilingtexture:	string;
 		lightlevel, special, tag:	int;
+		specialdata:	int;	# active thinker index, -1 if none
 	};
 
 	Side: adt {

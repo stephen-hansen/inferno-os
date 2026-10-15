@@ -473,9 +473,9 @@ play(path: string, wmctxt: ref Draw->Context)
 		if (sm < -50)
 			sm = -50;
 		if (keystate[' '])
-			btn |= 1;		# BT_USE
+			btn |= 2;		# BT_USE
 		if (keystate[LCtrl] || keystate[RCtrl])
-			btn |= 2;		# BT_ATTACK
+			btn |= 1;		# BT_ATTACK
 
 
 		game->setcmd(fm, sm, at, btn);
