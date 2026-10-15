@@ -87,6 +87,15 @@ Game: module {
 	VLD_RAISEIN5MINS, VLD_BLAZERAISE, VLD_BLAZEOPEN,
 	VLD_BLAZECLOSE: con iota;
 
+	# floor mover types (p_spec.h floor_e positions; others later)
+	FL_TURBOLOWER:	con 2;
+
+	# plat types (p_spec.h plattype_e positions; others later)
+	PL_DOWNWAITUPSTAY:	con 1;
+
+	# plat status (p_spec.h plat_e order)
+	PLS_UP, PLS_DOWN, PLS_WAITING, PLS_STASIS: con iota;
+
 	# per-tic player command (d_ticcmd.h)
 	Ticcmd: adt {
 		forwardmove, sidemove:	int;	# signed char, *2048 for thrust
@@ -176,6 +185,10 @@ Game: module {
 	# viewangle and recompute viewcos/viewsin; call once per frame
 	# before rendering
 	setview:	fn();
+
+	# level-exit flag (G_ExitLevel): set by the exit switch (S1
+	# special 11); consumed by the intermission milestone (16)
+	levexit:	fn(): int;
 
 	# introspection for tests
 	nummobjs:	fn(): int;

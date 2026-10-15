@@ -290,6 +290,7 @@ play(path: string, wmctxt: ref Draw->Context)
 	tic := 0;
 	quit := 0;
 	dotic := 0;
+	exitshown := 0;		# level-complete announced once
 	for (; !quit;) {
 		# key events only update keystate; tics come SOLELY from the
 		# tick timer (key-driven tics made the game surge at
@@ -480,6 +481,13 @@ play(path: string, wmctxt: ref Draw->Context)
 
 		game->setcmd(fm, sm, at, btn);
 		game->ticker();
+
+		# level-exit flag (S1 exit switch; intermission is
+		# milestone 16, so just announce once for now)
+		if (game->levexit() != 0 && exitshown == 0) {
+			exitshown = 1;
+			sys->print("level complete\n");
+		}
 
 		# render: update view from player, walk BSP, present
 		game->setview();

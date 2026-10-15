@@ -650,3 +650,40 @@ Milestones (each independently testable)
           pre-date this change), no emu left running, temp
           harness/logs removed from the tree.  Rest of 13 (floors/
           plats/ceilings/lights/switches/teleport/exit) still open.
+          EXIT + WALKOVER SLICE (milestone 13 second cut): E1M1 is
+          now completable minus monsters/items.  WAD survey first:
+          E1M1 needs only specials 1 (doors, done), 11 (S1 exit,
+          line 330), 36 (W1 turboLower, line 308 tag 1 -> sec 59),
+          48 (scroll, done), 88 (WR plat, line 195 tag 2 -> sec 70);
+          full E1M1-E1M9 histogram recorded for the rest of 13.
+          Transcribed: T_MoveFloor + EV_DoFloor/turboLower
+          (p_floor.c; dest highest-surrounding +8), T_PlatRaise +
+          EV_DoPlat/downWaitUpStay (p_plats.c; 4x speed, 105-tic
+          wait), P_FindSectorFromLineTag + lowest/highest floor
+          helpers, spechit capture in pitcheckline + reverse-order
+          drain with old/new-side crossing test in trymove (p_map.c;
+          TELEPORT/NOCLIP guard), P_CrossSpecialLine 36/88 subset
+          with the non-player gate, P_ChangeSwitchTexture one-shot
+          path over string switch pairs (19 ep1 pairs, SW1STRTN
+          verified live), G_ExitLevel as a flag consumed by 16
+          (doom.b prints "level complete" once).  Divergences noted
+          in code: separate thinker list (THINK_FLOOR/PLAT), no
+          blockmap, unbounded activeplats (no I_Error), no spechit
+          overrun emulation (drop past 20), button timers later.
+          TWO REAL BUGS FOUND BY THE HARNESS: (1) use-trace
+          oof-stop: collinear wall pieces flanking a switch (E1M1
+          lines 329/331 around exit 330) sort ahead of it and kill
+          the trace - vanilla only works by blockmap-order luck;
+          added a segment-span gate (crossing must land on the
+          segment, 1u slack).  (2) first gate attempt used exact
+          bbox equality, but exact-west aims 0x7FFFFFFF (one BAM
+          unit off axis, vanilla-exact), so the crossing missed by
+          subunits - the 1u slack covers it.  Validated headless
+          (throwaway harness, outside repo): W1 96 -> -40 exactly
+          (highest surrounding -48 + 8) with W1 clear; WR plat dips
+          to exactly -48 (lowest surrounding) and returns to 104
+          with WR retained; exit USE swaps SW1STRTN -> SW2STRTN and
+          sets the flag.  EXITTEST PASS.  No emu left running;
+          harness/logs removed from the tree.  Remaining 13: other
+          floor/plat/ceiling types, lights, teleport, switches with
+          timers, full walkover table, sector specials are 14.

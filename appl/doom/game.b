@@ -47,11 +47,17 @@ SLOPERANGE: con 2048;
 # ours runs mobjs first, then sector thinkers (1-tic ordering
 # difference is unobservable at door speeds).
 THINK_DOOR: con 0;
+THINK_FLOOR: con 1;
+THINK_PLAT: con 2;
 RES_OK: con 0;			# T_MovePlane result_e
 RES_CRUSHED: con 1;
 RES_PASTDEST: con 2;
 VDOORSPEED: con 2*FRACUNIT;	# p_spec.h
 VDOORWAIT: con 150;
+FLOORSPEED: con FRACUNIT;	# p_spec.h (turboLower uses 4x)
+PLATSPEED: con FRACUNIT;
+PLATWAIT: con 3;		# p_spec.h (x TICRATE)
+MAXSPECIALCROSS: con 20;	# p_local.h (no overrun emulation)
 USERANGE: con 64*FRACUNIT;	# P_UseLines reach (p_local.h)
 Door: adt {			# vanilla vldoor_t
 	sec:	ref Map->Sector;
@@ -62,12 +68,41 @@ Door: adt {			# vanilla vldoor_t
 	topwait:	int;	# tics at top before closing
 	topcountdown:	int;
 };
+Floor: adt {			# vanilla floormove_t (subset)
+	sec:	ref Map->Sector;
+	fltype:	int;		# FL_* (turboLower for now)
+	floordestheight:	int;	# 16.16
+	speed:	int;
+	direction:	int;	# 1 up, -1 down
+	crush:	int;
+};
+Plat: adt {			# vanilla plat_t (subset)
+	sec:	ref Map->Sector;
+	speed:	int;
+	low, high:	int;	# 16.16
+	wait:	int;		# tics at each end
+	count:	int;
+	status:	int;		# PLS_* (up/down/waiting/stasis)
+	crush:	int;
+	tag:	int;
+};
 Thinker: adt {
-	kind:	int;		# THINK_DOOR (floors/plats/ceilings later)
-	door:	ref Door;	# valid when kind == THINK_DOOR
+	kind:	int;		# THINK_DOOR/FLOOR/PLAT (ceilings later)
+	door:	ref Door;
+	floor:	ref Floor;
+	plat:	ref Plat;
 	removed:	int;		# lazy unlink, like mobjs
 };
 thinkers: array of ref Thinker;
+activeplats: array of ref Thinker;	# plats only (p_plats.c list)
+spechit: array of int;	# crossed special linedefs (p_map.c)
+nspechit: int;
+exited: int;		# G_ExitLevel flag (consumed by milestone 16)
+
+# switch texture pairs (vanilla p_switch.c alphSwitchList,
+# shareware episode 1 set, as P_InitSwitchList loads it).
+# Textures stay name strings here (no texture numbers).
+switchpairs: array of (string, string);
 
 init(): string
 {
@@ -288,6 +323,31 @@ init(): string
 		};
 	mobjs = array[0] of ref Mobj;
 	thinkers = array[0] of ref Thinker;
+	activeplats = array[0] of ref Thinker;
+	spechit = array[MAXSPECIALCROSS] of int;
+	nspechit = 0;
+	exited = 0;
+	switchpairs = array[] of {
+		("SW1BRCOM", "SW2BRCOM"),
+		("SW1BRN1", "SW2BRN1"),
+		("SW1BRN2", "SW2BRN2"),
+		("SW1BRNGN", "SW2BRNGN"),
+		("SW1BROWN", "SW2BROWN"),
+		("SW1COMM", "SW2COMM"),
+		("SW1COMP", "SW2COMP"),
+		("SW1DIRT", "SW2DIRT"),
+		("SW1EXIT", "SW2EXIT"),
+		("SW1GRAY", "SW2GRAY"),
+		("SW1GRAY1", "SW2GRAY1"),
+		("SW1METAL", "SW2METAL"),
+		("SW1PIPE", "SW2PIPE"),
+		("SW1SLAD", "SW2SLAD"),
+		("SW1STARG", "SW2STARG"),
+		("SW1STON1", "SW2STON1"),
+		("SW1STON2", "SW2STON2"),
+		("SW1STONE", "SW2STONE"),
+		("SW1STRTN", "SW2STRTN"),
+	};
 	players = array[MAXPLAYERS] of ref Player;
 	lvltime = 0;
 	prndindex = 0;
@@ -331,6 +391,9 @@ setuplevel(l: ref Map->Level, skill: int): string
 	totalitems = 0;
 	mobjs = array[0] of ref Mobj;
 	thinkers = array[0] of ref Thinker;
+	activeplats = array[0] of ref Thinker;
+	nspechit = 0;
+	exited = 0;
 	for (i := 0; i < MAXPLAYERS; i++)
 		players[i] = nil;
 
@@ -610,6 +673,10 @@ runthinkers()
 			continue;
 		if (th.kind == THINK_DOOR)
 			tverticaldoor(th);
+		else if (th.kind == THINK_FLOOR)
+			tmovefloor(th);
+		else if (th.kind == THINK_PLAT)
+			tplatraise(th);
 	}
 }
 
@@ -939,7 +1006,7 @@ evverticaldoor(li: int, mo: ref Mobj): int
 	else
 		d.topheight = findlowestceilingsurrounding(sec) - 4 * FRACUNIT;
 	d.topcountdown = 0;
-	th := ref Thinker(THINK_DOOR, d, 0);
+	th := ref Thinker(THINK_DOOR, d, nil, nil, 0);
 	n := len thinkers;
 	nt := array[n + 1] of ref Thinker;
 	if (n > 0)
@@ -951,7 +1018,8 @@ evverticaldoor(li: int, mo: ref Mobj): int
 }
 
 # manual door specials from p_switch.c P_UseSpecialLine
-# (1/26/27/28/31-34/117/118); walkover/switch/shoot cases later
+# (1/26/27/28/31-34/117/118) + S1 exit switch (11, with texture
+# swap); walkover/switch/shoot cases later
 usespecialline(mo: ref Mobj, li, side: int): int
 {
 	ld := lev.lines[li];
@@ -959,6 +1027,11 @@ usespecialline(mo: ref Mobj, li, side: int): int
 		return 0;		# 124 only (unused); vanilla early-out
 	if (mo.player == nil)
 		return 0;		# monster use (1/32/33/34) with AI later
+	if (ld.special == 11) {		# S1 exit (p_switch.c)
+		changeswitchtexture(li, 0);
+		gexitlevel();
+		return 1;
+	}
 	if (ld.special == 1 || ld.special == 26 || ld.special == 27 ||
 	    ld.special == 28 || ld.special == 31 || ld.special == 32 ||
 	    ld.special == 33 || ld.special == 34 ||
@@ -997,6 +1070,32 @@ uselines(p: ref Player)
 			v1.x, v1.y, lev.lines[i].dx, lev.lines[i].dy);
 		if (frac < 0 || frac > FRACUNIT)
 			continue;
+		# segment-span gate: the infinite-line crossing must
+		# land on the segment itself.  Vanilla's blockmap walk
+		# can order collinear neighbors (e.g. the wall pieces
+		# flanking the E1M1 exit switch) ahead of the switch
+		# by rounding luck and oof-stop the trace; requiring
+		# the span keeps facing-a-wall oofs while letting the
+		# switch behind its own wall pieces fire.  1u of slack
+		# for fixed-point wobble (exact-west aims 0x7FFFFFFF,
+		# one BAM unit off axis, like vanilla).
+		hx := x1 + rend->fixedmul(dx, frac);
+		hy := y1 + rend->fixedmul(dy, frac);
+		v2 := lev.vertices[lev.lines[i].v2];
+		if (v1.x < v2.x) {
+			if (hx + FRACUNIT < v1.x || hx - FRACUNIT > v2.x)
+				continue;
+		} else {
+			if (hx + FRACUNIT < v2.x || hx - FRACUNIT > v1.x)
+				continue;
+		}
+		if (v1.y < v2.y) {
+			if (hy + FRACUNIT < v1.y || hy - FRACUNIT > v2.y)
+				continue;
+		} else {
+			if (hy + FRACUNIT < v2.y || hy - FRACUNIT > v1.y)
+				continue;
+		}
 		j := nh;
 		while (j > 0 && hfrac[j-1] > frac) {
 			hfrac[j] = hfrac[j-1];
@@ -1023,6 +1122,315 @@ uselines(p: ref Player)
 			return;
 		}
 	}
+}
+
+# ---------------------------------------------------------------------------
+# floors / plats / walkover lines / switches / exit (milestone 13
+# second slice: exactly what E1M1 needs past doors — W1 turboLower
+# 36, WR downWaitUpStay plat 88, S1 exit switch 11).
+# Reference: doomgeneric p_floor.c, p_plats.c, p_spec.c
+# (P_CrossSpecialLine, find helpers), p_switch.c, g_game.c
+# G_ExitLevel (GPL-2).  Transcribed except: brute-force scans (no
+# blockmap/sec->lines), separate thinker list (stable indices, no
+# compaction), unbounded activeplats (vanilla I_Errors past 30),
+# textures are name strings (no texture numbers), button flip-back
+# timers later (S1 exit never flips back), crush damage in 9,
+# secret counting in 14.
+# ---------------------------------------------------------------------------
+
+# vanilla P_FindSectorFromLineTag (p_spec.c): next sector whose
+# tag matches the line's, after start
+findsectorfromlinetag(li, start: int): int
+{
+	tag := lev.lines[li].tag;
+	for (i := start + 1; i < len lev.sectors; i++)
+		if (lev.sectors[i].tag == tag)
+			return i;
+	return -1;
+}
+
+# vanilla P_FindLowestFloorSurrounding (p_spec.c)
+findlowestfloorsec(sec: ref Map->Sector): int
+{
+	height := sec.floorheight;
+	for (i := 0; i < len lev.lines; i++) {
+		ld := lev.lines[i];
+		other := ld.frontsector;
+		if (ld.frontsector == sec) {
+			if (ld.backsector == sec)
+				continue;
+			other = ld.backsector;
+		} else if (ld.backsector == sec) {
+			other = ld.frontsector;
+		} else
+			continue;
+		if (other == nil)
+			continue;
+		if (other.floorheight < height)
+			height = other.floorheight;
+	}
+	return height;
+}
+
+# vanilla P_FindHighestFloorSurrounding (p_spec.c)
+findhighestfloorsec(sec: ref Map->Sector): int
+{
+	height := -500 * FRACUNIT;
+	for (i := 0; i < len lev.lines; i++) {
+		ld := lev.lines[i];
+		other := ld.frontsector;
+		if (ld.frontsector == sec) {
+			if (ld.backsector == sec)
+				continue;
+			other = ld.backsector;
+		} else if (ld.backsector == sec) {
+			other = ld.frontsector;
+		} else
+			continue;
+		if (other == nil)
+			continue;
+		if (other.floorheight > height)
+			height = other.floorheight;
+	}
+	return height;
+}
+
+# vanilla T_MoveFloor (p_floor.c).  The donutRaise/lowerAndChange
+# end-branches need fields this slice has no use for; the core
+# (unlink + pstop) is exact.
+tmovefloor(th: ref Thinker)
+{
+	f := th.floor;
+	res := tmoveplane(f.sec, f.speed, f.floordestheight,
+		f.crush, 1, f.direction);
+	if ((lvltime & 7) == 0)
+		sound->startsound(0, 0, sound->SFX_STNMOV);
+	if (res == RES_PASTDEST) {
+		f.sec.specialdata = -1;
+		th.removed = 1;
+		sound->startsound(0, 0, sound->SFX_PSTOP);
+	}
+}
+
+# vanilla EV_DoFloor (p_floor.c): turboLower only this slice
+# (other floor_e types with their milestones); returns 1 if any
+# sector started moving
+evdofloor(li, fltype: int): int
+{
+	rtn := 0;
+	secnum := findsectorfromlinetag(li, -1);
+	while (secnum >= 0) {
+		sec := lev.sectors[secnum];
+		if (sec.specialdata == -1) {	# not already moving
+			rtn = 1;
+			f := ref Floor;
+			f.sec = sec;
+			f.fltype = fltype;
+			f.crush = 0;
+			if (fltype == FL_TURBOLOWER) {
+				f.direction = -1;
+				f.speed = 4 * FLOORSPEED;
+				f.floordestheight = findhighestfloorsec(sec);
+				if (f.floordestheight != sec.floorheight)
+					f.floordestheight += 8 * FRACUNIT;
+			}
+			th := ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+			n := len thinkers;
+			nt := array[n + 1] of ref Thinker;
+			if (n > 0)
+				nt[0:] = thinkers;
+			nt[n] = th;
+			thinkers = nt;
+			sec.specialdata = n;
+		}
+		secnum = findsectorfromlinetag(li, secnum);
+	}
+	return rtn;
+}
+
+# vanilla T_PlatRaise (p_plats.c), downWaitUpStay subset: the
+# stnmov-on-up branch only applies to raiseAndChange types
+tplatraise(th: ref Thinker)
+{
+	pl := th.plat;
+	sec := pl.sec;
+	if (pl.status == PLS_UP) {
+		res := tmoveplane(sec, pl.speed, pl.high, pl.crush, 1, 1);
+		if (res == RES_CRUSHED && pl.crush == 0) {
+			pl.count = pl.wait;
+			pl.status = PLS_DOWN;
+			sound->startsound(0, 0, sound->SFX_PSTART);
+		} else if (res == RES_PASTDEST) {
+			pl.count = pl.wait;
+			pl.status = PLS_WAITING;
+			sound->startsound(0, 0, sound->SFX_PSTOP);
+			premoveactiveplat(th);
+		}
+	} else if (pl.status == PLS_DOWN) {
+		res := tmoveplane(sec, pl.speed, pl.low, 0, 1, -1);
+		if (res == RES_PASTDEST) {
+			pl.count = pl.wait;
+			pl.status = PLS_WAITING;
+			sound->startsound(0, 0, sound->SFX_PSTOP);
+		}
+	} else if (pl.status == PLS_WAITING) {
+		pl.count = pl.count - 1;
+		if (pl.count == 0) {
+			if (sec.floorheight == pl.low)
+				pl.status = PLS_UP;
+			else
+				pl.status = PLS_DOWN;
+			sound->startsound(0, 0, sound->SFX_PSTART);
+		}
+	}
+	# PLS_STASIS: nothing (stasis resume with EV_StopPlat later)
+}
+
+# vanilla P_AddActivePlat (p_plats.c), minus the I_Error: the
+# array just grows (a level holds a handful of plats)
+paddactiveplat(th: ref Thinker)
+{
+	n := len activeplats;
+	na := array[n + 1] of ref Thinker;
+	if (n > 0)
+		na[0:] = activeplats;
+	na[n] = th;
+	activeplats = na;
+}
+
+# vanilla P_RemoveActivePlat (p_plats.c), minus the I_Error
+premoveactiveplat(th: ref Thinker)
+{
+	th.plat.sec.specialdata = -1;
+	th.removed = 1;
+	n := len activeplats;
+	for (i := 0; i < n; i++) {
+		if (activeplats[i] == th) {
+			if (i != n - 1)
+				activeplats[i] = activeplats[n - 1];
+			na := array[n - 1] of ref Thinker;
+			if (n - 1 > 0)
+				na[0:] = activeplats[0:n - 1];
+			activeplats = na;
+			return;
+		}
+	}
+}
+
+# vanilla EV_DoPlat (p_plats.c): downWaitUpStay only this slice
+evdoplat(li, pltype, amount: int): int
+{
+	rtn := 0;
+	secnum := findsectorfromlinetag(li, -1);
+	while (secnum >= 0) {
+		sec := lev.sectors[secnum];
+		if (sec.specialdata == -1) {	# not already moving
+			rtn = 1;
+			pl := ref Plat;
+			pl.sec = sec;
+			pl.crush = 0;
+			pl.tag = lev.lines[li].tag;
+			if (pltype == PL_DOWNWAITUPSTAY) {
+				pl.speed = 4 * PLATSPEED;
+				pl.low = findlowestfloorsec(sec);
+				if (pl.low > sec.floorheight)
+					pl.low = sec.floorheight;
+				pl.high = sec.floorheight;
+				pl.wait = TICRATE * PLATWAIT;
+				pl.status = PLS_DOWN;
+				sound->startsound(0, 0, sound->SFX_PSTART);
+			}
+			th := ref Thinker(THINK_PLAT, nil, nil, pl, 0);
+			n := len thinkers;
+			nt := array[n + 1] of ref Thinker;
+			if (n > 0)
+				nt[0:] = thinkers;
+			nt[n] = th;
+			thinkers = nt;
+			sec.specialdata = n;
+			paddactiveplat(th);
+		}
+		secnum = findsectorfromlinetag(li, secnum);
+	}
+	amount = amount;	# raiseAndChange only; kept for signature
+	return rtn;
+}
+
+# vanilla P_CrossSpecialLine walkover subset (p_spec.c): 36 W1
+# turboLower (clears) + 88 WR plat (retrigger, stays).  The
+# non-player gate allows only teleport/door/plat specials (the
+# missile-type inner gate comes with weapons, milestone 9);
+# secrets count in milestone 14.
+crossspecialline(mo: ref Mobj, li, side: int)
+{
+	ld := lev.lines[li];
+	if (mo.player == nil) {
+		if (ld.special != 39 && ld.special != 97 &&
+		    ld.special != 125 && ld.special != 126 &&
+		    ld.special != 4 && ld.special != 10 &&
+		    ld.special != 88)
+			return;
+	}
+	if (ld.special == 36) {
+		evdofloor(li, FL_TURBOLOWER);
+		lc := lev.lines[li];	# Lines are values: copy back
+		lc.special = 0;
+		lev.lines[li] = lc;
+	} else if (ld.special == 88) {
+		evdoplat(li, PL_DOWNWAITUPSTAY, 0);
+	}
+	# side feeds teleport/donut only (later milestones)
+}
+
+# vanilla P_ChangeSwitchTexture one-shot path (p_switch.c):
+# texture swap on side 0 by switch-name pairs.  The == 11 sound
+# check sits after the special clear exactly like vanilla (dead
+# for useAgain == 0 — faithfully dead).  Button flip-back timers
+# come with repeatable switches (later); S1 exit never flips back.
+changeswitchtexture(li, useAgain: int)
+{
+	if (useAgain == 0) {
+		lc := lev.lines[li];
+		lc.special = 0;
+		lev.lines[li] = lc;
+	}
+	ld := lev.lines[li];
+	if (ld.sides[0] == nil)
+		return;
+	soundnum := sound->SFX_SWTCHN;
+	if (ld.special == 11)
+		soundnum = sound->SFX_SWTCHX;
+	for (i := 0; i < len switchpairs; i++) {
+		(a, b) := switchpairs[i];
+		if (a == ld.sides[0].toptexture) {
+			sound->startsound(0, 0, soundnum);
+			ld.sides[0].toptexture = b;
+			return;
+		}
+		if (a == ld.sides[0].midtexture) {
+			sound->startsound(0, 0, soundnum);
+			ld.sides[0].midtexture = b;
+			return;
+		}
+		if (a == ld.sides[0].bottomtexture) {
+			sound->startsound(0, 0, soundnum);
+			ld.sides[0].bottomtexture = b;
+			return;
+		}
+	}
+	# useAgain flip-back timers come with repeatable switches
+}
+
+# vanilla G_ExitLevel (g_game.c), flag only: the intermission
+# (milestone 16) consumes it
+gexitlevel()
+{
+	exited = 1;
+}
+
+levexit(): int
+{
+	return exited;
 }
 
 # ---------------------------------------------------------------------------
@@ -1387,7 +1795,14 @@ pitcheckline(n: int): int
 		tmfloorz = openbottom;
 	if (lowfloor < tmdropoffz)
 		tmdropoffz = lowfloor;
-	# special lines / spechit: later milestone
+	# spechit capture (vanilla PIT_CheckLine tail): contacted
+	# special lines drain in trymove.  No overrun emulation:
+	# contacts past MAXSPECIALCROSS are dropped instead of
+	# smashing the stack for -spechit demo compat.
+	if (ld.special != 0 && nspechit < MAXSPECIALCROSS) {
+		spechit[nspechit] = n;
+		nspechit++;
+	}
 	return 1;
 }
 
@@ -1411,6 +1826,7 @@ checkposition(thing: ref Mobj, x, y: int): int
 	tmflags = thing.flags;
 	tmx = x;
 	tmy = y;
+	nspechit = 0;			# vanilla P_CheckPosition reset
 	tmbbox[0] = y + thing.radius;		# BOXTOP
 	tmbbox[1] = y - thing.radius;		# BOXBOTTOM
 	tmbbox[2] = x + thing.radius;		# BOXRIGHT
@@ -1438,7 +1854,10 @@ checkposition(thing: ref Mobj, x, y: int): int
 
 trymove(mo: ref Mobj, x, y: int): int
 {
+	oldx := mo.x;
+	oldy := mo.y;
 	floatok = 0;
+	nspechit = 0;			# vanilla P_TryMove reset
 	if (!checkposition(mo, x, y))
 		return 0;
 	if ((mo.flags & inf->MF_NOCLIP) == 0) {
@@ -1460,7 +1879,18 @@ trymove(mo: ref Mobj, x, y: int): int
 	mo.x = x;
 	mo.y = y;
 	setthingposition(mo);
-	# crossed special lines: later
+	# spechit drain (vanilla P_TryMove tail): newest first,
+	# crossing test old-vs-new side, special rechecked (W1
+	# clears).  Skipped with TELEPORT/NOCLIP like vanilla.
+	if ((mo.flags & (inf->MF_TELEPORT | inf->MF_NOCLIP)) == 0) {
+		for (nspechit = nspechit - 1; nspechit >= 0; nspechit--) {
+			li := spechit[nspechit];
+			side := pointonlineside(mo.x, mo.y, li);
+			oldside := pointonlineside(oldx, oldy, li);
+			if (side != oldside && lev.lines[li].special != 0)
+				crossspecialline(mo, li, oldside);
+		}
+	}
 	return 1;
 }
 

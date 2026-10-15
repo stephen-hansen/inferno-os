@@ -8,9 +8,10 @@ Sound: module {
 
 	PATH:	con "/dis/doom/sound.dis";
 
-	# door/use effects needed by the milestone 13 slice
+	# door/use/floor/plat/switch effects (milestone 13 slice)
 	SFX_DOROPN, SFX_DORCLS, SFX_BDOPN, SFX_BDCLS,
-	SFX_OOF: con iota;
+	SFX_OOF, SFX_SWTCHN, SFX_SWTCHX, SFX_STNMOV,
+	SFX_PSTOP, SFX_PSTART: con iota;
 
 	init:	fn(): string;
 
