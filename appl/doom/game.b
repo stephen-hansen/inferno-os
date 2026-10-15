@@ -293,6 +293,16 @@ setuplevel(l: ref Map->Level, skill: int): string
 
 	for (i = 0; i < len l.things; i++)
 		spawnmapthing(l.things[i]);
+	# vanilla P_SpawnSpecials (line-effects subset): collect scroll-
+	# left lines (special 48).  Full special dispatch is milestone
+	# 13; scrolling needs no thinker, just the list.
+	scrolllines = array[64] of int;
+	nscrolllines = 0;
+	for (i = 0; i < len l.lines; i++)
+		if (l.lines[i].special == 48 && nscrolllines < 64) {
+			scrolllines[nscrolllines] = i;
+			nscrolllines++;
+		}
 	return nil;
 }
 
@@ -1269,8 +1279,19 @@ ticker()
 			playerthink(p);
 	}
 	runthinkers();
-	# P_UpdateSpecials / P_RespawnSpecials: later
+	# P_UpdateSpecials / P_RespawnSpecials: later (milestone 13).
+	# Animated textures/flats advance here (vanilla P_UpdateSpecials
+	# animate block); full specials come with 13.
 	lvltime = lvltime + 1;
+	rend->animtic(lvltime);
+	# vanilla P_UpdateSpecials line-effects subset: scroll-left
+	# textureoffset advances 1 texel/tic on side 0 (E1M1 armor
+	# pedestal etc.).  Full dispatch is milestone 13.
+	for (i = 0; i < nscrolllines; i++) {
+		ld := lev.lines[scrolllines[i]];
+		if (len ld.sides > 0 && ld.sides[0] != nil)
+			ld.sides[0].textureoffset += FRACUNIT;
+	}
 }
 
 runtics(n: int)

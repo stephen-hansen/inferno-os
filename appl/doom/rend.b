@@ -294,6 +294,114 @@ markcov(pd: array of byte, pofs: int, cov: array of byte,
 	}
 }
 
+# ---- animated textures/flats (vanilla P_InitPicAnims + the
+# P_UpdateSpecials animate block, p_spec.c) ----
+# animdefs (istexture, endname, startname, speed), transcribed exactly;
+# shareware doom1.wad only contains NUKAGE1-3, everything else skips.
+# Frames are contiguous index ranges (TEXTURE1 order / flat WAD order).
+# Rendering resolves names through texanim/flatanim (identity unless
+# animated), so wall/plane code needs no changes.
+AnimDef: adt {
+	istex:	int;
+	endname, startname:	string;
+	speed:	int;
+};
+Anim: adt {
+	istex, base, numpics, speed:	int;
+};
+animdefs := array[] of {
+	AnimDef(0, "NUKAGE3", "NUKAGE1", 8),
+	AnimDef(0, "FWATER4", "FWATER1", 8),
+	AnimDef(0, "SWATER4", "SWATER1", 8),
+	AnimDef(0, "LAVA4", "LAVA1", 8),
+	AnimDef(0, "BLOOD3", "BLOOD1", 8),
+	AnimDef(0, "RROCK08", "RROCK05", 8),
+	AnimDef(0, "SLIME04", "SLIME01", 8),
+	AnimDef(0, "SLIME08", "SLIME05", 8),
+	AnimDef(0, "SLIME12", "SLIME09", 8),
+	AnimDef(1, "BLODGR4", "BLODGR1", 8),
+	AnimDef(1, "SLADRIP3", "SLADRIP1", 8),
+	AnimDef(1, "BLODRIP4", "BLODRIP1", 8),
+	AnimDef(1, "FIREWALL", "FIREWALA", 8),
+	AnimDef(1, "GSTFONT3", "GSTFONT1", 8),
+	AnimDef(1, "FIRELAVA", "FIRELAV3", 8),
+	AnimDef(1, "FIREMAG3", "FIREMAG1", 8),
+	AnimDef(1, "FIREBLU2", "FIREBLU1", 8),
+	AnimDef(1, "ROCKRED3", "ROCKRED1", 8),
+	AnimDef(1, "BFALL4", "BFALL1", 8),
+	AnimDef(1, "SFALL4", "SFALL1", 8),
+	AnimDef(1, "WFALL4", "WFALL1", 8),
+	AnimDef(1, "DBRAIN4", "DBRAIN1", 8),
+};
+anims:	array of Anim;	# built by animinit
+nanims:	int;
+texanim:	array of int;	# [len textures], identity unless animated
+flatanim:	array of int;	# [len flats], identity unless animated
+
+# build the anim list + identity maps (vanilla P_InitPicAnims: skip
+# when the start lump is missing; skip bad cycles instead of I_Error)
+animinit(r: ref Renderer)
+{
+	anims = array[len animdefs] of Anim;
+	nanims = 0;
+	texanim = array[len r.textures] of int;
+	flatanim = array[len r.flats] of int;
+	i, j: int;
+	for (i = 0; i < len r.textures; i++)
+		texanim[i] = i;
+	for (i = 0; i < len r.flats; i++)
+		flatanim[i] = i;
+	for (i = 0; i < len animdefs; i++) {
+		d := animdefs[i];
+		base := -1;
+		picnum := -1;
+		if (d.istex) {
+			for (j = 0; j < len r.textures; j++)
+				if (r.textures[j].name == d.startname)
+					base = j;
+			if (base < 0)
+				continue;
+			for (j = 0; j < len r.textures; j++)
+				if (r.textures[j].name == d.endname)
+					picnum = j;
+		} else {
+			for (j = 0; j < len r.flats; j++)
+				if (r.flats[j].name == d.startname)
+					base = j;
+			if (base < 0)
+				continue;
+			for (j = 0; j < len r.flats; j++)
+				if (r.flats[j].name == d.endname)
+					picnum = j;
+		}
+		if (picnum < 0)
+			continue;
+		n := picnum - base + 1;
+		if (n < 2)
+			continue;
+		anims[nanims] = Anim(d.istex, base, n, d.speed);
+		nanims++;
+	}
+}
+
+# advance animations one leveltic (vanilla P_UpdateSpecials block:
+# pic = base + ((leveltime/speed + i) % numpics))
+animtic(lvltime: int)
+{
+	if (anims == nil)
+		return;
+	for (k := 0; k < nanims; k++) {
+		a := anims[k];
+		for (i := 0; i < a.numpics; i++) {
+			pic := a.base + (lvltime / a.speed + i) % a.numpics;
+			if (a.istex)
+				texanim[a.base + i] = pic;
+			else
+				flatanim[a.base + i] = pic;
+		}
+	}
+}
+
 Renderer.init(r: self ref Renderer, w: ref Wad->File, width, height: int): string
 {
 	if (sys == nil)
@@ -341,22 +449,32 @@ Renderer.init(r: self ref Renderer, w: ref Wad->File, width, height: int): strin
 	err = loadflats(r, w);
 	if (err != nil)
 		return err;
-	return loadtextures(r, w);
+	err = loadtextures(r, w);
+	if (err != nil)
+		return err;
+	animinit(r);
+	return nil;
 }
 
 Renderer.flat(r: self ref Renderer, name: string): ref Flat
 {
 	for (i := 0; i < len r.flats; i++)
-		if (r.flats[i].name == name)
+		if (r.flats[i].name == name) {
+			if (flatanim != nil && i < len flatanim)
+				return r.flats[flatanim[i]];
 			return r.flats[i];
+		}
 	return nil;
 }
 
 Renderer.texture(r: self ref Renderer, name: string): ref Texture
 {
 	for (i := 0; i < len r.textures; i++)
-		if (r.textures[i].name == name)
+		if (r.textures[i].name == name) {
+			if (texanim != nil && i < len texanim)
+				return r.textures[texanim[i]];
 			return r.textures[i];
+		}
 	return nil;
 }
 

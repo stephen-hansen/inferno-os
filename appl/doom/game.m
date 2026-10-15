@@ -133,6 +133,8 @@ Game: module {
 	prndindex:	int;			# P_Random index
 	gameskill:	int;
 	totalkills, totalitems:	int;
+	scrolllines:	array of int;	# scroll-left linedefs (special 48)
+	nscrolllines:	int;
 
 	# --- view state (updated each frame by the renderer caller) ---
 	viewx, viewy, viewz:	int;	# 16.16 camera position

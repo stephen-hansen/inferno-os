@@ -573,6 +573,35 @@ Milestones (each independently testable)
           the stairstep subdivision are out again - slide physics is
           back to vanilla-exact.  The momentum bumps persist and the
           user declined further tracing; vanilla behavior stands.
+          ANIMATED WALL/FLAT TEXTURES (user request): vanilla
+          P_InitPicAnims + P_UpdateSpecials animate block (p_spec.c).
+          animdefs table transcribed exactly (22 entries, verified
+          against source); frames are contiguous index ranges in
+          TEXTURE1 order / flat WAD order.  Rendering resolves names
+          through texanim/flatanim identity-plus-animation maps
+          (rtexture/rflat), so wall/plane code is untouched; per-tic
+          advance pic = base + ((leveltime/speed + i) % numpics),
+          formula pinned offline (8-tic phases).  Shareware WAD check:
+          only NUKAGE1-3 present and adjacent (flat indices 50-52),
+          so init yields exactly 1 anim; everything else skips
+          cleanly (vanilla would I_Error on bad cycles - we skip).
+          Init at end of Renderer.init, advance from game ticker
+          (milestone-13 P_UpdateSpecials territory noted).  Build
+          clean, smoke clean.  USER VISUAL CONFIRMATION PENDING
+          (nukage flow).
+          SCROLL-LEFT WALLS (user report: TEKWALL1 on the E1M1 armor
+          pedestal sits static but scrolls in playthroughs): the
+          pedestal octagon lines 352-359 all carry line special 48,
+          which vanilla scrolls via side-0 textureoffset += FRACUNIT
+          per tic (P_SpawnSpecials collects them, P_UpdateSpecials
+          animate block applies; doomgeneric implements only 48).
+          Verified from WAD (8 lines, side 0 faces the viewer side)
+          and source before editing.  Implemented exactly that subset
+          (collect at setuplevel, advance in ticker next to animtic;
+          full special dispatch stays milestone 13): u1/u2 flow the
+          live offset through addline into every tier + masked cols
+          automatically.  Build clean, smoke clean.  USER VISUAL
+          CONFIRMATION PENDING (pedestal scroll).
           STAIRSTEP SUBDIVISION (implemented then reverted with the
           above): vanilla stairstep tries a full axis or nothing,
           dropping a whole axis for a tic on grazing corners (the

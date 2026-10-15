@@ -79,4 +79,5 @@ Rend: module {
 	rdrawspan:	fn(r: ref Renderer, y, x1, x2, light: int,
 				fl: ref Flat, xfrac, yfrac, xstep, ystep: int);
 	rdrawfuzz:	fn(r: ref Renderer, x, yl, yh: int);
+	animtic:	fn(lvltime: int);
 };
