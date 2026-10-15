@@ -525,3 +525,61 @@ Milestones (each independently testable)
           CLIPPOOL 8192->4096 (still 3x observed max; overflow marks
           frame invalid, never corrupts); review hold-scroll sped up
           (every 3rd iter).
+          SLIDE BUMP INVESTIGATION (user snapshots doomsnap0-4: 1-tic
+          x-stick sliding past E1M1 line 148): VERDICT vanilla-correct
+          Doom physics, no port bug.  Evidence: full pipeline diffed
+          clean vs vanilla source (xymovement half-step, trymove/
+          checkposition/pitcheckline heights, boxonlineside/
+          pointonlineside, lineopening, slopediv/pointtoangle2/tanto-
+          angle/finesine tables, approxdistance, pointondvlineside,
+          fixeddivsat saturation, interceptvector incl. den==0 guard
+          (vanilla has it too), slidetraverse side/block rules,
+          hitslidelined deltaangle/angle tables, slidemove
+          fudge/retry/stairstep control flow, ST_*/ML_*/FRICTION/
+          STOPSPEED/GRAVITY/MAXMOVE consts, map.b bbox/slopetype/dxdy/
+          front-back sectors); Limbo big-div proven truncating (C-like)
+          via on-target probe program; exact offline replay reproduces
+          the incident step-for-step (graze intercept frac 0.047 on
+          a 0.00003u corner nick -> flush trymove fails -> stairstep-y
+          with full momy) and agrees between vanilla min-frac and
+          port index-order traversal (line 148 nearest on its ray in
+          both).            Incidental notes, NOT changed: ticcmd tuning is
+          always-run (fm 50, sm 25, at 1280, no 640 slow-turn ramp)
+          vs vanilla walk/run/speed-key tables - a feel/design
+          decision, not a physics bug; diagonal slide angles differ
+          accordingly.
+          WALK/RUN SEMANTICS (user request, revised twice): first
+          implemented vanilla G_BuildTiccmd tables (forward {25,50},
+          strafe {24,40}, turn {640,1280} with 320 slow-turn ramp,
+          Shift as run key); user then asked to DIVERGE toward modern
+          ports (confirmed: Chocolate/Crispy/PrBoom keep the ramp,
+          GZDoom-family does not).  Final: always-run, no speed key,
+          no ramp - forward 50, strafe 40, instant turn 1280, both
+          axes clamped to +-MAXPLMOVE.  Direct strafe keys (A/D/Q/E)
+          and arrows keep their roles.  No sim changes (game.b
+          consumes raw cmd values).  Controls print updated.
+          BOOM SLIDE-BOUNCE FIX (user request + Doom Wiki motto,
+          approved divergence): vanilla P_HitSlideLine reverses
+          momentum outright on exactly-anti-parallel slides
+          (deltaangle == ANG180 hits the strict > comparison,
+          cos = -1; routine on axis-aligned walls).  Ported Boom's
+          fix verbatim (killough 3/2/98, kept by PrBoom+/DSDA):
+          moveangle += 10 before differencing, no
+          demo_compatibility switch (no demos kept).  Validated
+          numerically with exact tables: anti-parallel slides go
+          from full reversal to correct forward slide; broad sweep
+          33/400000 outputs differ (boundary slivers only).
+          REVERTED (user request): both the Boom moveangle += 10 and
+          the stairstep subdivision are out again - slide physics is
+          back to vanilla-exact.  The momentum bumps persist and the
+          user declined further tracing; vanilla behavior stands.
+          STAIRSTEP SUBDIVISION (implemented then reverted with the
+          above): vanilla stairstep tries a full axis or nothing,
+          dropping a whole axis for a tic on grazing corners (the
+          captured bump: graze intercept frac 0.047 -> flush fails ->
+          stairstep-y kept 0 x-motion).  The reverted version ended
+          slidemove with trysubdiv per axis (binary search to first
+          contact, 6 rounds to 1/64, both axes always attempted);
+          replay of the incident tic preserved x at 63/64 instead
+          of 0.  Removed; slide flush/retry logic was untouched
+          throughout (vanilla-exact).

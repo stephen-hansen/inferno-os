@@ -441,7 +441,9 @@ play(path: string, wmctxt: ref Draw->Context)
 
 		tic++;
 
-		# build ticcmd from key state
+		# build ticcmd from key state (modern-port style: always
+		# run - forward 50, strafe 40, instant full turn 1280.
+		# MAXPLMOVE clamps both axes to +-50.)
 		fm := 0;
 		sm := 0;
 		at := 0;
@@ -451,17 +453,25 @@ play(path: string, wmctxt: ref Draw->Context)
 		if (keystate[Down] || keystate['s'])
 			fm -= 50;
 		if (keystate[Left])
-			at += 1280;		# turn left (BAM, ~22.5 deg/tic)
+			at += 1280;
 		if (keystate[Right])
 			at -= 1280;
 		if (keystate['a'] && !keystate[Left])
-			sm -= 25;
+			sm -= 40;
 		if (keystate['d'] && !keystate[Right])
-			sm += 25;
+			sm += 40;
 		if (keystate['q'])
-			sm -= 25;
+			sm -= 40;
 		if (keystate['e'])
-			sm += 25;
+			sm += 40;
+		if (fm > 50)
+			fm = 50;
+		if (fm < -50)
+			fm = -50;
+		if (sm > 50)
+			sm = 50;
+		if (sm < -50)
+			sm = -50;
 		if (keystate[' '])
 			btn |= 1;		# BT_USE
 		if (keystate[LCtrl] || keystate[RCtrl])
