@@ -70,11 +70,13 @@ Door: adt {			# vanilla vldoor_t
 };
 Floor: adt {			# vanilla floormove_t (subset)
 	sec:	ref Map->Sector;
-	fltype:	int;		# FL_* (turboLower for now)
+	fltype:	int;		# FL_* (turboLower/lowerFloor/donutRaise)
 	floordestheight:	int;	# 16.16
 	speed:	int;
 	direction:	int;	# 1 up, -1 down
 	crush:	int;
+	texture:	string;	# donutRaise/lowerAndChange end texture
+	newspecial:	int;	# donutRaise/lowerAndChange end special
 };
 Plat: adt {			# vanilla plat_t (subset)
 	sec:	ref Map->Sector;
@@ -95,6 +97,13 @@ Thinker: adt {
 };
 thinkers: array of ref Thinker;
 activeplats: array of ref Thinker;	# plats only (p_plats.c list)
+Button: adt {			# vanilla button_t (p_switch.c)
+	li:	int;		# linedef index
+	where:	int;		# BW_TOP/MIDDLE/BOTTOM
+	btexture:	string;	# texture to restore
+	btimer:	int;		# tics left, 0 = free
+};
+buttonlist: array of ref Button;	# [MAXBUTTONS], timer-ordered use
 spechit: array of int;	# crossed special linedefs (p_map.c)
 nspechit: int;
 exited: int;		# G_ExitLevel flag (consumed by milestone 16)
@@ -324,6 +333,9 @@ init(): string
 	mobjs = array[0] of ref Mobj;
 	thinkers = array[0] of ref Thinker;
 	activeplats = array[0] of ref Thinker;
+	buttonlist = array[MAXBUTTONS] of ref Button;
+	for (bi := 0; bi < MAXBUTTONS; bi++)
+		buttonlist[bi] = ref Button(-1, 0, "", 0);
 	spechit = array[MAXSPECIALCROSS] of int;
 	nspechit = 0;
 	exited = 0;
@@ -367,6 +379,16 @@ absi(a: int): int
 	return a;
 }
 
+# explicit zero-fill: array allocs in this emu come back with dirty
+# heap memory (measured 1.4e9-range garbage in fresh array[6] of
+# int), so anything not fully written at alloc must be zeroed
+# (vanilla Z_Malloc zeroes; lock checks read cards[] raw).
+zeroarr(a: array of int)
+{
+	for (i := 0; i < len a; i++)
+		a[i] = 0;
+}
+
 approxdistance(x, y: int): int
 {
 	x = absi(x);
@@ -392,6 +414,8 @@ setuplevel(l: ref Map->Level, skill: int): string
 	mobjs = array[0] of ref Mobj;
 	thinkers = array[0] of ref Thinker;
 	activeplats = array[0] of ref Thinker;
+	for (bi := 0; bi < MAXBUTTONS; bi++)
+		buttonlist[bi] = ref Button(-1, 0, "", 0);
 	nspechit = 0;
 	exited = 0;
 	for (i := 0; i < MAXPLAYERS; i++)
@@ -499,17 +523,22 @@ playerreborn(p: ref Player)
 	p.readyweapon = WP_PISTOL;
 	p.pendingweapon = WP_PISTOL;
 	p.weaponowned = array[NUMWEAPONS] of int;
+	zeroarr(p.weaponowned);
 	p.weaponowned[WP_FIST] = 1;
 	p.weaponowned[WP_PISTOL] = 1;
 	p.ammo = array[NUMAMMO] of int;
+	zeroarr(p.ammo);
 	p.ammo[AM_CLIP] = 50;
 	p.maxammo = array[NUMAMMO] of int;
+	zeroarr(p.maxammo);
 	p.maxammo[AM_CLIP] = 200;
 	p.maxammo[AM_SHELL] = 50;
 	p.maxammo[AM_CELL] = 300;
 	p.maxammo[AM_MISL] = 50;
 	p.frags = array[MAXPLAYERS] of int;
+	zeroarr(p.frags);
 	p.cards = array[NUMCARDS] of int;
+	zeroarr(p.cards);
 	p.usedown = 1;
 	p.attackdown = 1;
 	p.killcount = 0;
@@ -861,39 +890,43 @@ tverticaldoor(th: ref Thinker)
 	if (d.direction == 0) {		# WAITING at top
 		d.topcountdown = d.topcountdown - 1;
 		if (d.topcountdown == 0) {
-			if (d.dtype == VLD_BLAZEOPEN)
-				d.direction = 1;
-			else if (d.dtype == VLD_NORMAL)
+			if (d.dtype == VLD_BLAZERAISE) {
 				d.direction = -1;
-			else if (d.dtype == VLD_CLOSE30THENOPEN)
-				d.direction = 1;
-			if (d.direction == 1)
-				sound->startsound(0, 0, sound->SFX_DOROPN);
-			else if (d.direction == -1)
+				sound->startsound(0, 0, sound->SFX_BDCLS);
+			} else if (d.dtype == VLD_NORMAL) {
+				d.direction = -1;
 				sound->startsound(0, 0, sound->SFX_DORCLS);
+			} else if (d.dtype == VLD_CLOSE30THENOPEN) {
+				d.direction = 1;
+				sound->startsound(0, 0, sound->SFX_DOROPN);
+			}
+			# open/blazeOpen/close/raiseIn5Mins: wait forever
 		}
 		return;
 	}
-	if (d.direction == 2) {		# INITIAL WAIT (raiseIn5Mins/close30)
+	if (d.direction == 2) {		# INITIAL WAIT (raiseIn5Mins only)
 		d.topcountdown = d.topcountdown - 1;
 		if (d.topcountdown != 0)
 			return;
-		if (d.dtype == VLD_RAISEIN5MINS)
+		if (d.dtype == VLD_RAISEIN5MINS) {
 			d.direction = 1;
-		else if (d.dtype == VLD_CLOSE30THENOPEN)
-			d.direction = 1;
-		sound->startsound(0, 0, sound->SFX_DOROPN);
+			d.dtype = VLD_NORMAL;
+			sound->startsound(0, 0, sound->SFX_DOROPN);
+		}
 		return;
 	}
 	if (d.direction == -1) {	# DOWN
 		res := tmoveplane(sec, d.speed, sec.floorheight, 0, 0, d.direction);
 		if (res == RES_PASTDEST) {
-			if (d.dtype == VLD_BLAZECLOSE || d.dtype == VLD_NORMAL) {
+			if (d.dtype == VLD_BLAZERAISE || d.dtype == VLD_BLAZECLOSE) {
 				sec.specialdata = -1;
 				th.removed = 1;
-				sound->startsound(0, 0, sound->SFX_DORCLS);
+				sound->startsound(0, 0, sound->SFX_BDCLS);
+			} else if (d.dtype == VLD_NORMAL || d.dtype == VLD_CLOSE) {
+				sec.specialdata = -1;
+				th.removed = 1;
 			} else if (d.dtype == VLD_CLOSE30THENOPEN) {
-				d.direction = 2;
+				d.direction = 0;
 				d.topcountdown = 30 * TICRATE;
 			}
 		} else if (res == RES_CRUSHED) {
@@ -907,10 +940,11 @@ tverticaldoor(th: ref Thinker)
 	}
 	res := tmoveplane(sec, d.speed, d.topheight, 0, 0, d.direction);
 	if (res == RES_PASTDEST) {
-		if (d.dtype == VLD_BLAZEOPEN || d.dtype == VLD_NORMAL) {
+		if (d.dtype == VLD_BLAZERAISE || d.dtype == VLD_NORMAL) {
 			d.direction = 0;	# wait at top, then close
 			d.topcountdown = d.topwait;
-		} else if (d.dtype == VLD_CLOSE30THENOPEN || d.dtype == VLD_RAISEIN5MINS) {
+		} else if (d.dtype == VLD_CLOSE30THENOPEN || d.dtype == VLD_BLAZEOPEN ||
+		    d.dtype == VLD_OPEN) {
 			sec.specialdata = -1;
 			th.removed = 1;
 		}
@@ -1007,19 +1041,43 @@ evverticaldoor(li: int, mo: ref Mobj): int
 		d.topheight = findlowestceilingsurrounding(sec) - 4 * FRACUNIT;
 	d.topcountdown = 0;
 	th := ref Thinker(THINK_DOOR, d, nil, nil, 0);
-	n := len thinkers;
-	nt := array[n + 1] of ref Thinker;
-	if (n > 0)
-		nt[0:] = thinkers;
-	nt[n] = th;
-	thinkers = nt;
-	sec.specialdata = n;
+	sectorthinker(sec, th);
 	return 1;
 }
 
+# vanilla EV_DoDoor (p_doors.c): tag-loop door spawner.  Only open
+# (and normal, same body) this slice; other types with theirs.
+# Sectors already moving are skipped, like vanilla.
+evdodoor(li, dtype: int): int
+{
+	rtn := 0;
+	secnum := findsectorfromlinetag(li, -1);
+	while (secnum >= 0) {
+		sec := lev.sectors[secnum];
+		if (sec.specialdata == -1) {
+			rtn = 1;
+			d := ref Door;
+			d.sec = sec;
+			d.dtype = dtype;
+			d.topwait = VDOORWAIT;
+			d.speed = VDOORSPEED;
+			d.direction = 1;
+			d.topheight = findlowestceilingsurrounding(sec) - 4 * FRACUNIT;
+			if (d.topheight != sec.ceilingheight)
+				sound->startsound(0, 0, sound->SFX_DOROPN);
+			d.topcountdown = 0;
+			th := ref Thinker(THINK_DOOR, d, nil, nil, 0);
+			sectorthinker(sec, th);
+		}
+		secnum = findsectorfromlinetag(li, secnum);
+	}
+	return rtn;
+}
+
 # manual door specials from p_switch.c P_UseSpecialLine
-# (1/26/27/28/31-34/117/118) + S1 exit switch (11, with texture
-# swap); walkover/switch/shoot cases later
+# (1/26/27/28/31-34/117/118) + S1 exit (11), S1 donut (9),
+# SR plat (62), S1 open door (103), all with texture handling;
+# walkover (except 36/88) / shoot cases later
 usespecialline(mo: ref Mobj, li, side: int): int
 {
 	ld := lev.lines[li];
@@ -1030,6 +1088,21 @@ usespecialline(mo: ref Mobj, li, side: int): int
 	if (ld.special == 11) {		# S1 exit (p_switch.c)
 		changeswitchtexture(li, 0);
 		gexitlevel();
+		return 1;
+	}
+	if (ld.special == 9) {		# S1 donut
+		if (evdodonut(li) != 0)
+			changeswitchtexture(li, 0);
+		return 1;
+	}
+	if (ld.special == 62) {		# SR plat down-wait-up-stay
+		if (evdoplat(li, PL_DOWNWAITUPSTAY, 1) != 0)
+			changeswitchtexture(li, 1);
+		return 1;
+	}
+	if (ld.special == 103) {	# S1 open door (stay open)
+		if (evdodoor(li, VLD_OPEN) != 0)
+			changeswitchtexture(li, 0);
 		return 1;
 	}
 	if (ld.special == 1 || ld.special == 26 || ld.special == 27 ||
@@ -1195,9 +1268,9 @@ findhighestfloorsec(sec: ref Map->Sector): int
 	return height;
 }
 
-# vanilla T_MoveFloor (p_floor.c).  The donutRaise/lowerAndChange
-# end-branches need fields this slice has no use for; the core
-# (unlink + pstop) is exact.
+# vanilla T_MoveFloor (p_floor.c): stnmov hum while moving,
+# unlink + pstop at destination, donutRaise/lowerAndChange apply
+# their end texture + special (needs Floor.texture/newspecial)
 tmovefloor(th: ref Thinker)
 {
 	f := th.floor;
@@ -1206,10 +1279,28 @@ tmovefloor(th: ref Thinker)
 	if ((lvltime & 7) == 0)
 		sound->startsound(0, 0, sound->SFX_STNMOV);
 	if (res == RES_PASTDEST) {
+		if (f.direction == 1 && f.fltype == FL_DONUTRAISE) {
+			f.sec.special = f.newspecial;
+			f.sec.floortexture = f.texture;
+		}
+		# lowerAndChange end-branches with its milestone
 		f.sec.specialdata = -1;
 		th.removed = 1;
 		sound->startsound(0, 0, sound->SFX_PSTOP);
 	}
+}
+
+# append a sector thinker and link it (stable index, no compaction;
+# mirrors the repeated Z_Malloc/P_AddThinker/specialdata sequence)
+sectorthinker(sec: ref Map->Sector, th: ref Thinker)
+{
+	n := len thinkers;
+	nt := array[n + 1] of ref Thinker;
+	if (n > 0)
+		nt[0:] = thinkers;
+	nt[n] = th;
+	thinkers = nt;
+	sec.specialdata = n;
 }
 
 # vanilla EV_DoFloor (p_floor.c): turboLower only this slice
@@ -1227,6 +1318,8 @@ evdofloor(li, fltype: int): int
 			f.sec = sec;
 			f.fltype = fltype;
 			f.crush = 0;
+			f.texture = "";
+			f.newspecial = 0;
 			if (fltype == FL_TURBOLOWER) {
 				f.direction = -1;
 				f.speed = 4 * FLOORSPEED;
@@ -1242,6 +1335,66 @@ evdofloor(li, fltype: int): int
 			nt[n] = th;
 			thinkers = nt;
 			sec.specialdata = n;
+		}
+		secnum = findsectorfromlinetag(li, secnum);
+	}
+	return rtn;
+}
+
+# vanilla EV_DoDonut (p_spec.c): the tagged pillar (s1) lowers to
+# the outer level (s3) while the surrounding pool (s2) rises to it.
+# s2 is the far side of the first line touching s1 in linedef order
+# (one-sided there breaks the whole tag loop, like doomgeneric -
+# vanilla reads garbage); s3 is the first other backsector found
+# the same way (nil s3 stops instead of using garbage).  s2 gets no
+# moving check, like vanilla (the old thinker is orphaned the same
+# way in both: no compaction here).
+evdodonut(li: int): int
+{
+	rtn := 0;
+	secnum := findsectorfromlinetag(li, -1);
+	while (secnum >= 0) {
+		s1 := lev.sectors[secnum];
+		if (s1.specialdata == -1) {
+			rtn = 1;
+			s2: ref Map->Sector = nil;
+			for (i := 0; i < len lev.lines; i++) {
+				ld := lev.lines[i];
+				if (ld.frontsector == s1 && ld.backsector != s1) {
+					s2 = ld.backsector;
+					break;
+				}
+				if (ld.backsector == s1 && ld.frontsector != s1) {
+					s2 = ld.frontsector;
+					break;
+				}
+			}
+			if (s2 == nil)
+				break;
+			s3: ref Map->Sector = nil;
+			for (i = 0; i < len lev.lines; i++) {
+				ld := lev.lines[i];
+				if (!(ld.frontsector == s2 || ld.backsector == s2))
+					continue;
+				if (ld.backsector == s1)
+					continue;
+				if (ld.backsector == nil)
+					continue;
+				s3 = ld.backsector;
+				break;
+			}
+			if (s3 == nil)
+				break;
+			# rising slime
+			f := ref Floor(s2, FL_DONUTRAISE, s3.floorheight,
+				FLOORSPEED / 2, 1, 0, s3.floortexture, 0);
+			th := ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+			sectorthinker(s2, th);
+			# lowering donut-hole
+			f = ref Floor(s1, FL_LOWERFLOOR, s3.floorheight,
+				FLOORSPEED / 2, -1, 0, "", 0);
+			th = ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+			sectorthinker(s1, th);
 		}
 		secnum = findsectorfromlinetag(li, secnum);
 	}
@@ -1329,6 +1482,7 @@ evdoplat(li, pltype, amount: int): int
 			pl := ref Plat;
 			pl.sec = sec;
 			pl.crush = 0;
+			pl.count = 0;
 			pl.tag = lev.lines[li].tag;
 			if (pltype == PL_DOWNWAITUPSTAY) {
 				pl.speed = 4 * PLATSPEED;
@@ -1382,11 +1536,28 @@ crossspecialline(mo: ref Mobj, li, side: int)
 	# side feeds teleport/donut only (later milestones)
 }
 
-# vanilla P_ChangeSwitchTexture one-shot path (p_switch.c):
-# texture swap on side 0 by switch-name pairs.  The == 11 sound
-# check sits after the special clear exactly like vanilla (dead
-# for useAgain == 0 — faithfully dead).  Button flip-back timers
-# come with repeatable switches (later); S1 exit never flips back.
+# vanilla P_StartButton (p_switch.c): arm a flip-back timer unless
+# the line already has one; silently skip when full (vanilla I_Error)
+pstartbutton(li, where: int, texture: string, time: int)
+{
+	for (i := 0; i < MAXBUTTONS; i++)
+		if (buttonlist[i].btimer != 0 && buttonlist[i].li == li)
+			return;
+	for (i = 0; i < MAXBUTTONS; i++) {
+		if (buttonlist[i].btimer == 0) {
+			buttonlist[i].li = li;
+			buttonlist[i].where = where;
+			buttonlist[i].btexture = texture;
+			buttonlist[i].btimer = time;
+			return;
+		}
+	}
+}
+
+# vanilla P_ChangeSwitchTexture (p_switch.c): texture swap on side 0
+# by switch-name pairs.  The == 11 sound check sits after the special
+# clear exactly like vanilla (dead for useAgain == 0 - faithfully
+# dead).  useAgain arms the flip-back button timer (SR switches).
 changeswitchtexture(li, useAgain: int)
 {
 	if (useAgain == 0) {
@@ -1405,20 +1576,25 @@ changeswitchtexture(li, useAgain: int)
 		if (a == ld.sides[0].toptexture) {
 			sound->startsound(0, 0, soundnum);
 			ld.sides[0].toptexture = b;
+			if (useAgain != 0)
+				pstartbutton(li, BW_TOP, a, BUTTONTIME);
 			return;
 		}
 		if (a == ld.sides[0].midtexture) {
 			sound->startsound(0, 0, soundnum);
 			ld.sides[0].midtexture = b;
+			if (useAgain != 0)
+				pstartbutton(li, BW_MIDDLE, a, BUTTONTIME);
 			return;
 		}
 		if (a == ld.sides[0].bottomtexture) {
 			sound->startsound(0, 0, soundnum);
 			ld.sides[0].bottomtexture = b;
+			if (useAgain != 0)
+				pstartbutton(li, BW_BOTTOM, a, BUTTONTIME);
 			return;
 		}
 	}
-	# useAgain flip-back timers come with repeatable switches
 }
 
 # vanilla G_ExitLevel (g_game.c), flag only: the intermission
@@ -2200,6 +2376,25 @@ ticker()
 		ld := lev.lines[scrolllines[i]];
 		if (len ld.sides > 0 && ld.sides[0] != nil)
 			ld.sides[0].textureoffset += FRACUNIT;
+	}
+	# vanilla P_UpdateSpecials button timers (p_spec.c): count down
+	# repeatable-switch flip-backs and restore the pre-switch texture
+	for (i = 0; i < MAXBUTTONS; i++) {
+		b := buttonlist[i];
+		if (b.btimer != 0) {
+			b.btimer = b.btimer - 1;
+			if (b.btimer == 0) {
+				sd := lev.lines[b.li].sides[0];
+				if (sd != nil) {
+					if (b.where == BW_TOP)
+						sd.toptexture = b.btexture;
+					else if (b.where == BW_MIDDLE)
+						sd.midtexture = b.btexture;
+					else if (b.where == BW_BOTTOM)
+						sd.bottomtexture = b.btexture;
+				}
+			}
+		}
 	}
 }
 

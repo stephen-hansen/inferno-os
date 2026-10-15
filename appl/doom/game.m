@@ -87,8 +87,14 @@ Game: module {
 	VLD_RAISEIN5MINS, VLD_BLAZERAISE, VLD_BLAZEOPEN,
 	VLD_BLAZECLOSE: con iota;
 
-	# floor mover types (p_spec.h floor_e positions; others later)
-	FL_TURBOLOWER:	con 2;
+	# floor mover types (p_spec.h floor_e positions)
+	FL_LOWERFLOOR, FL_LOWERFLOORTOWELOWEST, FL_TURBOLOWER: con iota;
+	FL_DONUTRAISE:	con 11;
+
+	# switch-button positions (p_spec.h bwhere_e order) and timing
+	BW_TOP, BW_MIDDLE, BW_BOTTOM: con iota;
+	BUTTONTIME:	con 35;
+	MAXBUTTONS:	con 16;
 
 	# plat types (p_spec.h plattype_e positions; others later)
 	PL_DOWNWAITUPSTAY:	con 1;

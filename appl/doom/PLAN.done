@@ -756,3 +756,46 @@ Milestones (each independently testable)
           markceiling=1; this fix skips the mark entirely when 0).
           1-sided marks correctly stay ungated (vanilla marks
           terminal walls unconditionally).
+          E1M2 WALKOVER/SWITCH SLICE, PART 1 (S1 doors 103, SR plats
+          62 + button timers, S1 donut 9, red-lock use 28, tag doors
+          2/open): EV_DoDonut (s1 pillar down + s2 pool up to s3 level,
+          half speed, first-touching-line s2/s3 search with nil-stop
+          instead of vanilla garbage reads), EV_DoDoor tag loop (open
+          only this slice), P_StartButton + P_UpdateSpecials timer
+          block (flip-back restore, 35 tics), changeswitchtexture
+          useAgain path, usespecialline 9/62/103 dispatch,
+          T_MoveFloor donutRaise end texture/special, T_VerticalDoor
+          rewritten vanilla-exact (WAITING: blazeraise/normal close
+          with their sounds, open-family waits forever; direction-2
+          only raiseIn5Mins with dtype->normal morph; DOWN-pastdest:
+          blaze pair unlinks with bdcls, normal/close unlink silent,
+          close30 re-arms wait; UP-pastdest: blazeraise/normal wait,
+          open-family unlinks at once - old code leaked open-door
+          thinkers and played a spurious dorcls on normal close).
+          Validated headless (throwaway harness, outside repo):
+          103 doors open to 316/92/60 exactly and stay open; 62 plats
+          dip to 24/64/0/-232 exactly and return, WR retained; donut
+          pillar 232->128 + pool 104->128; red lock shut without card
+          (-1/24) then opens with card (rising to 92); SR swap
+          SW1STONE->SW2STONE with 35-tic restore.  SPECTEST PASS
+          (33/33).  E1M1 doortest re-ran clean after the rewrite
+          (open/wait/close/retrigger/walkthrough).  No emu left
+          running; harness/logs removed from the tree.
+          ZERO-INIT BUG (project-wide lesson): fresh array[N] of int
+          comes back with dirty heap memory here (measured 1.4e9-range
+          values in a brand-new array[6]), so every partially-written
+          alloc is a landmine.  It bit as cards[2..5] garbage, which
+          made the red-lock check pass without a card (door opened on
+          first use).  Fix: explicit zeroarr() loops in playerreborn
+          for all five Player arrays + Floor.texture/newspecial and
+          Plat.count at spawn.  Audited remaining game.b allocs:
+          tmbbox/spechit/scrolllines guarded by counts, thinker/mobj
+          arrays fully written, buttonlist loop-filled, map.b
+          specialdata explicitly -1.  Other modules (view/rend) share
+          the hazard - audit when touching them.
+          TEST-TIMING ARTIFACT (harness, not engine): the E434 check
+          used two ~48-tic approaches around one USE, so the 35-tic
+          flip-back restored SW1STONE before the read (engine had
+          swapped correctly).  Single-approach + immediate read fixed
+          it.  Rule: assert repeatable-switch textures within 35 tics
+          of the firing USE.
