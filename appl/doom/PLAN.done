@@ -687,3 +687,72 @@ Milestones (each independently testable)
           harness/logs removed from the tree.  Remaining 13: other
           floor/plat/ceiling types, lights, teleport, switches with
           timers, full walkover table, sector specials are 14.
+          WALL-TOP CLIP BUG, E1M1 COURTYARD (user snapshot
+          doomsnap0.log: top ~33 rows of the wooden building wall
+          missing, sky in their place).  Reproduced pixel-exact
+          with a temp warp to the snapshot camera in a fresh level
+          (DS records identical, framebuffer boundary profile
+          identical), temp code fully reverted after.  Root cause
+          in drawtwosided's clip advance: the portal column clip
+          (cclip) advanced to the FRONT ceiling row, but vanilla's
+          yl comes from topfrac which uses the SKY-HACKED worldtop
+          (= BACK ceiling when both ceilings are sky).  The
+          sec20|sec22 gateway portal (front ceil 24, back ceil 64,
+          both F_SKY1) closed rows down to the 24u line while
+          vanilla leaves them open to the 64u line, beheading the
+          wooden wall drawn behind the portal.  One-line-class fix:
+          fctop now uses bceilz when both ceilings are sky (same
+          condition the upper-texture skip already used).  Verified:
+          wall-top boundary now matches the placement formula
+          within +-1 row across the whole span (was 30-40 rows
+          short), full-frame diff vs pre-fix bounded to x 107-229
+          y 0-60 (the bug area only, 3986 px, no collateral),
+          rebuild clean, no emu left running, user's snapshot file
+          restored untouched.
+          BROWN-BAND ABOVE WALL, E1M1 COURTYARD SECOND REPORT
+          (user snapshot, camera 2376,-3536 angle 232): investigated
+          as a possible second wall-top clip bug.  VERDICT: NO BUG,
+          vanilla-exact rendering.  Evidence chain: (1) reproduced
+          the frame pixel-identically with a temp camera warp in a
+          fresh level (DS records + fb8 identical; temp code fully
+          reverted, doom.b byte-clean).  (2) No-planes isolation
+          run shows the wall loop draws the top exactly at the
+          formula row (wood from row 51 = yt, black above) - wall
+          code innocent.  (3) Painter bisection (disable sky only)
+          + unconditional span instrumentation: no floor/mapplane
+          span touches the band; the only painter is the sky-column
+          path.  (4) In-texture proof: the renderer's SKY1 column
+          for those screen columns holds palette indices
+          106,109,78,109 at rows 47-50, and the WAD's SKY1 patch
+          bytes at the same place hold the identical brown
+          mountain pixels - the brown band IS SKY1's brown
+          mountains abutting the wall top, with the sloping
+          mountain silhouette reading as a cut wall line.  (5) The
+          composition path (negative patch origin oy=-8, source not
+          advanced on top clip) matches doomgeneric
+          R_DrawColumnInCache line-for-line - including the quirk,
+          so placement is vanilla-identical too.  Lesson recorded:
+          E1 SKY1 has brown mountains that sit directly above wall
+          tops in the courtyard; check WAD bytes before assuming a
+          clip bug.  No code changed for this one (the earlier
+          fctop sky-hack fix stands, separate issue).
+          PHANTOM PLANE SPANS OVERPAINTING WALL TOPS (user snapshot:
+          courtyard exit walls cut short, toggled by drawplanes -
+          user was right, second real bug in the same area).  The
+          two-sided markplane calls ran UNGATED, but vanilla gates
+          them on markceiling/markfloor (r_segs.c:219+).  A shared-
+          plane portal (both sky, same light) recorded a sky span
+          down to its front-ceiling row; drawplanes paints spans
+          after all walls, so the span smeared sky over the wooden
+          wall drawn behind the portal (E1M1 gateway: span bottom
+          row 66 over wall top row 51).  Fix: gate both markplane
+          calls on markceiling/markfloor.  Verified by pixel oracle
+          (new wall1s.py for 1-sided mids): 0 mismatches across the
+          full wall at 3 columns (was 8-16 mismatched top rows);
+          phantom sky spans gone from the snapshot (only the wall's
+          own abutting sky span remains); first snapshot's wall
+          still 0 mismatches (no regression).  Complements the
+          earlier fctop sky-hack fix (right edge row when
+          markceiling=1; this fix skips the mark entirely when 0).
+          1-sided marks correctly stay ungated (vanilla marks
+          terminal walls unconditionally).

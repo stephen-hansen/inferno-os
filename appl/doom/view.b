@@ -1159,8 +1159,18 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 		}
 
 		# window edges (port equivalents of vanilla's topfrac/bottomfrac
-		# rows for the front sector's ceiling and floor)
-		fctop := r.centery - int(big(fceilz - vz) * big(scale) >> 32);
+		# rows for the front sector's ceiling and floor).  The top
+		# edge needs vanilla's sky hack (r_segs.c: worldtop =
+		# worldhigh when both ceilings are sky): without it a
+		# both-sky portal advances the clip to the FRONT ceiling
+		# row while vanilla leaves it at the BACK ceiling row, and
+		# the extra closed rows behead the wall drawn behind the
+		# portal (E1M1 courtyard: the sec20|sec22 gateway cut 33
+		# rows off the wooden wall behind it).
+		topz := fceilz;
+		if (fsec.ceilingtexture == SKYFLAT && bceiltex == SKYFLAT)
+			topz = bceilz;
+		fctop := r.centery - int(big(topz - vz) * big(scale) >> 32);
 		flbot := r.centery - int(big(ffloorz - vz) * big(scale) >> 32);
 
 		# advance the column clips to the front edges where no texture
@@ -1197,12 +1207,20 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 		# mark the front sector's planes in the strips above the upper
 		# wall and below the lower wall; markplane clamps both to the
 		# open window (vanilla's mutual ceilingclip/floorclip clamps).
-		# Window rows are left for the next seg behind the portal, whose
-		# front sector is the back side -- claiming back-sector planes here
-		# double-claimed flat portals and painted back floors over front
-		# floors at steps.
-		markplane(frontceil, x, solid[2*x], fctop - 1);
-		markplane(frontfloor, x, flbot + 1, solid[2*x+1]);
+		# gated on markceiling/markfloor EXACTLY like vanilla
+		# (r_segs.c:219+ "if (markceiling)" / floor equivalent):
+		# an ungated mark records a phantom span for a shared plane
+		# that drawplanes later paints OVER the wall drawn behind
+		# the portal (E1M1 courtyard gateways smeared sky over the
+		# wooden wall tops; toggling drawplanes toggled the bug).
+		# Window rows are left for the next seg behind this portal,
+		# whose front sector is the back side -- claiming back-sector
+		# planes here double-claimed flat portals and painted back
+		# floors over front floors at steps.
+		if (markceiling)
+			markplane(frontceil, x, solid[2*x], fctop - 1);
+		if (markfloor)
+			markplane(frontfloor, x, flbot + 1, solid[2*x+1]);
 
 		solid[2*x] = cclip;
 		solid[2*x+1] = fclip;
