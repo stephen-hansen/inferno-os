@@ -430,7 +430,11 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 			# sector list in vanilla (R_AddSprites walks sectors),
 			# so they never project; skip explicitly here since
 			# this loop walks the whole mobj array instead.
+			# removed mobs skip too (lazy unlink, same rule as
+			# every other mobj iteration in game.b).
 			if ((mobs[i].flags & inf->MF_NOSECTOR) != 0)
+				continue;
+			if (mobs[i].removed)
 				continue;
 			projectmo(mobs[i]);
 		}

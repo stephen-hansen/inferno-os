@@ -75,12 +75,27 @@ Game: module {
 	WP_PLASMA, WP_BFG, WP_CHAINSAW, WP_SUPERSHOTGUN: con iota;
 	NUMWEAPONS:	con 9;
 	AM_CLIP, AM_SHELL, AM_CELL, AM_MISL: con iota;
+	AM_NOAMMO:	con 4;
 	NUMAMMO:	con 4;
 
 	# keycards/skulls (d_items.h card_t order)
 	IT_BLUECARD, IT_YELLOWCARD, IT_REDCARD,
 	IT_BLUESKULL, IT_YELLOWSKULL, IT_REDSKULL: con iota;
 	NUMCARDS:	con 6;
+
+	# player powers (d_player.h power_type_t order)
+	PW_INVULNERABILITY, PW_STRENGTH, PW_INVISIBILITY,
+	PW_IRONFEET, PW_ALLMAP, PW_INFRARED: con iota;
+	NUMPOWERS:	con 6;
+
+	# interaction (p_inter.c / p_local.h)
+	MAXHEALTH:	con 100;
+	BONUSADD:	con 6;
+	BASETHRESHOLD:	con 100;
+	INVULNTICS:	con 30*TICRATE;
+	INVISTICS:	con 60*TICRATE;
+	INFRATICS:	con 120*TICRATE;
+	IRONTICS:	con 60*TICRATE;
 
 	# vertical door types (p_spec.h vldoor_e order)
 	VLD_NORMAL, VLD_CLOSE30THENOPEN, VLD_CLOSE, VLD_OPEN,
@@ -163,6 +178,11 @@ Game: module {
 		ammo, maxammo:	array of int;	# [NUMAMMO]
 		frags:	array of int;		# [MAXPLAYERS]
 		cards:	array of int;		# [NUMCARDS] keycards/skulls
+		armorpoints, armortype:	int;
+		powers:	array of int;		# [NUMPOWERS]
+		backpack:	int;
+		bonuscount, damagecount:	int;	# HUD flashes (M15/18)
+		attacker:	ref Mobj;	# last damager (M12 retaliation)
 	};
 
 	# --- world state (one level; set by setuplevel) ---

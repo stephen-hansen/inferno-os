@@ -9,9 +9,11 @@ Sound: module {
 	PATH:	con "/dis/doom/sound.dis";
 
 	# door/use/floor/plat/switch effects (milestone 13 slice)
+	# plus pickup fanfare (milestone 9)
 	SFX_DOROPN, SFX_DORCLS, SFX_BDOPN, SFX_BDCLS,
 	SFX_OOF, SFX_SWTCHN, SFX_SWTCHX, SFX_STNMOV,
-	SFX_PSTOP, SFX_PSTART, SFX_TELEPT: con iota;
+	SFX_PSTOP, SFX_PSTART, SFX_TELEPT,
+	SFX_ITEMUP, SFX_WPNUP, SFX_GETPOW: con iota;
 
 	init:	fn(): string;
 

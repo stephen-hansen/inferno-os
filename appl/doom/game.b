@@ -34,6 +34,10 @@ floatok: int;
 ceilingline: int;		# linedef index, -1 if none
 opentop, openbottom, openrange, lowfloor: int;
 
+# P_RadiusAttack temporaries (vanilla p_map.c globals)
+bombspot, bombsource: ref Mobj;
+bombdamage: int;
+
 # P_SlideMove temporaries (vanilla p_map.c module globals)
 slidemo: ref Mobj;
 bestslidefrac, secondslidefrac: int;
@@ -128,6 +132,11 @@ sexited: int;		# G_SecretExitLevel flag (S1 special 51)
 # shareware episode 1 set, as P_InitSwitchList loads it).
 # Textures stay name strings here (no texture numbers).
 switchpairs: array of (string, string);
+
+# ammo table (vanilla d_items.c weaponinfo ammo column + p_inter.c
+# clipammo, indexed by WP_* / AM_*); set in init()
+weaponammo: array of int;
+clipammo: array of int;
 
 init(): string
 {
@@ -356,6 +365,13 @@ init(): string
 	nspechit = 0;
 	exited = 0;
 	sexited = 0;
+	# weapon ammo types (d_items.c weaponinfo order) and clip-load
+	# sizes (p_inter.c clipammo); AM_NOAMMO (4) never granted
+	weaponammo = array[] of {
+		AM_NOAMMO, AM_CLIP, AM_SHELL, AM_CLIP, AM_MISL,
+		AM_CELL, AM_CELL, AM_NOAMMO, AM_SHELL,
+	};
+	clipammo = array[] of { 10, 4, 20, 1 };
 	switchpairs = array[] of {
 		("SW1BRCOM", "SW2BRCOM"),
 		("SW1BRN1", "SW2BRN1"),
@@ -523,7 +539,8 @@ spawnplayer(t: Thing)
 	if (players[i] == nil) {
 		np := ref Player(nil, Ticcmd(0, 0, 0, 0), PST_REBORN,
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			nil, nil, nil, nil, nil);
+			nil, nil, nil, nil, nil,
+			0, 0, nil, 0, 0, 0, nil);
 		players[i] = np;
 	}
 	p := players[i];
@@ -565,6 +582,14 @@ playerreborn(p: ref Player)
 	zeroarr(p.frags);
 	p.cards = array[NUMCARDS] of int;
 	zeroarr(p.cards);
+	p.armorpoints = 0;
+	p.armortype = 0;
+	p.powers = array[NUMPOWERS] of int;
+	zeroarr(p.powers);
+	p.backpack = 0;
+	p.bonuscount = 0;
+	p.damagecount = 0;
+	p.attacker = nil;
 	p.usedown = 1;
 	p.attackdown = 1;
 	p.killcount = 0;
@@ -1561,9 +1586,9 @@ pteleportmove(mo: ref Mobj, x, y: int): int
 			continue;		# don't clip against self
 		if (mo.player == nil && gamemapnum != 30)
 			return 0;		# monsters don't stomp (off boss map)
-		# player telefrag kill: P_DamageMobj(thing, 10000)
-		# lands with milestone 9; fail closed until then
-		return 0;
+		# telefrag: 10000 damage through P_DamageMobj (milestone 9
+		# hookup; previously failed closed here)
+		pdamagemobj(thing, mo, mo, 10000);
 	}
 	mo.floorz = tmfloorz;
 	mo.ceilingz = tmceilingz;
@@ -2301,6 +2326,22 @@ playerthink(p: ref Player)
 		return;
 	}
 
+	# power durations (vanilla P_PlayerThink: strength counts up to
+	# diminish fade; invisibility drops its shadow flag at zero)
+	if (p.powers[PW_STRENGTH] != 0)
+		p.powers[PW_STRENGTH]++;
+	if (p.powers[PW_INVULNERABILITY] != 0)
+		p.powers[PW_INVULNERABILITY]--;
+	if (p.powers[PW_INVISIBILITY] != 0) {
+		p.powers[PW_INVISIBILITY]--;
+		if (p.powers[PW_INVISIBILITY] == 0)
+			p.mo.flags = p.mo.flags & ~inf->MF_SHADOW;
+	}
+	if (p.powers[PW_INFRARED] != 0)
+		p.powers[PW_INFRARED]--;
+	if (p.powers[PW_IRONFEET] != 0)
+		p.powers[PW_IRONFEET]--;
+
 	if (p.mo.reactiontime != 0)
 		p.mo.reactiontime = p.mo.reactiontime - 1;
 	else
@@ -2574,8 +2615,576 @@ pitcheckline(n: int): int
 	return 1;
 }
 
+# ---------------------------------------------------------------------------
+# interaction: pickups, damage, death (milestone 9, p_inter.c).
+# Reference: doomgeneric p_inter.c (GPL-2).  Transcribed mechanically
+# except: player->message assignments skipped (no message field until
+# HUD milestone 19); netgame branches omitted (single-player only);
+# I_Error on unknown sprites becomes a silent skip (shareware
+# touchables are all cased); P_DropWeapon is a no-op stub here (lowers
+# the psprite, owned by weapons milestone 11).
+# ---------------------------------------------------------------------------
+
+# ammo per weapon (d_items.c weaponinfo ammo column, WP_* order)
+# and clip-load sizes (p_inter.c clipammo, AM_* order)
+
+pgiveammo(p: ref Player, ammo, num: int): int
+{
+	if (ammo == AM_NOAMMO)
+		return 0;
+	if (ammo < 0 || ammo >= NUMAMMO)
+		fail("pgiveammo: bad type");
+	if (p.ammo[ammo] == p.maxammo[ammo])
+		return 0;
+	if (num != 0)
+		num *= clipammo[ammo];
+	else
+		num = clipammo[ammo] / 2;
+	if (gameskill == SK_BABY || gameskill == SK_NIGHTMARE)
+		num <<= 1;		# double ammo in trainer/nightmare
+	oldammo := p.ammo[ammo];
+	p.ammo[ammo] += num;
+	if (p.ammo[ammo] > p.maxammo[ammo])
+		p.ammo[ammo] = p.maxammo[ammo];
+	if (oldammo != 0)
+		return 1;		# was already armed, no weapon switch
+	if (ammo == AM_CLIP && p.readyweapon == WP_FIST) {
+		if (p.weaponowned[WP_CHAINGUN] != 0)
+			p.pendingweapon = WP_CHAINGUN;
+		else
+			p.pendingweapon = WP_PISTOL;
+	} else if (ammo == AM_SHELL &&
+	    (p.readyweapon == WP_FIST || p.readyweapon == WP_PISTOL)) {
+		if (p.weaponowned[WP_SHOTGUN] != 0)
+			p.pendingweapon = WP_SHOTGUN;
+	} else if (ammo == AM_CELL &&
+	    (p.readyweapon == WP_FIST || p.readyweapon == WP_PISTOL)) {
+		if (p.weaponowned[WP_PLASMA] != 0)
+			p.pendingweapon = WP_PLASMA;
+	} else if (ammo == AM_MISL && p.readyweapon == WP_FIST) {
+		if (p.weaponowned[WP_MISSILE] != 0)
+			p.pendingweapon = WP_MISSILE;
+	}
+	return 1;
+}
+
+pgiveweapon(p: ref Player, weapon, dropped: int): int
+{
+	# netgame placed-weapon branch omitted (single-player only)
+	ammo := weaponammo[weapon];
+	gaveammo := 0;
+	if (ammo != AM_NOAMMO) {
+		if (dropped != 0)
+			gaveammo = pgiveammo(p, ammo, 1);
+		else
+			gaveammo = pgiveammo(p, ammo, 2);
+	}
+	gaveweapon := 0;
+	if (p.weaponowned[weapon] == 0) {
+		gaveweapon = 1;
+		p.weaponowned[weapon] = 1;
+		p.pendingweapon = weapon;
+	}
+	if (gaveweapon != 0 || gaveammo != 0)
+		return 1;
+	return 0;
+}
+
+pgivebody(p: ref Player, num: int): int
+{
+	if (p.health >= MAXHEALTH)
+		return 0;
+	p.health += num;
+	if (p.health > MAXHEALTH)
+		p.health = MAXHEALTH;
+	p.mo.health = p.health;
+	return 1;
+}
+
+pgivearmor(p: ref Player, armortype: int): int
+{
+	hits := armortype * 100;
+	if (p.armorpoints >= hits)
+		return 0;		# don't pick up
+	p.armortype = armortype;
+	p.armorpoints = hits;
+	return 1;
+}
+
+pgivecard(p: ref Player, card: int)
+{
+	if (p.cards[card] != 0)
+		return;
+	p.bonuscount = BONUSADD;
+	p.cards[card] = 1;
+}
+
+pgivepower(p: ref Player, power: int): int
+{
+	if (power == PW_INVULNERABILITY) {
+		p.powers[power] = INVULNTICS;
+		return 1;
+	}
+	if (power == PW_INVISIBILITY) {
+		p.powers[power] = INVISTICS;
+		p.mo.flags = p.mo.flags | inf->MF_SHADOW;
+		return 1;
+	}
+	if (power == PW_INFRARED) {
+		p.powers[power] = INFRATICS;
+		return 1;
+	}
+	if (power == PW_IRONFEET) {
+		p.powers[power] = IRONTICS;
+		return 1;
+	}
+	if (power == PW_STRENGTH) {
+		pgivebody(p, 100);
+		p.powers[power] = 1;
+		return 1;
+	}
+	if (p.powers[power] != 0)
+		return 0;		# already got it
+	p.powers[power] = 1;
+	return 1;
+}
+
+# vanilla P_TouchSpecialThing (p_inter.c): sprite-dispatched pickup.
+# Messages skipped (HUD milestone 19); megasphere untouchable in
+# shareware (commercial guard transcribed as bare return).
+ptouchspecialthing(special, toucher: ref Mobj)
+{
+	player := toucher.player;
+	if (player == nil)
+		return;		# vanilla would crash; only MF_PICKUP calls
+	delta := special.z - toucher.z;
+	if (delta > toucher.height || delta < -8 * FRACUNIT)
+		return;			# out of reach
+	if (toucher.health <= 0)
+		return;			# sliding corpse touches nothing
+	soundnum := sound->SFX_ITEMUP;
+	spr := special.sprite;
+	matched := 0;
+	if (spr == inf->SPR_ARM1) {
+		matched = 1;
+		if (pgivearmor(player, 1) == 0)
+			return;
+	}
+	if (spr == inf->SPR_ARM2) {
+		matched = 1;
+		if (pgivearmor(player, 2) == 0)
+			return;
+	}
+	if (spr == inf->SPR_BON1) {
+		matched = 1;
+		player.health++;
+		if (player.health > 200)
+			player.health = 200;
+		player.mo.health = player.health;
+	}
+	if (spr == inf->SPR_BON2) {
+		matched = 1;
+		player.armorpoints++;
+		if (player.armorpoints > 200)
+			player.armorpoints = 200;
+		if (player.armortype == 0)
+			player.armortype = 1;
+	}
+	if (spr == inf->SPR_SOUL) {
+		matched = 1;
+		player.health += 100;
+		if (player.health > 200)
+			player.health = 200;
+		player.mo.health = player.health;
+		soundnum = sound->SFX_GETPOW;
+	}
+	if (spr == inf->SPR_MEGA) {
+		matched = 1;
+		return;			# commercial only; not in shareware
+	}
+	if (spr == inf->SPR_BKEY) {
+		matched = 1;
+		pgivecard(player, IT_BLUECARD);
+	}
+	if (spr == inf->SPR_YKEY) {
+		matched = 1;
+		pgivecard(player, IT_YELLOWCARD);
+	}
+	if (spr == inf->SPR_RKEY) {
+		matched = 1;
+		pgivecard(player, IT_REDCARD);
+	}
+	if (spr == inf->SPR_BSKU) {
+		matched = 1;
+		pgivecard(player, IT_BLUESKULL);
+	}
+	if (spr == inf->SPR_YSKU) {
+		matched = 1;
+		pgivecard(player, IT_YELLOWSKULL);
+	}
+	if (spr == inf->SPR_RSKU) {
+		matched = 1;
+		pgivecard(player, IT_REDSKULL);
+	}
+	if (spr == inf->SPR_STIM) {
+		matched = 1;
+		if (pgivebody(player, 10) == 0)
+			return;
+	}
+	if (spr == inf->SPR_MEDI) {
+		matched = 1;
+		if (pgivebody(player, 25) == 0)
+			return;
+	}
+	if (spr == inf->SPR_PINV) {
+		matched = 1;
+		if (pgivepower(player, PW_INVULNERABILITY) == 0)
+			return;
+		soundnum = sound->SFX_GETPOW;
+	}
+	if (spr == inf->SPR_PSTR) {
+		matched = 1;
+		if (pgivepower(player, PW_STRENGTH) == 0)
+			return;
+		if (player.readyweapon != WP_FIST)
+			player.pendingweapon = WP_FIST;
+		soundnum = sound->SFX_GETPOW;
+	}
+	if (spr == inf->SPR_PINS) {
+		matched = 1;
+		if (pgivepower(player, PW_INVISIBILITY) == 0)
+			return;
+		soundnum = sound->SFX_GETPOW;
+	}
+	if (spr == inf->SPR_SUIT) {
+		matched = 1;
+		if (pgivepower(player, PW_IRONFEET) == 0)
+			return;
+		soundnum = sound->SFX_GETPOW;
+	}
+	if (spr == inf->SPR_PMAP) {
+		matched = 1;
+		if (pgivepower(player, PW_ALLMAP) == 0)
+			return;
+		soundnum = sound->SFX_GETPOW;
+	}
+	if (spr == inf->SPR_PVIS) {
+		matched = 1;
+		if (pgivepower(player, PW_INFRARED) == 0)
+			return;
+		soundnum = sound->SFX_GETPOW;
+	}
+	if (spr == inf->SPR_CLIP) {
+		matched = 1;
+		if ((special.flags & inf->MF_DROPPED) != 0) {
+			if (pgiveammo(player, AM_CLIP, 0) == 0)
+				return;
+		} else if (pgiveammo(player, AM_CLIP, 1) == 0)
+			return;
+	}
+	if (spr == inf->SPR_AMMO) {
+		matched = 1;
+		if (pgiveammo(player, AM_CLIP, 5) == 0)
+			return;
+	}
+	if (spr == inf->SPR_ROCK) {
+		matched = 1;
+		if (pgiveammo(player, AM_MISL, 1) == 0)
+			return;
+	}
+	if (spr == inf->SPR_BROK) {
+		matched = 1;
+		if (pgiveammo(player, AM_MISL, 5) == 0)
+			return;
+	}
+	if (spr == inf->SPR_CELL) {
+		matched = 1;
+		if (pgiveammo(player, AM_CELL, 1) == 0)
+			return;
+	}
+	if (spr == inf->SPR_CELP) {
+		matched = 1;
+		if (pgiveammo(player, AM_CELL, 5) == 0)
+			return;
+	}
+	if (spr == inf->SPR_SHEL) {
+		matched = 1;
+		if (pgiveammo(player, AM_SHELL, 1) == 0)
+			return;
+	}
+	if (spr == inf->SPR_SBOX) {
+		matched = 1;
+		if (pgiveammo(player, AM_SHELL, 5) == 0)
+			return;
+	}
+	if (spr == inf->SPR_BPAK) {
+		matched = 1;
+		if (player.backpack == 0) {
+			for (i := 0; i < NUMAMMO; i++)
+				player.maxammo[i] *= 2;
+			player.backpack = 1;
+		}
+		for (i := 0; i < NUMAMMO; i++)
+			pgiveammo(player, i, 1);
+	}
+	if (spr == inf->SPR_BFUG) {
+		matched = 1;
+		if (pgiveweapon(player, WP_BFG, 0) == 0)
+			return;
+		soundnum = sound->SFX_WPNUP;
+	}
+	if (spr == inf->SPR_MGUN) {
+		matched = 1;
+		dropped := 0;
+		if ((special.flags & inf->MF_DROPPED) != 0)
+			dropped = 1;
+		if (pgiveweapon(player, WP_CHAINGUN, dropped) == 0)
+			return;
+		soundnum = sound->SFX_WPNUP;
+	}
+	if (spr == inf->SPR_CSAW) {
+		matched = 1;
+		if (pgiveweapon(player, WP_CHAINSAW, 0) == 0)
+			return;
+		soundnum = sound->SFX_WPNUP;
+	}
+	if (spr == inf->SPR_LAUN) {
+		matched = 1;
+		if (pgiveweapon(player, WP_MISSILE, 0) == 0)
+			return;
+		soundnum = sound->SFX_WPNUP;
+	}
+	if (spr == inf->SPR_PLAS) {
+		matched = 1;
+		if (pgiveweapon(player, WP_PLASMA, 0) == 0)
+			return;
+		soundnum = sound->SFX_WPNUP;
+	}
+	if (spr == inf->SPR_SHOT) {
+		matched = 1;
+		dropped := 0;
+		if ((special.flags & inf->MF_DROPPED) != 0)
+			dropped = 1;
+		if (pgiveweapon(player, WP_SHOTGUN, dropped) == 0)
+			return;
+		soundnum = sound->SFX_WPNUP;
+	}
+	if (spr == inf->SPR_SGN2) {
+		matched = 1;
+		dropped := 0;
+		if ((special.flags & inf->MF_DROPPED) != 0)
+			dropped = 1;
+		if (pgiveweapon(player, WP_SUPERSHOTGUN, dropped) == 0)
+			return;
+		soundnum = sound->SFX_WPNUP;
+	}
+	if (matched == 0)
+		return;			# vanilla I_Errors; not a shareware pickup
+	if ((special.flags & inf->MF_COUNTITEM) != 0)
+		player.itemcount++;
+	removemobj(special);
+	player.bonuscount += BONUSADD;
+	if (player == players[0])
+		sound->startsound(0, 0, soundnum);
+}
+
+# vanilla P_DropWeapon hook: puts the weapon away on death by
+# lowering the psprite (owned by weapons milestone 11); no-op here.
+psprdropweapon(p: ref Player)
+{
+	p = p;
+}
+
+# vanilla P_KillMobj (p_inter.c): corpse flags, counts, player
+# death, gib check, shareware item drops.  Pain/death sounds play
+# through A_ actions (milestones 11/12), not here.
+pkillmobj(source, target: ref Mobj)
+{
+	target.flags = target.flags & ~(inf->MF_SHOOTABLE | inf->MF_FLOAT | inf->MF_SKULLFLY);
+	if (target.typ != inf->MT_SKULL)
+		target.flags = target.flags & ~inf->MF_NOGRAVITY;
+	target.flags = target.flags | inf->MF_CORPSE | inf->MF_DROPOFF;
+	target.height >>= 2;
+	if (source != nil && source.player != nil) {
+		if ((target.flags & inf->MF_COUNTKILL) != 0)
+			source.player.killcount++;
+		if (target.player != nil) {
+			for (i := 0; i < MAXPLAYERS; i++)
+				if (players[i] == target.player)
+					source.player.frags[i]++;
+		}
+	} else if ((target.flags & inf->MF_COUNTKILL) != 0) {
+		# single-player (no netgame): count monster infights too
+		if (players[0] != nil)
+			players[0].killcount++;
+	}
+	if (target.player != nil) {
+		p := target.player;
+		if (source == nil) {
+			for (i := 0; i < MAXPLAYERS; i++)
+				if (players[i] == p)
+					p.frags[i]++;
+		}
+		target.flags = target.flags & ~inf->MF_SOLID;
+		p.playerstate = PST_DEAD;
+		psprdropweapon(p);
+	}
+	if (target.health < -target.info.spawnhealth &&
+	    target.info.xdeathstate != inf->S_NULL)
+		setmobjstate(target, target.info.xdeathstate);
+	else
+		setmobjstate(target, target.info.deathstate);
+	target.tics -= prandom() & 3;
+	if (target.tics < 1)
+		target.tics = 1;
+	# shareware drops (chex guard omitted: never chex here)
+	item := -1;
+	if (target.typ == inf->MT_WOLFSS || target.typ == inf->MT_POSSESSED)
+		item = inf->MT_CLIP;
+	else if (target.typ == inf->MT_SHOTGUY)
+		item = inf->MT_SHOTGUN;
+	else if (target.typ == inf->MT_CHAINGUY)
+		item = inf->MT_CHAINGUN;
+	if (item >= 0) {
+		drop := spawnmobj(target.x, target.y, ONFLOORZ, item);
+		drop.flags = drop.flags | inf->MF_DROPPED;
+	}
+}
+
+# vanilla P_DamageMobj (p_inter.c): thrust, armor, death, pain,
+# retaliation.  Pain/death SOUNDS play through A_ actions
+# (milestones 11/12); I_Tactile has no Inferno equivalent.
+pdamagemobj(target, inflictor, source: ref Mobj, damage: int)
+{
+	if ((target.flags & inf->MF_SHOOTABLE) == 0)
+		return;
+	if (target.health <= 0)
+		return;
+	if ((target.flags & inf->MF_SKULLFLY) != 0) {
+		target.momx = 0;
+		target.momy = 0;
+		target.momz = 0;
+	}
+	player := target.player;
+	if (player != nil && gameskill == SK_BABY)
+		damage >>= 1;
+	if (inflictor != nil && (target.flags & inf->MF_NOCLIP) == 0 &&
+	    (source == nil || source.player == nil ||
+	     source.player.readyweapon != WP_CHAINSAW)) {
+		ang := pointtoangle2(inflictor.x, inflictor.y,
+			target.x, target.y);
+		thrust := damage * (FRACUNIT >> 3) * 100 / target.info.mass;
+		if (damage < 40 && damage > target.health &&
+		    target.z - inflictor.z > 64 * FRACUNIT &&
+		    (prandom() & 1) != 0) {
+			ang += ANG180;
+			thrust *= 4;
+		}
+		a := (ang >> ANGLETOFINESHIFT) & FINEMASK;
+		target.momx += rend->fixedmul(thrust, inf->finesine[(a + 2048) & FINEMASK]);
+		target.momy += rend->fixedmul(thrust, inf->finesine[a]);
+	}
+	if (player != nil) {
+		# E1M8 finale hell-hack: exit instead of dying
+		if (target.subsector.sector.special == 11 && damage >= target.health)
+			damage = target.health - 1;
+		if (damage < 1000 && ((player.cheats & CF_GODMODE) != 0 ||
+		    player.powers[PW_INVULNERABILITY] != 0))
+			return;
+		if (player.armortype != 0) {
+			if (player.armortype == 1)
+				saved := damage / 3;
+			else
+				saved = damage / 2;
+			if (player.armorpoints <= saved) {
+				saved = player.armorpoints;
+				player.armortype = 0;
+			}
+			player.armorpoints -= saved;
+			damage -= saved;
+		}
+		player.health -= damage; 	# mirror mobj health here for Dave
+		if (player.health < 0)
+			player.health = 0;
+		player.attacker = source;
+		player.damagecount += damage;
+		if (player.damagecount > 100)
+			player.damagecount = 100;
+	}
+	target.health -= damage;
+	if (target.health <= 0) {
+		pkillmobj(source, target);
+		return;
+	}
+	if (prandom() < target.info.painchance &&
+	    (target.flags & inf->MF_SKULLFLY) == 0) {
+		target.flags = target.flags | inf->MF_JUSTHIT;
+		setmobjstate(target, target.info.painstate);
+	}
+	target.reactiontime = 0;
+	if ((target.threshold == 0 || target.typ == inf->MT_VILE) &&
+	    source != nil && source != target &&
+	    source.typ != inf->MT_VILE) {
+		target.target = source;
+		target.threshold = BASETHRESHOLD;
+		if (target.state == target.info.spawnstate &&
+		    target.info.seestate != inf->S_NULL)
+			setmobjstate(target, target.info.seestate);
+	}
+}
+
+# sight gate for radius attacks (vanilla P_CheckSight, owned by AI
+# milestone 12); permissive until then (no callers exist yet)
+pchecksight(a, b: ref Mobj): int
+{
+	a = a;
+	b = b;
+	return 1;
+}
+
+# vanilla PIT_RadiusAttack (p_map.c): concussion damage with linear
+# falloff over map-unit distance; bosses immune.  Brute-forces the
+# mobj list (no blockmap); caller sets bombspot/bombsource/bombdamage.
+pitradiusattack(mo: ref Mobj): int
+{
+	if ((mo.flags & inf->MF_SHOOTABLE) == 0)
+		return 1;
+	if (mo.typ == inf->MT_CYBORG || mo.typ == inf->MT_SPIDER)
+		return 1;
+	dx := absi(mo.x - bombspot.x);
+	dy := absi(mo.y - bombspot.y);
+	dist := dx;
+	if (dy > dx)
+		dist = dy;
+	dist = (dist - mo.radius) >> FRACBITS;
+	if (dist < 0)
+		dist = 0;
+	if (dist >= bombdamage)
+		return 1;
+	if (pchecksight(mo, bombspot) != 0)
+		pdamagemobj(mo, bombspot, bombsource, bombdamage - dist);
+	return 1;
+}
+
+# vanilla P_RadiusAttack (p_map.c)
+pradiusattack(spot, source: ref Mobj, damage: int)
+{
+	bombspot = spot;
+	bombsource = source;
+	bombdamage = damage;
+	for (i := 0; i < len mobjs; i++) {
+		mo := mobjs[i];
+		if (mo.removed)
+			continue;
+		pitradiusattack(mo);
+	}
+}
+
 pitcheckthing(thing: ref Mobj): int
 {
+	if (thing.removed)
+		return 1;		# vanilla P_RemoveMobj unlinks at once;
+				# lazy removal must skip everywhere instead
 	if ((thing.flags & (inf->MF_SOLID | inf->MF_SPECIAL | inf->MF_SHOOTABLE)) == 0)
 		return 1;
 	blockdist := thing.radius + tmthing.radius;
@@ -2584,7 +3193,26 @@ pitcheckthing(thing: ref Mobj): int
 		return 1;
 	if (thing == tmthing)
 		return 1;
-	# skullfly / missile / special pickup: not reachable in m5
+	# skull slam (vanilla PIT_CheckThing): fixed damage + stop
+	if ((tmthing.flags & inf->MF_SKULLFLY) != 0) {
+		damage := ((prandom() % 8) + 1) * tmthing.info.damage;
+		pdamagemobj(thing, tmthing, tmthing, damage);
+		tmthing.flags = tmthing.flags & ~inf->MF_SKULLFLY;
+		tmthing.momx = 0;
+		tmthing.momy = 0;
+		tmthing.momz = 0;
+		setmobjstate(tmthing, tmthing.info.spawnstate);
+		return 0;
+	}
+	# missile contact path lands in milestone 10 (species rules,
+	# z-over/under, same-target checks need the trace machinery)
+	# special pickup (vanilla: MF_PICKUP toucher consumes)
+	if ((thing.flags & inf->MF_SPECIAL) != 0) {
+		solid := thing.flags & inf->MF_SOLID;
+		if ((tmflags & inf->MF_PICKUP) != 0)
+			ptouchspecialthing(thing, tmthing);
+		return solid == 0;
+	}
 	return (thing.flags & inf->MF_SOLID) == 0;
 }
 
@@ -2611,7 +3239,10 @@ checkposition(thing: ref Mobj, x, y: int): int
 	if ((tmflags & inf->MF_NOCLIP) != 0)
 		return 1;
 
-	for (i := 0; i < len mobjs; i++)
+	# newest-first: vanilla block links prepend, so fresh drops are
+	# touched before the corpse underneath blocks (drop-on-corpse
+	# pickup needs this order)
+	for (i := len mobjs - 1; i >= 0; i--)
 		if (!pitcheckthing(mobjs[i]))
 			return 0;
 	for (i = 0; i < len lev.lines; i++)

@@ -938,3 +938,40 @@ Milestones (each independently testable)
           gunshot 46 (needs milestone 10 hitscan), exotic 24/47
           (not in E1).  E1 line coverage after this slice: everything
           except 46 (M10), teleports done, lights done.
+          MILESTONE 9 (damage, pickups, items): P_GiveAmmo/Weapon/Body/
+          Armor/Card/Power + tables (weaponammo/clipammo, power
+          durations, deh defaults), P_TouchSpecialThing full sprite
+          dispatch (messages skipped for HUD-19, mega untouchable in
+          shareware, unknown sprites skipped not I_Error), P_DamageMobj
+          (thrust+fall-forward quirk, baby halve, hell-hack-11,
+          god/invuln, armor absorb, damagecount cap, painchance/
+          JUSTHIT, retaliation/targeting, gib check), P_KillMobj
+          (corpse flags, killcount/frags, PST_DEAD + unsolid, gib vs
+          normal death, shareware drops with MF_DROPPED), P_RadiusAttack
+          + PIT stump (brute force, boss immunity, map-unit falloff;
+          sight gate stubs permissive for AI-12), skullfly slam +
+          MF_PICKUP touch wired into PIT_CheckThing (missile contact
+          stays M10), power tick-down in playerthink, telefrag now
+          routes through P_DamageMobj (was fail-closed), pickup/death
+          sounds stubbed (pain/death sounds ride A_ actions in
+          M11/12).  Player fields added: armorpoints/armortype,
+          powers[6], backpack, bonuscount/damagecount, attacker (all
+          zeroed; ctor arity updated).  Validated headless with TEMP
+          damage hooks (removed after, tree reverified clean):
+          pickups exact (bonus/stim/clip/shells/shotgun+pending/armor/
+          helmet), armor absorb third exact, damagecount exact,
+          PST_DEAD + clamp + unsolid corpse, gib xdeath, imp hurt/kill
+          counts, zombie kill + shotgun drop + dropped-half-load walk,
+          radius falloff/kill/drop in one blast.  SPECTEST8 PASS
+          (29/29); teleport suite re-ran PASS after (shared paths).
+          REAL ENGINE BUG FOUND: removed mobjs stayed touchable
+          (lazy removal without unlink) - a stuck player re-collected
+          the same item every tic (+8 shells x N, +5 clip x2).  Fixed
+          per the vanilla-unlink rule: pitcheckthing skips removed,
+          and checkposition iterates NEWEST-first (vanilla block links
+          prepend, so fresh drops touch before the corpse underneath
+          blocks).  Rule recorded: every mobj iteration must skip
+          removed.  Harness-only lessons: verify skill/flags bits on
+          test things (multis-only shells correctly skipped, hard-only
+          sergeants absent on medium), delta-assert ammo (drift touches
+          uncounted items), steponto may land on squatter items.
