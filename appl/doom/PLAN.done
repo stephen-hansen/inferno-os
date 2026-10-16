@@ -975,3 +975,14 @@ Milestones (each independently testable)
           test things (multis-only shells correctly skipped, hard-only
           sergeants absent on medium), delta-assert ammo (drift touches
           uncounted items), steponto may land on squatter items.
+          M9 GAP-CLOSERS (powers/blue/pain): blue armor absorbs half
+          exact, pain JUSTHIT + S_PLAY_PAIN fire, soulsphere caps 200
+          exact, invisibility sets 2100 tics + ticks down + MF_SHADOW,
+          all via a second TEMP hook round (removed after, boot smoke
+          + teleport PASS re-verified on the clean tree).  SPECTEST9
+          PASS (9/9).  Harness-only lessons: item plateaus above the
+          placer sweep ceiling (E1M3 soul cluster sits on 288+ floors)
+          and post-touch walks decay-timer asserts (assert deltas).
+          Known-unvalidated (no E1 path exists): godmode/invuln
+          branches, keycard touches, pain/death sounds (ride M11/12
+          A_ actions by design).

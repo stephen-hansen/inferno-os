@@ -179,7 +179,11 @@ Part A — world visibility
 Part B — combat & simulation completeness
 ================================================================================
 
-  [ ] 9  Damage, pickups & item effects (p_inter.c)
+  [x] 9  Damage, pickups & item effects (p_inter.c)
+         (CLOSED: SPECTEST8 29/29 + gap-closer 9/9; by-design
+         residuals: pain/death sounds via M11/12 A_ actions,
+         messages M19, missile contact M10, god/invuln branches
+         have no E1 path)
          WHY: nothing in the world can be collected or killed; this
          is the effect layer both player and monsters need.
          SOURCES: p_inter.c (P_TouchSpecialThing, P_DamageMobj,
