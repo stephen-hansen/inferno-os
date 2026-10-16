@@ -49,6 +49,7 @@ SLOPERANGE: con 2048;
 THINK_DOOR: con 0;
 THINK_FLOOR: con 1;
 THINK_PLAT: con 2;
+THINK_LIGHT: con 3;
 RES_OK: con 0;			# T_MovePlane result_e
 RES_CRUSHED: con 1;
 RES_PASTDEST: con 2;
@@ -90,11 +91,24 @@ Plat: adt {			# vanilla plat_t (subset)
 	tag:	int;
 };
 Thinker: adt {
-	kind:	int;		# THINK_DOOR/FLOOR/PLAT (ceilings later)
+	kind:	int;		# THINK_DOOR/FLOOR/PLAT/LIGHT (ceilings later)
 	door:	ref Door;
 	floor:	ref Floor;
 	plat:	ref Plat;
+	light:	ref Light;
 	removed:	int;		# lazy unlink, like mobjs
+};
+
+# vanilla light thinkers (p_lights.c) unified: only the fields each
+# type touches are meaningful, but ALL are set at spawn (dirty heap).
+Light: adt {
+	sec:	ref Map->Sector;
+	ltype:	int;		# LT_FIRE/FLASH/STROBE/GLOW
+	count:	int;
+	minlight, maxlight:	int;
+	darktime, brighttime:	int;	# strobe only
+	direction:	int;	# glow only (-1 down, 1 up)
+	maxtime, mintime:	int;	# flash only
 };
 thinkers: array of ref Thinker;
 activeplats: array of ref Thinker;	# plats only (p_plats.c list)
@@ -411,6 +425,13 @@ setuplevel(l: ref Map->Level, skill: int): string
 		return "setuplevel: nil map";
 	lev = l;
 	gameskill = skill;
+	gamemapnum = 0;
+	if (len l.name == 4 && l.name[0] == 'E' && l.name[2] == 'M') {
+		# shareware ExMy: map digit at [3] (1-9)
+		gamemapnum = int l.name[3] - int '0';
+		if (gamemapnum < 1 || gamemapnum > 9)
+			gamemapnum = 0;
+	}
 	lvltime = 0;
 	totalkills = 0;
 	totalitems = 0;
@@ -427,6 +448,7 @@ setuplevel(l: ref Map->Level, skill: int): string
 
 	for (i = 0; i < len l.things; i++)
 		spawnmapthing(l.things[i]);
+	spawnspecialsectors();
 	# vanilla P_SpawnSpecials (line-effects subset): collect scroll-
 	# left lines (special 48).  Full special dispatch is milestone
 	# 13; scrolling needs no thinker, just the list.
@@ -680,16 +702,28 @@ runthinkers()
 				continue;
 			mobjthinker(mo);
 		}
-		# compact removed (lazy unlink, vanilla P_RunThinkers free)
+		# compact removed (lazy unlink, vanilla P_RunThinkers free).
+		# thinkers spawned mid-pass live past snap (missiles, fogs,
+		# gibs): vanilla's linked list keeps them, so append live
+		# mobjs[n:] survivors after the filtered snapshot.
 		kept := 0;
 		for (i = 0; i < n; i++)
 			if (!snap[i].removed)
 				kept++;
-		nm := array[kept] of ref Mobj;
+		keptx := 0;
+		for (i = n; i < len mobjs; i++)
+			if (!mobjs[i].removed)
+				keptx++;
+		nm := array[kept + keptx] of ref Mobj;
 		k := 0;
 		for (i = 0; i < n; i++)
 			if (!snap[i].removed) {
 				nm[k] = snap[i];
+				k++;
+			}
+		for (i = n; i < len mobjs; i++)
+			if (!mobjs[i].removed) {
+				nm[k] = mobjs[i];
 				k++;
 			}
 		mobjs = nm;
@@ -710,6 +744,8 @@ runthinkers()
 			tmovefloor(th);
 		else if (th.kind == THINK_PLAT)
 			tplatraise(th);
+		else if (th.kind == THINK_LIGHT)
+			tlightthink(th);
 	}
 }
 
@@ -1044,7 +1080,7 @@ evverticaldoor(li: int, mo: ref Mobj): int
 	else
 		d.topheight = findlowestceilingsurrounding(sec) - 4 * FRACUNIT;
 	d.topcountdown = 0;
-	th := ref Thinker(THINK_DOOR, d, nil, nil, 0);
+	th := ref Thinker(THINK_DOOR, d, nil, nil, nil, 0);
 	sectorthinker(sec, th);
 	return 1;
 }
@@ -1065,12 +1101,18 @@ evdodoor(li, dtype: int): int
 			d.dtype = dtype;
 			d.topwait = VDOORWAIT;
 			d.speed = VDOORSPEED;
-			d.direction = 1;
-			d.topheight = findlowestceilingsurrounding(sec) - 4 * FRACUNIT;
-			if (d.topheight != sec.ceilingheight)
-				sound->startsound(0, 0, sound->SFX_DOROPN);
 			d.topcountdown = 0;
-			th := ref Thinker(THINK_DOOR, d, nil, nil, 0);
+			if (dtype == VLD_CLOSE30THENOPEN) {
+				d.topheight = sec.ceilingheight;
+				d.direction = -1;
+				sound->startsound(0, 0, sound->SFX_DORCLS);
+			} else {
+				d.direction = 1;
+				d.topheight = findlowestceilingsurrounding(sec) - 4 * FRACUNIT;
+				if (d.topheight != sec.ceilingheight)
+					sound->startsound(0, 0, sound->SFX_DOROPN);
+			}
+			th := ref Thinker(THINK_DOOR, d, nil, nil, nil, 0);
 			sectorthinker(sec, th);
 		}
 		secnum = findsectorfromlinetag(li, secnum);
@@ -1081,8 +1123,8 @@ evdodoor(li, dtype: int): int
 # manual door specials from p_switch.c P_UseSpecialLine
 # (1/26/27/28/31-34/117/118) + S1 exit (11), S1 donut (9),
 # SR plat (62), S1 open door (103), SR raise door (63),
-# S1 raise-to-nearest plat (20), S1 secret exit (51),
-# SR turbo lower (70);
+# S1 raise-to-nearest plat (20), S1 raise floor to nearest (18),
+# S1 secret exit (51), SR turbo lower (70);
 # remaining switches / shoot cases later
 usespecialline(mo: ref Mobj, li, side: int): int
 {
@@ -1121,6 +1163,21 @@ usespecialline(mo: ref Mobj, li, side: int): int
 			changeswitchtexture(li, 0);
 		return 1;
 	}
+	if (ld.special == 18) {		# S1 raise floor to nearest
+		if (evdofloor(li, FL_RAISEFLOORTONEAREST) != 0)
+			changeswitchtexture(li, 0);
+		return 1;
+	}
+	if (ld.special == 7) {		# S1 stairs
+		if (evbuildstairs(li) != 0)
+			changeswitchtexture(li, 0);
+		return 1;
+	}
+	if (ld.special == 23) {		# S1 lower floor to lowest
+		if (evdofloor(li, FL_LOWERFLOORTOWELOWEST) != 0)
+			changeswitchtexture(li, 0);
+		return 1;
+	}
 	if (ld.special == 70) {		# SR turbo lower (keeps working)
 		if (evdofloor(li, FL_TURBOLOWER) != 0)
 			changeswitchtexture(li, 1);
@@ -1129,6 +1186,11 @@ usespecialline(mo: ref Mobj, li, side: int): int
 	if (ld.special == 51) {		# S1 secret exit
 		changeswitchtexture(li, 0);
 		gsecretexitlevel();
+		return 1;
+	}
+	if (ld.special == 35) {		# S1 lights very dark
+		evlightturnon(li, 35);
+		changeswitchtexture(li, 0);
 		return 1;
 	}
 	if (ld.special == 1 || ld.special == 26 || ld.special == 27 ||
@@ -1373,7 +1435,7 @@ evbuildstairs(li: int): int
 			height := sec.floorheight + stairsize;
 			f := ref Floor(sec, FL_RAISEFLOOR, height, speed,
 				1, 0, "", 0);
-			th := ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+			th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
 			sectorthinker(sec, th);
 			texture := sec.floortexture;
 			for (;;) {
@@ -1395,7 +1457,7 @@ evbuildstairs(li: int): int
 					sec = tsec;
 					f = ref Floor(sec, FL_RAISEFLOOR, height,
 						speed, 1, 0, "", 0);
-					th = ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+					th = ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
 					sectorthinker(sec, th);
 					found = 1;
 					break;
@@ -1438,8 +1500,16 @@ evdofloor(li, fltype: int): int
 				f.floordestheight = findlowestceilingsurrounding(sec);
 				if (f.floordestheight > sec.ceilingheight)
 					f.floordestheight = sec.ceilingheight;
+			} else if (fltype == FL_LOWERFLOORTOWELOWEST) {
+				f.direction = -1;
+				f.speed = FLOORSPEED;
+				f.floordestheight = findlowestfloorsec(sec);
+			} else if (fltype == FL_RAISEFLOORTONEAREST) {
+				f.direction = 1;
+				f.speed = FLOORSPEED;
+				f.floordestheight = findnexthighestfloor(sec, sec.floorheight);
 			}
-			th := ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+			th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
 			n := len thinkers;
 			nt := array[n + 1] of ref Thinker;
 			if (n > 0)
@@ -1451,6 +1521,105 @@ evdofloor(li, fltype: int): int
 		secnum = findsectorfromlinetag(li, secnum);
 	}
 	return rtn;
+}
+
+# vanilla P_TeleportMove (p_map.c): stomp-test the destination
+# (things only - lines are never consulted, floor/ceiling come
+# straight from the destination subsector), then relocate.  The
+# player-telefrag kill routes through P_DamageMobj in milestone 9;
+# until then a shootable-blocked destination fails the teleport
+# (E1 destinations are clear, so this never fires in validation).
+pteleportmove(mo: ref Mobj, x, y: int): int
+{
+	tmthing = mo;
+	tmflags = mo.flags;
+	tmx = x;
+	tmy = y;
+	tmbbox[0] = y + mo.radius;		# BOXTOP
+	tmbbox[1] = y - mo.radius;		# BOXBOTTOM
+	tmbbox[2] = x + mo.radius;		# BOXRIGHT
+	tmbbox[3] = x - mo.radius;		# BOXLEFT
+	ss := lev.pointsubsector(x, y);
+	if (ss == nil)
+		return 0;
+	ceilingline = -1;
+	tmfloorz = ss.sector.floorheight;
+	tmdropoffz = tmfloorz;
+	tmceilingz = ss.sector.ceilingheight;
+	nspechit = 0;
+	for (i := 0; i < len mobjs; i++) {
+		thing := mobjs[i];
+		if (thing.removed)
+			continue;
+		if ((thing.flags & inf->MF_SHOOTABLE) == 0)
+			continue;
+		blockdist := thing.radius + mo.radius;
+		if (absi(thing.x - x) >= blockdist ||
+		    absi(thing.y - y) >= blockdist)
+			continue;		# didn't hit it
+		if (thing == mo)
+			continue;		# don't clip against self
+		if (mo.player == nil && gamemapnum != 30)
+			return 0;		# monsters don't stomp (off boss map)
+		# player telefrag kill: P_DamageMobj(thing, 10000)
+		# lands with milestone 9; fail closed until then
+		return 0;
+	}
+	mo.floorz = tmfloorz;
+	mo.ceilingz = tmceilingz;
+	mo.x = x;
+	mo.y = y;
+	setthingposition(mo);
+	return 1;
+}
+
+# vanilla EV_Teleport (p_telept.c): tag-matched teleportman drags
+# the caller to its x/y/floor, facing its angle.  Fog + sound at
+# both ends, players freeze 18 tics.  No missiles, no back-side
+# entry (lets you walk out of the pad).
+evteleport(li, side: int, mo: ref Mobj): int
+{
+	if ((mo.flags & inf->MF_MISSILE) != 0)
+		return 0;
+	if (side == 1)
+		return 0;
+	tag := lev.lines[li].tag;
+	for (i := 0; i < len lev.sectors; i++) {
+		if (lev.sectors[i].tag != tag)
+			continue;
+		for (j := 0; j < len mobjs; j++) {
+			m := mobjs[j];
+			if (m.removed || m.typ != inf->MT_TELEPORTMAN)
+				continue;
+			if (m.subsector == nil)
+				continue;
+			if (!(m.subsector.sector == lev.sectors[i]))
+				continue;
+			oldx := mo.x;
+			oldy := mo.y;
+			oldz := mo.z;
+			if (pteleportmove(mo, m.x, m.y) == 0)
+				return 0;
+			mo.z = mo.floorz;
+			if (mo.player != nil)
+				mo.player.viewz = mo.z + mo.player.viewheight;
+			fog := spawnmobj(oldx, oldy, oldz, inf->MT_TFOG);
+			sound->startsound(fog.x, fog.y, sound->SFX_TELEPT);
+			an := (m.angle >> ANGLETOFINESHIFT) & FINEMASK;
+			fog = spawnmobj(m.x + rend->fixedmul(20 * FRACUNIT, inf->finesine[(an + 2048) & FINEMASK]),
+				m.y + rend->fixedmul(20 * FRACUNIT, inf->finesine[an]),
+				mo.z, inf->MT_TFOG);
+			sound->startsound(fog.x, fog.y, sound->SFX_TELEPT);
+			if (mo.player != nil)
+				mo.reactiontime = 18;
+			mo.angle = m.angle;
+			mo.momx = 0;
+			mo.momy = 0;
+			mo.momz = 0;
+			return 1;
+		}
+	}
+	return 0;
 }
 
 # vanilla EV_DoDonut (p_spec.c): the tagged pillar (s1) lowers to
@@ -1500,12 +1669,12 @@ evdodonut(li: int): int
 			# rising slime
 			f := ref Floor(s2, FL_DONUTRAISE, s3.floorheight,
 				FLOORSPEED / 2, 1, 0, s3.floortexture, 0);
-			th := ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+			th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
 			sectorthinker(s2, th);
 			# lowering donut-hole
 			f = ref Floor(s1, FL_LOWERFLOOR, s3.floorheight,
 				FLOORSPEED / 2, -1, 0, "", 0);
-			th = ref Thinker(THINK_FLOOR, nil, f, nil, 0);
+			th = ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
 			sectorthinker(s1, th);
 		}
 		secnum = findsectorfromlinetag(li, secnum);
@@ -1624,7 +1793,7 @@ evdoplat(li, pltype, amount: int): int
 				pl.status = PLS_DOWN;
 				sound->startsound(0, 0, sound->SFX_PSTART);
 			}
-			th := ref Thinker(THINK_PLAT, nil, nil, pl, 0);
+			th := ref Thinker(THINK_PLAT, nil, nil, pl, nil, 0);
 			n := len thinkers;
 			nt := array[n + 1] of ref Thinker;
 			if (n > 0)
@@ -1640,8 +1809,246 @@ evdoplat(li, pltype, amount: int): int
 	return rtn;
 }
 
-# vanilla P_CrossSpecialLine walkover subset (p_spec.c): W1 36/2/8/5/22
-# (clear), WR 90/86/91/98/88 (retrigger).  The non-player gate allows
+# ---------------------------------------------------------------------------
+# lights (milestone 13, E1 slice).  Reference: doomgeneric p_lights.c,
+# p_spec.c P_SpawnSpecials/EV_LightTurnOn, p_doors.c door spawners.
+# Transcribed line-for-line except brute-force neighbour scans (no
+# sec->lines) and the separate thinker list.  Sector special 9
+# (secret count) belongs to milestone 14; 7/11/16 spawn nothing.
+# ---------------------------------------------------------------------------
+
+# vanilla P_FindMinSurroundingLight (p_spec.c): min neighbour light,
+# floored at max (i.e. never above the sector's own level)
+findminlightsec(sec: ref Map->Sector, max: int): int
+{
+	height := max;
+	for (i := 0; i < len lev.lines; i++) {
+		ld := lev.lines[i];
+		other := ld.frontsector;
+		if (ld.frontsector == sec) {
+			if (ld.backsector == sec)
+				continue;
+			other = ld.backsector;
+		} else if (ld.backsector == sec) {
+			other = ld.frontsector;
+		} else
+			continue;
+		if (other == nil)
+			continue;
+		if (other.lightlevel < height)
+			height = other.lightlevel;
+	}
+	return height;
+}
+
+# one light thinker pass (p_lights.c T_*, switched on ltype since the
+# families share one adt here instead of four structs)
+tlightthink(th: ref Thinker)
+{
+	l := th.light;
+	sec := l.sec;
+	if (l.ltype == LT_FIRE) {		# T_FireFlicker
+		l.count = l.count - 1;
+		if (l.count != 0)
+			return;
+		amount := (prandom() & 3) * 16;
+		if (sec.lightlevel - amount < l.minlight)
+			sec.lightlevel = l.minlight;
+		else
+			sec.lightlevel = l.maxlight - amount;
+		l.count = 4;
+	} else if (l.ltype == LT_FLASH) {	# T_LightFlash
+		l.count = l.count - 1;
+		if (l.count != 0)
+			return;
+		if (sec.lightlevel == l.maxlight) {
+			sec.lightlevel = l.minlight;
+			l.count = (prandom() & l.mintime) + 1;
+		} else {
+			sec.lightlevel = l.maxlight;
+			l.count = (prandom() & l.maxtime) + 1;
+		}
+	} else if (l.ltype == LT_STROBE) {	# T_StrobeFlash
+		l.count = l.count - 1;
+		if (l.count != 0)
+			return;
+		if (sec.lightlevel == l.minlight) {
+			sec.lightlevel = l.maxlight;
+			l.count = l.brighttime;
+		} else {
+			sec.lightlevel = l.minlight;
+			l.count = l.darktime;
+		}
+	} else if (l.ltype == LT_GLOW) {	# T_Glow
+		if (l.direction == -1) {
+			sec.lightlevel = sec.lightlevel - GLOWSPEED;
+			if (sec.lightlevel <= l.minlight) {
+				sec.lightlevel = sec.lightlevel + GLOWSPEED;
+				l.direction = 1;
+			}
+		} else if (l.direction == 1) {
+			sec.lightlevel = sec.lightlevel + GLOWSPEED;
+			if (sec.lightlevel >= l.maxlight) {
+				sec.lightlevel = sec.lightlevel - GLOWSPEED;
+				l.direction = -1;
+			}
+		}
+	}
+}
+
+# append a light thinker (all fields set: dirty heap)
+addlightthinker(sec: ref Map->Sector, ltype, count, minlight, maxlight,
+	darktime, brighttime, direction, maxtime, mintime: int)
+{
+	l := ref Light(sec, ltype, count, minlight, maxlight,
+		darktime, brighttime, direction, maxtime, mintime);
+	th := ref Thinker(THINK_LIGHT, nil, nil, nil, l, 0);
+	n := len thinkers;
+	nt := array[n + 1] of ref Thinker;
+	if (n > 0)
+		nt[0:] = thinkers;
+	nt[n] = th;
+	thinkers = nt;
+	sec.specialdata = n;
+}
+
+# vanilla P_SpawnFireFlicker (p_lights.c)
+spawnfireflicker(sec: ref Map->Sector)
+{
+	lc := sec;
+	lc.special = 0;
+	addlightthinker(sec, LT_FIRE, 4,
+		findminlightsec(sec, sec.lightlevel) + 16, sec.lightlevel,
+		0, 0, 0, 0, 0);
+}
+
+# vanilla P_SpawnLightFlash (p_lights.c)
+spawnlightflash(sec: ref Map->Sector)
+{
+	lc := sec;
+	lc.special = 0;
+	addlightthinker(sec, LT_FLASH, (prandom() & 64) + 1,
+		findminlightsec(sec, sec.lightlevel), sec.lightlevel,
+		0, 0, 0, 64, 7);
+}
+
+# vanilla P_SpawnStrobeFlash (p_lights.c)
+spawnstrobeflash(sec: ref Map->Sector, fastorslow, insync: int)
+{
+	maxlight := sec.lightlevel;
+	minlight := findminlightsec(sec, maxlight);
+	if (minlight == maxlight)
+		minlight = 0;
+	lc := sec;
+	lc.special = 0;
+	count := 1;
+	if (insync == 0)
+		count = (prandom() & 7) + 1;
+	addlightthinker(sec, LT_STROBE, count, minlight, maxlight,
+		fastorslow, STROBEBRIGHT, 0, 0, 0);
+}
+
+# vanilla P_SpawnGlowingLight (p_lights.c)
+spawnglowinglight(sec: ref Map->Sector)
+{
+	addlightthinker(sec, LT_GLOW, 0,
+		findminlightsec(sec, sec.lightlevel), sec.lightlevel,
+		0, 0, -1, 0, 0);
+	lc := sec;
+	lc.special = 0;
+}
+
+# vanilla P_SpawnDoorCloseIn30 (p_doors.c): shut 30s after load
+spawndoorclosein30(sec: ref Map->Sector)
+{
+	lc := sec;
+	lc.special = 0;
+	d := ref Door(sec, VLD_NORMAL, sec.ceilingheight, VDOORSPEED,
+		0, VDOORWAIT, 30 * TICRATE);
+	th := ref Thinker(THINK_DOOR, d, nil, nil, nil, 0);
+	sectorthinker(sec, th);
+}
+
+# vanilla P_SpawnDoorRaiseIn5Mins (p_doors.c): open 5min after load
+spawndoorraisein5mins(sec: ref Map->Sector)
+{
+	lc := sec;
+	lc.special = 0;
+	d := ref Door(sec, VLD_RAISEIN5MINS,
+		findlowestceilingsurrounding(sec) - 4 * FRACUNIT,
+		VDOORSPEED, 2, VDOORWAIT, 5 * 60 * TICRATE);
+	th := ref Thinker(THINK_DOOR, d, nil, nil, nil, 0);
+	sectorthinker(sec, th);
+}
+
+# vanilla P_SpawnSpecials sector scan, E1 slice (p_spec.c): light
+# thinkers + timed doors.  Case 9 (secret count) is milestone 14;
+# 7/11/16 spawn nothing.  Scroll-48 collection stays where it is.
+spawnspecialsectors()
+{
+	for (i := 0; i < len lev.sectors; i++) {
+		sec := lev.sectors[i];
+		if (sec.special == 0)
+			continue;
+		if (sec.special == 1)
+			spawnlightflash(sec);
+		else if (sec.special == 2)
+			spawnstrobeflash(sec, FASTDARK, 0);
+		else if (sec.special == 3)
+			spawnstrobeflash(sec, SLOWDARK, 0);
+		else if (sec.special == 4) {
+			spawnstrobeflash(sec, FASTDARK, 0);
+			sec.special = 4;
+		} else if (sec.special == 8)
+			spawnglowinglight(sec);
+		else if (sec.special == 10)
+			spawndoorclosein30(sec);
+		else if (sec.special == 12)
+			spawnstrobeflash(sec, SLOWDARK, 1);
+		else if (sec.special == 13)
+			spawnstrobeflash(sec, FASTDARK, 1);
+		else if (sec.special == 14)
+			spawndoorraisein5mins(sec);
+		else if (sec.special == 17)
+			spawnfireflicker(sec);
+	}
+}
+
+# vanilla EV_LightTurnOn (p_spec.c): set tagged sectors to bright
+# (0 = brightest surrounding).  S1-35 passes 35.
+evlightturnon(li, bright: int): int
+{
+	rtn := 0;
+	for (i := 0; i < len lev.sectors; i++) {
+		if (lev.sectors[i].tag != lev.lines[li].tag)
+			continue;
+		rtn = 1;
+		if (bright == 0) {
+			bright = 0;
+			for (j := 0; j < len lev.lines; j++) {
+				ld := lev.lines[j];
+				other := ld.frontsector;
+				if (ld.frontsector == lev.sectors[i]) {
+					if (ld.backsector == lev.sectors[i])
+						continue;
+					other = ld.backsector;
+				} else if (ld.backsector == lev.sectors[i]) {
+					other = ld.frontsector;
+				} else
+					continue;
+				if (other == nil)
+					continue;
+				if (other.lightlevel > bright)
+					bright = other.lightlevel;
+			}
+		}
+		lev.sectors[i].lightlevel = bright;
+	}
+	return rtn;
+}
+
+# vanilla P_CrossSpecialLine walkover subset (p_spec.c): W1 36/2/8/5/22/16/39/125
+# (clear), WR 90/86/91/98/88/76/82/97/126 (retrigger).  The non-player gate allows
 # only teleport/door/plat specials (the missile-type inner gate comes
 # with weapons, milestone 9); secrets count in milestone 14.
 crossspecialline(mo: ref Mobj, li, side: int)
@@ -1676,6 +2083,22 @@ crossspecialline(mo: ref Mobj, li, side: int)
 		lc := lev.lines[li];
 		lc.special = 0;
 		lev.lines[li] = lc;
+	} else if (ld.special == 16) {		# W1 close door 30
+		evdodoor(li, VLD_CLOSE30THENOPEN);
+		lc := lev.lines[li];
+		lc.special = 0;
+		lev.lines[li] = lc;
+	} else if (ld.special == 76) {		# WR close door 30 (retrigger)
+		evdodoor(li, VLD_CLOSE30THENOPEN);
+	} else if (ld.special == 82) {		# WR lower floor to lowest
+		evdofloor(li, FL_LOWERFLOORTOWELOWEST);
+	} else if (ld.special == 39 || ld.special == 125) {	# W1 teleport
+		evteleport(li, side, mo);
+		lc := lev.lines[li];
+		lc.special = 0;
+		lev.lines[li] = lc;
+	} else if (ld.special == 97 || ld.special == 126) {	# WR teleport
+		evteleport(li, side, mo);
 	} else if (ld.special == 86) {		# WR open door (retrigger)
 		evdodoor(li, VLD_OPEN);
 	} else if (ld.special == 22) {		# W1 raise-to-nearest plat

@@ -859,3 +859,82 @@ Milestones (each independently testable)
           removed.  Remaining 13: ceilings/crushers, lights (18/35),
           teleport (39/97/125/126), full walkover table (16/23/76/82/
           24/46/47/48...), rest of use/switch table.
+          WALKOVER/SWITCH REMAINDER, PART 4 (W1 close30 16, WR close30
+          76, S1 stairs 7, S1 lower-to-lowest 23, S1 raise-to-nearest
+          18, WR lower-to-lowest 82): evdodoor close30 init (topheight
+          = ceiling, starts closing, dorcls; thinker core already
+          exact), evdofloor lowerFloorToLowest + raiseFloorToNearest
+          branches, crossspecialline 16/76/82, usespecialline 7/23/18.
+          Source corrections logged: 35 is Lights-Very-Dark (lights
+          slice, not floor); 7/16 collide with SECTOR specials of the
+          same number (milestone 14, unrelated); 46 is a gunshot
+          trigger (needs milestone 10 hitscan); 24/47 aren't in E1.
+          Validated headless: W1-16 full close/wait-1050/reopen cycle
+          exact, WR-76 dispatch + zero-motion steady state, S1 stairs
+          13-step chain to exact dests with swap, 23 drop 144->48 with
+          swap, 82 no-op faithful + retained, 18 rises 128->192 and
+          -56->120 with swaps (614's face is a mid texture already
+          SW2, correctly unswapped).  SPECTEST5 PASS (26/26).
+          Harness-only lessons: (a) repeatable-switch reads within 35
+          tics; (b) USE-trace shadows (490 over 520); (c) dormant
+          monsters solid-block walks (verified r20s from info.c;
+          NOCLIP unusable - skips spechit drain); (d) E1M6-602's
+          sec21 pocket unreachable headless (parked shotgunner +
+          tight walls) - recorded steady-state only, all its code
+          paths covered by W206/W868/W348.  No emu left running;
+          harness/logs removed.  Remaining 13: teleport (39/97/125/
+          126), lights (35 + strobe/glow thinkers + SpawnSpecials),
+          ceilings/crushers (zero E1 line demand), gunshot 46 (M10).
+          TELEPORT SUBSYSTEM (W1 39/125, WR 97/126): EV_Teleport
+          (missile/side-1 reject, tag-matched teleportman scan,
+          P_TeleportMove, z=floor, viewz, source+dest fogs with
+          sfx, 18-tic freeze, exit angle, momentum clear),
+          P_TeleportMove (things-only stomp test, no line checks,
+          boss-map30 monster rule via gamemapnum parsed from ExMy
+          name), crossspecialline dispatch (W1 clear, WR retain;
+          monster gate already covered all four).  Divergences
+          documented: player-telefrag kill needs milestone 9
+          P_DamageMobj (blocked destination fails closed; E1 dests
+          verified clear); >20-neighbour overflow N/A here.
+          MF_NOSECTOR mobs skipped in the sprite project loop
+          (vanilla walks sector lists; ours walks the mobj array -
+          without this every teleport dest renders stray sprite).
+          Validated headless: E1M5/E1M8 pads land exact on the man
+          with angle/z/freeze/momentum + 2 fogs each; E1M9 needs its
+          real two-phase flow (W1-2 loop opens the zero-height pad
+          closet  -24->212 first, then walking in fires) - also
+          green.  SPECTEST6 PASS (24/24).
+          REAL ENGINE BUG FOUND BY FOG COUNTS: runthinkers compacted
+          from the pre-tic snapshot, silently dropping anything
+          spawned mid-tic (fogs; same fate awaited missiles/gibs).
+          Fixed by appending live mobjs[n:] survivors after the
+          filtered snapshot (vanilla linked list keeps them).
+          Proved by per-tic probe (216->218 stable).  No emu left
+          running; harness/logs removed.  Remaining 13: lights (35 +
+          strobe/glow + SpawnSpecials), ceilings/crushers (zero E1
+          line demand), gunshot 46 (M10), exotic leftovers (24/47).
+          LIGHTS SLICE, PART 5 (sector thinkers 1/2/3/4/8/10/12/13/14/
+          17, S1 lights-35): unified Light adt (all fields set at
+          spawn - dirty heap) + exact T_FireFlicker/T_LightFlash/
+          T_StrobeFlash/T_Glow, spawners with vanilla phase/count
+          rules, P_FindMinSurroundingLight, EV_LightTurnOn (incl. the
+          bright==0 search branch), door-close30/raise5min spawners
+          reusing the door thinker, P_SpawnSpecials sector scan wired
+          into setuplevel, S1-35 dispatch.  Case 9 (secret count) left
+          for milestone 14; 7/11/16 spawn nothing; fireflicker and
+          10/14/4 have zero E1 demand but ride free on the same
+          machinery.  Validated headless: sync strobe matches an
+          exact 85-tic 128/255 schedule (deterministic anchor), flash
+          values exactly {144,255}, glow in [135,247] on the step-8
+          lattice (quirk verified: T_Glow UP clamps 247+8 back, so the
+          load-time 255 never recurs - engine-exact), async strobes
+          hit exactly {min,max}, S1-35 sets all three tag sectors to
+          35 and clears.  SPECTEST7 PASS (16/16).  Also fixed:
+          MF_NOSECTOR mobs skipped in the sprite project loop
+          (vanilla walks sector lists; ours walks the mobj array, so
+          teleport destinations would render stray sprites).  No emu
+          left running; harness/logs removed.  Remaining 13:
+          ceilings/crushers (ZERO E1 line demand - unvalidated),
+          gunshot 46 (needs milestone 10 hitscan), exotic 24/47
+          (not in E1).  E1 line coverage after this slice: everything
+          except 46 (M10), teleports done, lights done.

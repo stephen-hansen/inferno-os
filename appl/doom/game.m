@@ -90,6 +90,7 @@ Game: module {
 	# floor mover types (p_spec.h floor_e positions)
 	FL_LOWERFLOOR, FL_LOWERFLOORTOWELOWEST, FL_TURBOLOWER: con iota;
 	FL_RAISEFLOOR:	con 3;
+	FL_RAISEFLOORTONEAREST:	con 4;
 	FL_DONUTRAISE:	con 11;
 
 	# switch-button positions (p_spec.h bwhere_e order) and timing
@@ -105,6 +106,15 @@ Game: module {
 
 	# plat status (p_spec.h plat_e order)
 	PLS_UP, PLS_DOWN, PLS_WAITING, PLS_STASIS: con iota;
+
+	# light thinker types (p_lights.c families)
+	LT_FIRE, LT_FLASH, LT_STROBE, LT_GLOW: con iota;
+
+	# light timing (p_spec.h)
+	GLOWSPEED:	con 8;
+	STROBEBRIGHT:	con 5;
+	FASTDARK:	con 15;
+	SLOWDARK:	con 35;
 
 	# per-tic player command (d_ticcmd.h)
 	Ticcmd: adt {
@@ -162,6 +172,7 @@ Game: module {
 	lvltime:	int;			# leveltime
 	prndindex:	int;			# P_Random index
 	gameskill:	int;
+	gamemapnum:	int;		# ExMy map number (teleport boss rule)
 	totalkills, totalitems:	int;
 	scrolllines:	array of int;	# scroll-left linedefs (special 48)
 	nscrolllines:	int;

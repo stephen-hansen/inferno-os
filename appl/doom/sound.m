@@ -11,7 +11,7 @@ Sound: module {
 	# door/use/floor/plat/switch effects (milestone 13 slice)
 	SFX_DOROPN, SFX_DORCLS, SFX_BDOPN, SFX_BDCLS,
 	SFX_OOF, SFX_SWTCHN, SFX_SWTCHX, SFX_STNMOV,
-	SFX_PSTOP, SFX_PSTART: con iota;
+	SFX_PSTOP, SFX_PSTART, SFX_TELEPT: con iota;
 
 	init:	fn(): string;
 

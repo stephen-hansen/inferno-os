@@ -425,8 +425,15 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 	# because offscreen/behind/culled sectors fail the same tests)
 	if (mobs != nil) {
 		lastmobs = mobs;
-		for (i := 0; i < len mobs; i++)
+		for (i := 0; i < len mobs; i++) {
+			# MF_NOSECTOR mobs (teleport destinations) live in no
+			# sector list in vanilla (R_AddSprites walks sectors),
+			# so they never project; skip explicitly here since
+			# this loop walks the whole mobj array instead.
+			if ((mobs[i].flags & inf->MF_NOSECTOR) != 0)
+				continue;
 			projectmo(mobs[i]);
+		}
 	}
 	nsprites = nvis;
 	nmasked = 0;
