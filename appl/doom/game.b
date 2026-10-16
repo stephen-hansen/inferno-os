@@ -1081,7 +1081,8 @@ evdodoor(li, dtype: int): int
 # manual door specials from p_switch.c P_UseSpecialLine
 # (1/26/27/28/31-34/117/118) + S1 exit (11), S1 donut (9),
 # SR plat (62), S1 open door (103), SR raise door (63),
-# S1 raise-to-nearest plat (20), S1 secret exit (51);
+# S1 raise-to-nearest plat (20), S1 secret exit (51),
+# SR turbo lower (70);
 # remaining switches / shoot cases later
 usespecialline(mo: ref Mobj, li, side: int): int
 {
@@ -1118,6 +1119,11 @@ usespecialline(mo: ref Mobj, li, side: int): int
 	if (ld.special == 20) {		# S1 raise-to-nearest + change
 		if (evdoplat(li, PL_RAISETONEARESTANDCHANGE, 0) != 0)
 			changeswitchtexture(li, 0);
+		return 1;
+	}
+	if (ld.special == 70) {		# SR turbo lower (keeps working)
+		if (evdofloor(li, FL_TURBOLOWER) != 0)
+			changeswitchtexture(li, 1);
 		return 1;
 	}
 	if (ld.special == 51) {		# S1 secret exit
@@ -1426,6 +1432,12 @@ evdofloor(li, fltype: int): int
 				f.floordestheight = findhighestfloorsec(sec);
 				if (f.floordestheight != sec.floorheight)
 					f.floordestheight += 8 * FRACUNIT;
+			} else if (fltype == FL_RAISEFLOOR) {
+				f.direction = 1;
+				f.speed = FLOORSPEED;
+				f.floordestheight = findlowestceilingsurrounding(sec);
+				if (f.floordestheight > sec.ceilingheight)
+					f.floordestheight = sec.ceilingheight;
 			}
 			th := ref Thinker(THINK_FLOOR, nil, f, nil, 0);
 			n := len thinkers;
@@ -1628,12 +1640,10 @@ evdoplat(li, pltype, amount: int): int
 	return rtn;
 }
 
-# vanilla P_CrossSpecialLine walkover subset (p_spec.c): 36 W1
-# turboLower (clears) + 88 WR plat (retrigger, stays) + 2 W1 open
-# door (clears) + 90 WR raise door (retrigger) + 8 W1 stairs
-# (clears).  The non-player gate allows only teleport/door/plat
-# specials (the missile-type inner gate comes with weapons,
-# milestone 9); secrets count in milestone 14.
+# vanilla P_CrossSpecialLine walkover subset (p_spec.c): W1 36/2/8/5/22
+# (clear), WR 90/86/91/98/88 (retrigger).  The non-player gate allows
+# only teleport/door/plat specials (the missile-type inner gate comes
+# with weapons, milestone 9); secrets count in milestone 14.
 crossspecialline(mo: ref Mobj, li, side: int)
 {
 	ld := lev.lines[li];
@@ -1661,6 +1671,22 @@ crossspecialline(mo: ref Mobj, li, side: int)
 		lc := lev.lines[li];
 		lc.special = 0;
 		lev.lines[li] = lc;
+	} else if (ld.special == 5) {		# W1 raise floor
+		evdofloor(li, FL_RAISEFLOOR);
+		lc := lev.lines[li];
+		lc.special = 0;
+		lev.lines[li] = lc;
+	} else if (ld.special == 86) {		# WR open door (retrigger)
+		evdodoor(li, VLD_OPEN);
+	} else if (ld.special == 22) {		# W1 raise-to-nearest plat
+		evdoplat(li, PL_RAISETONEARESTANDCHANGE, 0);
+		lc := lev.lines[li];
+		lc.special = 0;
+		lev.lines[li] = lc;
+	} else if (ld.special == 91) {		# WR raise floor (retrigger)
+		evdofloor(li, FL_RAISEFLOOR);
+	} else if (ld.special == 98) {		# WR turbo lower (retrigger)
+		evdofloor(li, FL_TURBOLOWER);
 	} else if (ld.special == 88) {
 		evdoplat(li, PL_DOWNWAITUPSTAY, 0);
 	}

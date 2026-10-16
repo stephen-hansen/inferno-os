@@ -831,3 +831,31 @@ Milestones (each independently testable)
           removed from the tree.  Remaining 13: floors (31/others),
           ceilings/crushers, lights (incl. 35), teleport (39/97),
           full walkover table, S1-62-style timers elsewhere.
+          E1M4/E1M5 FLOOR SLICE, PART 3 (W1 raise floor 5, WR open door
+          86, WR raise floor 91, WR turbo lower 98, SR turbo lower 70,
+          W1 raise-to-nearest plat 22): EV_DoFloor raiseFloor branch
+          (up, dest lowest-surrounding-ceil capped at own ceil),
+          crossspecialline 5/86/22/91/98 (W1 clear, WR retain),
+          usespecialline 70 (turboLower + repeatable swap).  No new
+          mover machinery - all reused.  Deferred with reasons: 46 is
+          a gunshot trigger (needs milestone 10 hitscan path),
+          18/35 are lights (own slice).  Validated headless
+          (throwaway harness): 86 opens 4 tag sectors to 228 exactly,
+          5 lifts 0->104, 98 drops 72->-200, 91 raises -200->72 (the
+          intended lift pair), 70 drops with swap + 35-tic restore,
+          22 rises -24->56 with pic change.  SPECTEST4 PASS (20/20).
+          Two harness-only lessons: (a) walkover tests must route
+          around dormant monsters (no AI yet - an imp/zombie/shotgun
+          farm parked on the 425-427 lines; verified real radii
+          r20/20/20 from info.c, crossed stub 755 through a 40u gap
+          instead); NOCLIP can't substitute (it skips the spechit
+          drain, vanilla-faithful).  (b) dropped-floor staleness is
+          vanilla-exact (floorz refreshes only on successful moves).
+          Also fixed this session: HEAD's .dis set was interface-
+          skewed (doom.dis expected a different View->init than
+          view.dis provided - a prior dirty-tree build committed a
+          mixed set); full clean rebuild from current sources cures
+          it, boot smoke green.  No emu left running; harness/logs
+          removed.  Remaining 13: ceilings/crushers, lights (18/35),
+          teleport (39/97/125/126), full walkover table (16/23/76/82/
+          24/46/47/48...), rest of use/switch table.
