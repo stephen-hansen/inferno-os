@@ -23,6 +23,10 @@ Rend: module {
 		data:	array of byte;	# 64x64 row-major palette indices
 	};
 
+	Anim: adt {
+		istex, base, numpics, speed:	int;
+	};
+
 	Renderer: adt {
 		w, h:	int;
 		centery:	int;
@@ -31,6 +35,16 @@ Rend: module {
 		colormap:	array of byte;	# 34*256 light tables
 		flats:	array of ref Flat;
 		textures:	array of ref Texture;
+
+		# animation tables (vanilla P_InitPicAnims state): per
+		# Renderer, NOT module globals — module loads are
+		# per-instance, so globals set by one module's init are
+		# invisible to ticks/reads through another's (this
+		# silently froze all flat/texture animation).
+		anims:	array of Anim;	# built by animinit
+		nanims:	int;
+		texanim:	array of int;	# [len textures], identity unless animated
+		flatanim:	array of int;	# [len flats], identity unless animated
 
 		# load PLAYPAL, COLORMAP, flats and textures from w;
 		# returns nil or an error
@@ -79,5 +93,5 @@ Rend: module {
 	rdrawspan:	fn(r: ref Renderer, y, x1, x2, light: int,
 				fl: ref Flat, xfrac, yfrac, xstep, ystep: int);
 	rdrawfuzz:	fn(r: ref Renderer, x, yl, yh: int);
-	animtic:	fn(lvltime: int);
+	animtic:	fn(r: ref Renderer, lvltime: int);
 };

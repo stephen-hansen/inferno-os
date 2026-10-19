@@ -482,6 +482,12 @@ play(path: string, wmctxt: ref Draw->Context)
 		game->setcmd(fm, sm, at, btn);
 		game->ticker();
 
+		# vanilla P_UpdateSpecials animate block: advance flat/
+		# texture animation on the shared Renderer (game->ticker
+		# can't — the sim never holds rr, and Rend module tables
+		# are per-load-instance)
+		rend->animtic(rr, game->getleveltime());
+
 		# level-exit flags (S1 exit / secret exit; intermission
 		# is milestone 16, so just announce once for now)
 		if ((game->levexit() != 0 || game->secretexit() != 0) &&

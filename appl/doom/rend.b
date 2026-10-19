@@ -306,9 +306,7 @@ AnimDef: adt {
 	endname, startname:	string;
 	speed:	int;
 };
-Anim: adt {
-	istex, base, numpics, speed:	int;
-};
+# (Anim lives in rend.m: the Renderer adt holds anim tables.)
 animdefs := array[] of {
 	AnimDef(0, "NUKAGE3", "NUKAGE1", 8),
 	AnimDef(0, "FWATER4", "FWATER1", 8),
@@ -333,24 +331,23 @@ animdefs := array[] of {
 	AnimDef(1, "WFALL4", "WFALL1", 8),
 	AnimDef(1, "DBRAIN4", "DBRAIN1", 8),
 };
-anims:	array of Anim;	# built by animinit
-nanims:	int;
-texanim:	array of int;	# [len textures], identity unless animated
-flatanim:	array of int;	# [len flats], identity unless animated
+# (animation tables live on the Renderer adt: module loads are
+# per-instance, so module globals would be invisible across the
+# init/tick/read modules.  See rend.m.)
 
 # build the anim list + identity maps (vanilla P_InitPicAnims: skip
 # when the start lump is missing; skip bad cycles instead of I_Error)
 animinit(r: ref Renderer)
 {
-	anims = array[len animdefs] of Anim;
-	nanims = 0;
-	texanim = array[len r.textures] of int;
-	flatanim = array[len r.flats] of int;
+	r.anims = array[len animdefs] of Anim;
+	r.nanims = 0;
+	r.texanim = array[len r.textures] of int;
+	r.flatanim = array[len r.flats] of int;
 	i, j: int;
 	for (i = 0; i < len r.textures; i++)
-		texanim[i] = i;
+		r.texanim[i] = i;
 	for (i = 0; i < len r.flats; i++)
-		flatanim[i] = i;
+		r.flatanim[i] = i;
 	for (i = 0; i < len animdefs; i++) {
 		d := animdefs[i];
 		base := -1;
@@ -379,25 +376,25 @@ animinit(r: ref Renderer)
 		n := picnum - base + 1;
 		if (n < 2)
 			continue;
-		anims[nanims] = Anim(d.istex, base, n, d.speed);
-		nanims++;
+		r.anims[r.nanims] = Anim(d.istex, base, n, d.speed);
+		r.nanims++;
 	}
 }
 
 # advance animations one leveltic (vanilla P_UpdateSpecials block:
 # pic = base + ((leveltime/speed + i) % numpics))
-animtic(lvltime: int)
+animtic(r: ref Renderer, lvltime: int)
 {
-	if (anims == nil)
+	if (r.anims == nil)
 		return;
-	for (k := 0; k < nanims; k++) {
-		a := anims[k];
+	for (k := 0; k < r.nanims; k++) {
+		a := r.anims[k];
 		for (i := 0; i < a.numpics; i++) {
 			pic := a.base + (lvltime / a.speed + i) % a.numpics;
 			if (a.istex)
-				texanim[a.base + i] = pic;
+				r.texanim[a.base + i] = pic;
 			else
-				flatanim[a.base + i] = pic;
+				r.flatanim[a.base + i] = pic;
 		}
 	}
 }
@@ -460,8 +457,8 @@ Renderer.flat(r: self ref Renderer, name: string): ref Flat
 {
 	for (i := 0; i < len r.flats; i++)
 		if (r.flats[i].name == name) {
-			if (flatanim != nil && i < len flatanim)
-				return r.flats[flatanim[i]];
+			if (r.flatanim != nil && i < len r.flatanim)
+				return r.flats[r.flatanim[i]];
 			return r.flats[i];
 		}
 	return nil;
@@ -471,8 +468,8 @@ Renderer.texture(r: self ref Renderer, name: string): ref Texture
 {
 	for (i := 0; i < len r.textures; i++)
 		if (r.textures[i].name == name) {
-			if (texanim != nil && i < len texanim)
-				return r.textures[texanim[i]];
+			if (r.texanim != nil && i < len r.texanim)
+				return r.textures[r.texanim[i]];
 			return r.textures[i];
 		}
 	return nil;

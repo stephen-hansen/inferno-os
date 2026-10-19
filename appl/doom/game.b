@@ -62,6 +62,9 @@ VDOORWAIT: con 150;
 FLOORSPEED: con FRACUNIT;	# p_spec.h (turboLower uses 4x)
 PLATSPEED: con FRACUNIT;
 PLATWAIT: con 3;		# p_spec.h (x TICRATE)
+MELEERANGE: con 64*FRACUNIT;
+MISSILERANGE: con 32*64*FRACUNIT;
+SKYFLAT: con "F_SKY1";		# map flat marking a sky ceiling (mirrors view.b)
 MAXSPECIALCROSS: con 20;	# p_local.h (no overrun emulation)
 USERANGE: con 64*FRACUNIT;	# P_UseLines reach (p_local.h)
 Door: adt {			# vanilla vldoor_t
@@ -396,6 +399,12 @@ init(): string
 	players = array[MAXPLAYERS] of ref Player;
 	lvltime = 0;
 	prndindex = 0;
+	# resolve the A_Fall action index for doaction (all other A_*
+	# stay no-ops until the M11/12 dispatch table)
+	ACT_FALL = -1;
+	for (i := 0; i < len inf->actnames; i++)
+		if (inf->actnames[i] == "A_Fall")
+			ACT_FALL = i;
 	return nil;
 }
 
@@ -674,11 +683,21 @@ setmobjstate(mo: ref Mobj, state: int): int
 
 doaction(mo: ref Mobj, act: int)
 {
-	# milestone 5 stub: A_Look/A_Chase/weapon routines come with
-	# the AI and psprite milestones; states still advance by tics.
-	mo = mo;
 	if (act == 0)
 		return;
+	if (act == ACT_FALL) {
+		# vanilla A_Fall (p_enemy.c): the corpse hits the ground
+		# and stops blocking movement ("actor is on ground, it can
+		# be walked over").  Fires mid-death-animation (zombie:
+		# DIE3, 10 tics after the kill), so fresh corpses still
+		# block like vanilla.  First live A_* action; the M11/12
+		# dispatch table follows.
+		mo.flags = mo.flags & ~inf->MF_SOLID;
+		return;
+	}
+	# milestone 5 stub: remaining A_Look/A_Chase/weapon routines
+	# come with the AI and psprite milestones; states still
+	# advance by tics.
 }
 
 explodemissile(mo: ref Mobj)
@@ -1308,6 +1327,477 @@ uselines(p: ref Player)
 			return;
 		}
 	}
+}
+
+# --- attacks: hitscan traces, autoaim, missiles (milestone 10) ---
+# Reference: doomgeneric p_map.c (P_AimLineAttack, PTR_AimTraverse,
+# P_LineAttack, PTR_ShootTraverse), p_maputl.c (intercept math),
+# p_mobj.c (P_SpawnMissile, P_SpawnPlayerMissile,
+# P_CheckMissileSpawn), p_spec.c (P_ShootSpecialLine), d_items.c
+# weapon info, p_pspr.c action damage values (GPL-2).
+# Transcribed except: brute-force intercepts over all lines+mobjs
+# (no blockmap/DDA; same side/frac math as vanilla PIT_AddLineIntercepts
+# + its divline/line long/short-trace rule, plus a 1u segment-span gate
+# that vanilla's block prefilter makes redundant), saturating division
+# via fixeddivsat (vanilla FixedDiv can overflow on near-zero depths),
+# and no P_SubstNullMobj (callers never pass nil).  Firing itself
+# is milestone 11's A_ actions; the playerthink hook below fires a
+# vanilla-slope pistol directly as an interim (no psprites/flash/
+# ammo/refire-spread yet, documented in PLAN.done).
+shootthing: ref Mobj;	# P_AimLineAttack / P_LineAttack origin
+linetarget: ref Mobj;	# autoaim result (nil = none)
+shootz: int;		# 16.16 muzzle height (view z + half height + 8u)
+attackrange: int;	# 16.16 trace length
+aimslope: int;		# 16.16 fixed shot slope (P_LineAttack input)
+la_damage: int;		# damage for this shot
+topslope, bottomslope: int;	# 16.16 autoaim window
+ACT_FALL: int;	# inf->actnames index for A_Fall (-1 until init)
+shfrac: array of int;	# intercept fracs, frac-sorted (vanilla order)
+shkind: array of int;	# 0 = linedef, 1 = mobj
+shidx: array of int;	# linedef # / mobjs index
+shn: int;		# intercept count
+
+# point vs divline side, vanilla P_PointOnDivlineSide exactly
+# (p_maputl.c): sign-bit fast path, then FixedMul(dy>>8, dx>>8).
+# collectshoot's thing-diagonal test must use this (vanilla
+# PIT_AddThingIntercepts always does); the line test below picks
+# this or pointonlineside by the vanilla long/short-trace rule.
+pointondivside(x, y, lx, ly, ldx, ldy: int): int
+{
+	return pointondvlineside(x, y, lx, ly, ldx, ldy);
+}
+
+# brute-force P_PathTraverse intercept walk for shots: line
+# crossings (trace endpoints on opposite sides, uselines math) plus
+# thing bbox-diagonal crossings (corner-vs-trace), frac-sorted
+# stable like vanilla P_TraverseIntercepts.
+collectshoot(x1, y1, dx, dy: int)
+{
+	n := len lev.lines + len mobjs;
+	shfrac = array[n] of int;
+	shkind = array[n] of int;
+	shidx = array[n] of int;
+	shn = 0;
+	x2 := x1 + dx;
+	y2 := y1 + dy;
+	# vanilla PIT_AddLineIntercepts long/short-trace rule (same as
+	# slidetrace): long traces test line endpoints vs trace divline,
+	# short traces test trace endpoints vs the line.  Shooting (2048u)
+	# and use (64u) traces are always long; the branch keeps us exact
+	# if a short trace ever comes through.
+	longtrace := dx > 16 * FRACUNIT || dy > 16 * FRACUNIT ||
+		dx < -16 * FRACUNIT || dy < -16 * FRACUNIT;
+	for (i := 0; i < len lev.lines; i++) {
+		v1 := lev.vertices[lev.lines[i].v1];
+		v2 := lev.vertices[lev.lines[i].v2];
+		if (longtrace) {
+			s1 := pointondvlineside(v1.x, v1.y, x1, y1, dx, dy);
+			s2 := pointondvlineside(v2.x, v2.y, x1, y1, dx, dy);
+			if (s1 == s2)
+				continue;	# line isn't crossed
+		} else {
+			s1 := pointonlineside(x1, y1, i);
+			s2 := pointonlineside(x2, y2, i);
+			if (s1 == s2)
+				continue;	# line isn't crossed
+		}
+		frac := interceptvector(x1, y1, dx, dy,
+			v1.x, v1.y, lev.lines[i].dx, lev.lines[i].dy);
+		if (frac < 0 || frac > FRACUNIT)
+			continue;
+		# segment-span gate (same as uselines)
+		hx := x1 + rend->fixedmul(dx, frac);
+		hy := y1 + rend->fixedmul(dy, frac);
+		v2 = lev.vertices[lev.lines[i].v2];
+		if (v1.x < v2.x) {
+			if (hx + FRACUNIT < v1.x || hx - FRACUNIT > v2.x)
+				continue;
+		} else {
+			if (hx + FRACUNIT < v2.x || hx - FRACUNIT > v1.x)
+				continue;
+		}
+		if (v1.y < v2.y) {
+			if (hy + FRACUNIT < v1.y || hy - FRACUNIT > v2.y)
+				continue;
+		} else {
+			if (hy + FRACUNIT < v2.y || hy - FRACUNIT > v1.y)
+				continue;
+		}
+		j := shn;
+		while (j > 0 && shfrac[j-1] > frac) {
+			shfrac[j] = shfrac[j-1];
+			shkind[j] = shkind[j-1];
+			shidx[j] = shidx[j-1];
+			j--;
+		}
+		shfrac[j] = frac;
+		shkind[j] = 0;
+		shidx[j] = i;
+		shn++;
+	}
+	for (i = 0; i < len mobjs; i++) {
+		mo := mobjs[i];
+		if (mo.removed)
+			continue;
+		r := mo.radius;
+		# corner-to-corner cross-section, diagonal picked by
+		# trace direction sign (vanilla PIT_AddThingIntercepts)
+		c1x, c1y, c2x, c2y: int;
+		if ((dx ^ dy) > 0) {
+			c1x = mo.x - r;
+			c1y = mo.y + r;
+			c2x = mo.x + r;
+			c2y = mo.y - r;
+		} else {
+			c1x = mo.x - r;
+			c1y = mo.y - r;
+			c2x = mo.x + r;
+			c2y = mo.y + r;
+		}
+		if (pointondivside(c1x, c1y, x1, y1, dx, dy) ==
+		    pointondivside(c2x, c2y, x1, y1, dx, dy))
+			continue;	# diagonal isn't crossed
+		tfrac := interceptvector(x1, y1, dx, dy,
+			c1x, c1y, c2x - c1x, c2y - c1y);
+		if (tfrac < 0 || tfrac > FRACUNIT)
+			continue;
+		k := shn;
+		while (k > 0 && shfrac[k-1] > tfrac) {
+			shfrac[k] = shfrac[k-1];
+			shkind[k] = shkind[k-1];
+			shidx[k] = shidx[k-1];
+			k--;
+		}
+		shfrac[k] = tfrac;
+		shkind[k] = 1;
+		shidx[k] = i;
+		shn++;
+	}
+}
+
+# vanilla PTR_AimTraverse over the collected intercepts; narrows
+# the slope window at portals, locks linetarget/aimslope on the
+# first shootable thing inside it.  Returns 1 to continue, 0 stop.
+aimtraverse(k: int): int
+{
+	if (shkind[k] == 0) {
+		li := shidx[k];
+		ld := lev.lines[li];
+		if ((ld.flags & ML_TWOSIDED) == 0)
+			return 0;		# stop: solid wall ends sight
+		lineopening(li);
+		if (openbottom >= opentop)
+			return 0;		# stop: closed portal
+		dist := rend->fixedmul(attackrange, shfrac[k]);
+		if (ld.backsector == nil ||
+		    ld.frontsector.floorheight != ld.backsector.floorheight) {
+			slope := fixeddivsat(openbottom - shootz, dist);
+			if (slope > bottomslope)
+				bottomslope = slope;
+		}
+		if (ld.backsector == nil ||
+		    ld.frontsector.ceilingheight != ld.backsector.ceilingheight) {
+			cslope := fixeddivsat(opentop - shootz, dist);
+			if (cslope < topslope)
+				topslope = cslope;
+		}
+		if (topslope <= bottomslope)
+			return 0;		# stop: window closed
+		return 1;
+	}
+	th := mobjs[shidx[k]];
+	if (th == shootthing)
+		return 1;			# can't shoot self
+	if ((th.flags & inf->MF_SHOOTABLE) == 0)
+		return 1;			# corpse or decoration
+	dist := rend->fixedmul(attackrange, shfrac[k]);
+	thingtopslope := fixeddivsat(th.z + th.height - shootz, dist);
+	if (thingtopslope < bottomslope)
+		return 1;			# shot over the thing
+	thingbotslope := fixeddivsat(th.z - shootz, dist);
+	if (thingbotslope > topslope)
+		return 1;			# shot under the thing
+	if (thingtopslope > topslope)
+		thingtopslope = topslope;
+	if (thingbotslope < bottomslope)
+		thingbotslope = bottomslope;
+	aimslope = (thingtopslope + thingbotslope) / 2;
+	linetarget = th;
+	return 0;				# don't go any farther
+}
+
+# vanilla P_AimLineAttack: autoaim slope to the first shootable in
+# the slope window, else 0.  Angle is BAM; distance is 16.16.
+paimlineattack(mo: ref Mobj, angle, distance: int): int
+{
+	shootthing = mo;
+	a := (angle >> ANGLETOFINESHIFT) & FINEMASK;
+	x2 := mo.x + (distance >> FRACBITS) * inf->finesine[(a + 2048) & FINEMASK];
+	y2 := mo.y + (distance >> FRACBITS) * inf->finesine[a];
+	dx := x2 - mo.x;
+	dy := y2 - mo.y;
+	shootz = mo.z + (mo.height >> 1) + 8 * FRACUNIT;
+	topslope = 100 * FRACUNIT / 160;
+	bottomslope = -100 * FRACUNIT / 160;
+	attackrange = distance;
+	linetarget = nil;
+	aimslope = 0;
+	collectshoot(mo.x, mo.y, dx, dy);
+	for (k := 0; k < shn; k++)
+		if (aimtraverse(k) == 0)
+			break;
+	if (linetarget != nil)
+		return aimslope;
+	return 0;
+}
+
+# vanilla P_ShootSpecialLine: gunfire impact on special lines.
+# Only 46 (open door) responds to non-players; 24/47 are free.
+useshootspecialline(li: int): int
+{
+	ld := lev.lines[li];
+	if (shootthing.player == nil) {
+		if (ld.special != 46)
+			return 0;
+	}
+	if (ld.special == 24) {
+		evdofloor(li, FL_RAISEFLOOR);
+		changeswitchtexture(li, 0);
+		return 1;
+	} else if (ld.special == 46) {
+		evdodoor(li, VLD_OPEN);
+		changeswitchtexture(li, 1);
+		return 1;
+	} else if (ld.special == 47) {
+		evdoplat(li, PL_RAISETONEARESTANDCHANGE, 0);
+		changeswitchtexture(li, 0);
+		return 1;
+	}
+	return 0;
+}
+
+# vanilla PTR_ShootTraverse over the collected intercepts; stop (0)
+# at the first wall/thing the fixed aimslope actually reaches.
+# Returns 1 to continue, 0 to stop.
+shoottraverse(k: int, x1, y1, dx, dy: int): int
+{
+	if (shkind[k] == 0) {
+		li := shidx[k];
+		ld := lev.lines[li];
+		if (ld.special != 0)
+			useshootspecialline(li);
+		if ((ld.flags & ML_TWOSIDED) == 0)
+			return shootwall(li, x1, y1, dx, dy, shfrac[k]);
+		lineopening(li);
+		hit := 0;
+		slope := 0;
+		if (ld.backsector == nil) {
+			slope = fixeddivsat(openbottom - shootz, rend->fixedmul(attackrange, shfrac[k]));
+			if (slope > aimslope)
+				hit = 1;
+			else {
+				slope = fixeddivsat(opentop - shootz, rend->fixedmul(attackrange, shfrac[k]));
+				if (slope < aimslope)
+					hit = 1;
+			}
+		} else {
+			if (ld.frontsector.floorheight != ld.backsector.floorheight) {
+				slope = fixeddivsat(openbottom - shootz, rend->fixedmul(attackrange, shfrac[k]));
+				if (slope > aimslope)
+					hit = 1;
+			}
+			if (hit == 0 && ld.frontsector.ceilingheight != ld.backsector.ceilingheight) {
+				slope = fixeddivsat(opentop - shootz, rend->fixedmul(attackrange, shfrac[k]));
+				if (slope < aimslope)
+					hit = 1;
+			}
+		}
+		if (hit != 0)
+			return shootwall(li, x1, y1, dx, dy, shfrac[k]);
+		return 1;		# shot continues past the portal
+	}
+	th := mobjs[shidx[k]];
+	if (th == shootthing)
+		return 1;			# can't shoot self
+	if ((th.flags & inf->MF_SHOOTABLE) == 0)
+		return 1;			# corpse or decoration
+	dist := rend->fixedmul(attackrange, shfrac[k]);
+	thingtopslope := fixeddivsat(th.z + th.height - shootz, dist);
+	if (thingtopslope < aimslope)
+		return 1;			# shot over the thing
+	thingbotslope := fixeddivsat(th.z - shootz, dist);
+	if (thingbotslope > aimslope)
+		return 1;			# shot under the thing
+	frac := shfrac[k] - fixeddivsat(10 * FRACUNIT, attackrange);
+	x := x1 + rend->fixedmul(dx, frac);
+	y := y1 + rend->fixedmul(dy, frac);
+	z := shootz + rend->fixedmul(aimslope, rend->fixedmul(frac, attackrange));
+	if ((th.flags & inf->MF_NOBLOOD) != 0)
+		pspawnpuff(x, y, z);
+	else
+		pspawnblood(x, y, z, la_damage);
+	if (la_damage != 0)
+		pdamagemobj(th, shootthing, shootthing, la_damage);
+	return 0;				# don't go any farther
+}
+
+# vanilla PTR_ShootTraverse hitline branch: back the hit point off
+# the wall, check sky (no puff, stop), else spawn a puff and stop.
+shootwall(li, x1, y1, dx, dy, frac: int): int
+{
+	frac = frac - fixeddivsat(4 * FRACUNIT, attackrange);
+	x := x1 + rend->fixedmul(dx, frac);
+	y := y1 + rend->fixedmul(dy, frac);
+	z := shootz + rend->fixedmul(aimslope, rend->fixedmul(frac, attackrange));
+	fsec := lev.lines[li].frontsector;
+	if (fsec.ceilingtexture == SKYFLAT) {
+		if (z > fsec.ceilingheight)
+			return 0;		# don't shoot the sky
+		bs := lev.lines[li].backsector;
+		if (bs != nil && bs.ceilingtexture == SKYFLAT)
+			return 0;		# sky hack wall
+	}
+	pspawnpuff(x, y, z);
+	return 0;				# don't go any farther
+}
+
+# vanilla P_LineAttack: hitscan along angle with a fixed slope.
+plineattack(mo: ref Mobj, angle, distance, slope, damage: int)
+{
+	shootthing = mo;
+	la_damage = damage;
+	a := (angle >> ANGLETOFINESHIFT) & FINEMASK;
+	x2 := mo.x + (distance >> FRACBITS) * inf->finesine[(a + 2048) & FINEMASK];
+	y2 := mo.y + (distance >> FRACBITS) * inf->finesine[a];
+	dx := x2 - mo.x;
+	dy := y2 - mo.y;
+	shootz = mo.z + (mo.height >> 1) + 8 * FRACUNIT;
+	attackrange = distance;
+	aimslope = slope;
+	linetarget = nil;
+	collectshoot(mo.x, mo.y, dx, dy);
+	for (k := 0; k < shn; k++)
+		if (shoottraverse(k, mo.x, mo.y, dx, dy) == 0)
+			break;
+}
+
+# vanilla P_SpawnPuff / P_SpawnBlood (p_mobj.c): impact markers.
+# Puffs float up slowly; blood twice as fast.  Melee-range puffs use
+# the S_PUFF3 frame; weak blood hits use S_BLOOD2/3.
+pspawnpuff(x, y, z: int)
+{
+	z += (prandom() - prandom()) << 10;
+	th := spawnmobj(x, y, z, inf->MT_PUFF);
+	th.momz = FRACUNIT;
+	th.tics -= prandom() & 3;
+	if (th.tics < 1)
+		th.tics = 1;
+	if (attackrange == MELEERANGE)
+		setmobjstate(th, inf->S_PUFF3);
+}
+
+pspawnblood(x, y, z, damage: int)
+{
+	z += (prandom() - prandom()) << 10;
+	th := spawnmobj(x, y, z, inf->MT_BLOOD);
+	th.momz = 2 * FRACUNIT;
+	th.tics -= prandom() & 3;
+	if (th.tics < 1)
+		th.tics = 1;
+	if (damage <= 12 && damage >= 9)
+		setmobjstate(th, inf->S_BLOOD2);
+	else if (damage < 9)
+		setmobjstate(th, inf->S_BLOOD3);
+}
+
+# vanilla P_SpawnMissile (p_mobj.c): explode-outward missile aimed at
+# dest (with shadow-fuzz), then CheckMissileSpawn nudges it forward.
+pspawnmissile(source, dest: ref Mobj, typ: int): ref Mobj
+{
+	th := spawnmobj(source.x, source.y, source.z + 4 * 8 * FRACUNIT, typ);
+	if (th.info.seesound != 0)
+		sound->startsound(th.x, th.y, th.info.seesound);
+	th.target = source;
+	an := pointtoangle2(source.x, source.y, dest.x, dest.y);
+	if ((dest.flags & inf->MF_SHADOW) != 0)
+		an += (prandom() - prandom()) << 20;
+	th.angle = an;
+	a := (an >> ANGLETOFINESHIFT) & FINEMASK;
+	th.momx = rend->fixedmul(th.info.speed, inf->finesine[(a + 2048) & FINEMASK]);
+	th.momy = rend->fixedmul(th.info.speed, inf->finesine[a]);
+	dist := approxdistance(dest.x - source.x, dest.y - source.y);
+	dist = dist / th.info.speed;
+	if (dist < 1)
+		dist = 1;
+	th.momz = (dest.z - source.z) / dist;
+	pcheckmissilespawn(th);
+	return th;
+}
+
+# vanilla P_SpawnPlayerMissile: triple-try autoaim, else straight.
+# slope in 16.16; vanilla an adjustments are BAM (<<26 on angle_t).
+pspawnplayermissile(source: ref Mobj, typ: int): ref Mobj
+{
+	an := source.angle;
+	slope := paimlineattack(source, an, 16 * 64 * FRACUNIT);
+	if (linetarget == nil) {
+		an += 1 << 26;
+		slope = paimlineattack(source, an, 16 * 64 * FRACUNIT);
+		if (linetarget == nil) {
+			an -= 2 << 26;
+			slope = paimlineattack(source, an, 16 * 64 * FRACUNIT);
+		}
+		if (linetarget == nil) {
+			an = source.angle;
+			slope = 0;
+		}
+	}
+	th := spawnmobj(source.x, source.y, source.z + 4 * 8 * FRACUNIT, typ);
+	if (th.info.seesound != 0)
+		sound->startsound(th.x, th.y, th.info.seesound);
+	th.target = source;
+	th.angle = an;
+	a := (an >> ANGLETOFINESHIFT) & FINEMASK;
+	th.momx = rend->fixedmul(th.info.speed, inf->finesine[(a + 2048) & FINEMASK]);
+	th.momy = rend->fixedmul(th.info.speed, inf->finesine[a]);
+	th.momz = rend->fixedmul(th.info.speed, slope);
+	pcheckmissilespawn(th);
+	return th;
+}
+
+# vanilla P_CheckMissileSpawn: tics jitter, half-step nudge, explode
+# on immediate contact.
+pcheckmissilespawn(th: ref Mobj)
+{
+	th.tics -= prandom() & 3;
+	if (th.tics < 1)
+		th.tics = 1;
+	th.x += th.momx >> 1;
+	th.y += th.momy >> 1;
+	th.z += th.momz >> 1;
+	if (!trymove(th, th.x, th.y))
+		explodemissile(th);
+}
+
+# interim direct-fire pistol on the BT_ATTACK rising edge (vanilla
+# A_FirePistol/P_BulletSlope/P_GunShot minus psprites: triple-try
+# autoaim, exact first-shot aim, vanilla 5d3; flash/ammo/refire
+# spread stay milestone 11's job)
+firepistol(p: ref Player)
+{
+	an := p.mo.angle;
+	slope := paimlineattack(p.mo, an, MISSILERANGE);
+	if (linetarget == nil) {
+		an += 1 << 26;
+		slope = paimlineattack(p.mo, an, MISSILERANGE);
+		if (linetarget == nil) {
+			an -= 2 << 26;
+			slope = paimlineattack(p.mo, an, MISSILERANGE);
+		}
+	}
+	damage := 5 * ((prandom() % 3) + 1);
+	plineattack(p.mo, p.mo.angle, MISSILERANGE, slope, damage);
+	sound->startsound(p.mo.x, p.mo.y, sound->SFX_PISTOL);
 }
 
 # ---------------------------------------------------------------------------
@@ -2349,6 +2839,18 @@ playerthink(p: ref Player)
 
 	calcheight(p);
 
+	# weapon change requests (vanilla P_PlayerThink order: change,
+	# then use, then psprites; validation + switch animation land
+	# with milestone 11, which consumes pendingweapon)
+	if ((p.cmd.buttons & BT_CHANGE) != 0) {
+		newweapon := (p.cmd.buttons & BT_WEAPONMASK) >> BT_WEAPONSHIFT;
+		if (newweapon == WP_CHAINSAW && p.weaponowned[WP_CHAINSAW] != 0 &&
+		    !(p.readyweapon == WP_CHAINSAW && p.powers[PW_STRENGTH] != 0))
+			newweapon = WP_FIST;
+		if (p.weaponowned[newweapon] != 0 && newweapon != p.readyweapon)
+			p.pendingweapon = newweapon;
+	}
+
 	# use-lines on the BT_USE rising edge (vanilla P_PlayerThink);
 	# weapon change / specials damage later
 	if ((p.cmd.buttons & BT_USE) != 0) {
@@ -2358,6 +2860,16 @@ playerthink(p: ref Player)
 		}
 	} else
 		p.usedown = 0;
+
+	# attack on the BT_ATTACK rising edge; interim direct-fire pistol
+	# (milestone 11 wires A_FirePistol psprite states instead)
+	if ((p.cmd.buttons & BT_ATTACK) != 0) {
+		if (p.attackdown == 0) {
+			p.attackdown = 1;
+			firepistol(p);
+		}
+	} else
+		p.attackdown = 0;
 
 	# P_PlayerInSpecialSector: later
 }
@@ -2404,7 +2916,14 @@ xymovement(mo: ref Mobj)
 			if (mo.player != nil) {
 				slidemove(mo);
 			} else if ((mo.flags & inf->MF_MISSILE) != 0) {
-				# sky hack skipped: no skyflatnum yet
+				# vanilla sky hack (p_mobj.c): missiles hitting
+				# sky ceilings vanish silently (no explosion)
+				if (ceilingline >= 0 && ceilingline < len lev.lines &&
+				    lev.lines[ceilingline].backsector != nil &&
+				    lev.lines[ceilingline].backsector.ceilingtexture == SKYFLAT) {
+					removemobj(mo);
+					return;
+				}
 				explodemissile(mo);
 				return;
 			} else {
@@ -3204,8 +3723,31 @@ pitcheckthing(thing: ref Mobj): int
 		setmobjstate(tmthing, tmthing.info.spawnstate);
 		return 0;
 	}
-	# missile contact path lands in milestone 10 (species rules,
-	# z-over/under, same-target checks need the trace machinery)
+	# missiles can hit other things (vanilla PIT_CheckThing):
+	# z over/under pass through, same-species non-players explode
+	# without damage (the false return explodes via xymovement),
+	# non-shootables don't block unless solid, else damage + stop.
+	# (deh_species_infighting is OUT of scope: always the default.)
+	if ((tmthing.flags & inf->MF_MISSILE) != 0) {
+		if (tmthing.z > thing.z + thing.height)
+			return 1;		# overhead
+		if (tmthing.z + tmthing.height < thing.z)
+			return 1;		# underneath
+		tgt := tmthing.target;
+		if (tgt != nil && (tgt.typ == thing.typ ||
+		    (tgt.typ == inf->MT_KNIGHT && thing.typ == inf->MT_BRUISER) ||
+		    (tgt.typ == inf->MT_BRUISER && thing.typ == inf->MT_KNIGHT))) {
+			if (thing == tgt)
+				return 1;
+			if (thing.typ != inf->MT_PLAYER)
+				return 0;	# explode, but do no damage
+		}
+		if ((thing.flags & inf->MF_SHOOTABLE) == 0)
+			return (thing.flags & inf->MF_SOLID) == 0;
+		damage := ((prandom() % 8) + 1) * tmthing.info.damage;
+		pdamagemobj(thing, tmthing, tgt, damage);
+		return 0;			# don't traverse any more
+	}
 	# special pickup (vanilla: MF_PICKUP toucher consumes)
 	if ((thing.flags & inf->MF_SPECIAL) != 0) {
 		solid := thing.flags & inf->MF_SOLID;
@@ -3591,7 +4133,9 @@ ticker()
 	# Animated textures/flats advance here (vanilla P_UpdateSpecials
 	# animate block); full specials come with 13.
 	lvltime = lvltime + 1;
-	rend->animtic(lvltime);
+	# animated flats/textures advance in doom.b after the tic
+	# (rend->animtic needs the shared Renderer adt, which the
+	# game sim never holds — module loads are per-instance).
 	# vanilla P_UpdateSpecials line-effects subset: scroll-left
 	# textureoffset advances 1 texel/tic on side 0 (E1M1 armor
 	# pedestal etc.).  Full dispatch is milestone 13.

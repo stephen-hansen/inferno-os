@@ -986,3 +986,198 @@ Milestones (each independently testable)
           Known-unvalidated (no E1 path exists): godmode/invuln
           branches, keycard touches, pain/death sounds (ride M11/12
           A_ actions by design).
+          M10 ATTACK SUBSTRATE (hitscan, autoaim, missiles, use-fire;
+          firing itself stays M11's A_ actions): collectshoot brute-
+          force intercept walk (all lines+mobjs, frac-sorted stable),
+          paimlineattack (100/160 window, linetarget/aimslope),
+          plineattack + shoottraverse with useshootspecialline (24/46/
+          47) and the wall/sky branch, pspawnpuff/pspawnblood (melee
+          PUFF3, blood 9..12/2 frames), pspawnmissile/pspawnplayermissile
+          (triple-try autoaim +-1<<26, straight fallback) +
+          pcheckmissilespawn, pitcheckthing MF_MISSILE contact branch
+          (z over/under, same-species Knight/Baron cross-check, target-
+          self pass, non-shootable solids block / non-solids pass,
+          1d8 x info.damage + explode-stop; deh_species_infighting is
+          OUT of scope), interim firepistol on the BT_ATTACK rising
+          edge (exact aim, slope 0, vanilla 5d3, pistol SFX), playerthink
+          attack hook, MELEERANGE/MISSILERANGE/SKYFLAT consts, sound.m
+          SFX ids re-cut to the sounds.h order so mobjinfo seesound/
+          deathsound numbers pass through (bodies still M17 stubs).
+          Divergences noted in code: no blockmap/DDA (brute force +
+          1u span gate), saturating fixeddivsat (vanilla FixedDiv can
+          overflow on near-zero depths), no P_SubstNullMobj.
+          NUMERIC VALIDATION FIRST (/tmp/opencode/shoot_oracle.py):
+          true-DDA vanilla walk transcribed from p_maputl.c (MAPBLOCK
+          SHIFT 23/BTOFRAC 7, saturating FixedDiv incl. INT_MIN edge,
+          origin<<16, boundary nudge) over E1M1 BLOCKMAP vs the port
+          formulation, both with exact finesine table.  Oracle caught
+          TWO real engine bugs before any edit: (1) collectshoot used
+          P_PointOnLineSide (trace ends vs line) where vanilla uses
+          P_PointOnDivlineSide (line ends vs trace) for all traces
+          longer than 16u (all shooting + use) — the functions differ
+          in both the sign-bit fast path and >>8 vs >>16 rounding;
+          corner-graze rays picked the neighboring wall (line 4@1447
+          vs vanilla line 1@1448, same outcome kind, 1 frac apart).
+          Fixed with the vanilla long/short branch (mirrors slidetrace)
+          + pointondivside delegated to pointondvlineside; (2) oracle's
+          own cell-index and div-saturation bugs found by the same
+          battery (map-vs-fixed unit mixup, wrapping fdiv_c, INT_MIN
+          off-by-one).  AFTER the fix: 109/109 AGREE (16 spawn dirs +
+          16 use-range + aimed pistol/melee at a zombie + 64 courtyard
+          dirs with a zombie + elevated imp; plus a positive-slope
+          autoaim case 36327 exact both sides).  uselines deliberately
+          UNCHANGED: its LineSide formulation misses some later
+          intercepts vs vanilla (23/64 use dirs) but first-hit — the
+          only thing its nearest-first oof/use walk consumes — agrees
+          64/64 and the M13 exit harness passed end-to-end; the
+          329/330/331 cluster tuning stays as validated.
+          HEADLESS HARNESS (TEMP hooks removed after, tree reverified
+          clean): SPECTEST10 PASS — pistol kills a zombie at oracle-
+          verified (1056,-3400) (first-shot damage in {5,10,15}, death,
+          killcount 1), troopshot damages a fresh victim 20->14 and
+          explodes (missile-contact branch), E1M2 line 572 G46 shot
+          opens the tagged door (ceil -16->44).  Harness-only lessons:
+          spawn leaves attackdown=1 (vanilla playerreborn), so the
+          first BT_ATTACK edge is swallowed — clear the latch before
+          measuring; place victims teleport-style (x/y + setthingpos +
+          floorz/z, bypassing trymove dropoff rules) since raw x/y
+          assignment leaves stale z/floorz (z=24 fall-through confused
+          the first runs); monster corpses keep MF_SOLID (vanilla),
+          so contact tests need a corpse-free ray; the first "victim"
+          found near spawn is a barrel (typ 2035, hp 20), prefer a
+          zombie for kill tests.  Residuals by design: firepistol is
+          exact-aim slope-0 (spread/autoaim/multi-try ride M11's
+          A_Fire* actions), monster-fired missiles need M12 AI, only
+          E1 line 572 exercises G46, thing-radius block overhang (DDA-
+          unvisited origin cells) is brute-forced until M24's parity
+          harness.  Boot smoke clean (t=560 idle, no errors, no emu).
+          M10 FOLLOW-UP, TWO USER REPORTS (both confirmed real):
+          (1) dead enemies block movement: NOT a bug — vanilla-faithful.
+          P_KillMobj clears MF_SOLID for players only (p_inter.c:703
+          is inside `if (target->player)`), PIT_CheckThing has no
+          corpse exemption, so monster corpses block XY movement in
+          real Doom too (must walk around; height>>=2 only lets shots
+          and missiles pass OVER, via the slope/z windows already
+          validated).  BUT the report exposed a REAL divergence
+          underneath: vanilla clears corpse solidity mid-death-
+          animation via A_Fall ("actor is on ground, it can be walked
+          over", p_enemy.c), fired from exactly one frame in every
+          monster death/xdeath sequence (zombie DIE3/XDIE3, imp
+          DIE4/XDIE4, demon DIE4, caco DIE5, baron DIE4...), while our
+          doaction no-op left corpses solid FOREVER.  Fix: ACT_FALL
+          index resolved from inf->actnames at init; doaction handles
+          A_Fall by clearing MF_SOLID (first live A_* action; M11/12
+          table still to come).  Barrels have no A_Fall frame and stay
+          solid in both.  Validated headless (TEMP hooks removed
+          after): SPECTEST12 PASS — fresh zombie corpse solid at
+          death, clear lands exactly on DIE3 entry (state 189+2, whose
+          table action resolves to A_Fall), ~death+8 within slop,
+          player walks through the fallen cell (dist 9), barrel
+          corpse still solid after 40 tics.  Harness-only lessons:
+          kill-shot thrust shoves live targets AND corpses, so track
+          victims by ref not coords; the harness needs its own
+          `load Info` + `inf->init()` (module loads are per-instance —
+          the view.b lesson in the porting notes bit again: constants
+          work, variables come back empty).
+          (2) can't shoot above/below the plane: real gap — interim
+          firepistol hardcoded slope 0 and never called the (already
+          implemented) autoaim.  Fix: firepistol now mirrors vanilla
+          P_BulletSlope exactly (straight aim, then +-1<<26 retries,
+          MISSILERANGE) and passes the slope to plineattack (first-shot
+          exact aim like P_GunShot accurate=true; flash/ammo/refire
+          spread stay M11).  Validated headless: SPECTEST11 PASS —
+          victim 64 above: engine aim slope +14873 == oracle vanilla
+          walk to the unit, damaged 20->5; player 64 up shooting down:
+          slope -23979 exact, victim 5->-1.  Below-plane math was
+          already oracle-covered both directions (negative slopes in
+          every ground battery, positive in the high-vis case).
+          Residuals: monster-fired missiles still need M12 AI; weapon
+          spread/refire/psprites still M11.  Boot smoke clean (t=560
+          idle, no errors, no emu).
+          USER-REPORTED RENDER BUG (doomsnap0-5, E1M1 nukage pool):
+          two symptoms, opposite verdicts.
+          (1) NUKAGE NOT ANIMATING: real engine bug, fixed.  Root
+          cause was architectural, not the anim math (which was
+          vanilla-exact and now measured cycling 50,52,51-exact):
+          anims/nanims/texanim/flatanim were Rend MODULE globals,
+          but module loads are per-instance — doom.b's Renderer.init
+          ran animinit on instance D, the game ticker advanced
+          instance G (anims==nil -> silent early-out), and view.b
+          read instance V (flatanim nil -> raw flat).  Three ships in
+          the night; flats never animated (same freeze hit wall
+          texture anims).  Fix: tables moved onto the shared Renderer
+          adt (rend.m fields; adt travels with the rr handle across
+          modules), animtic(r, lvltime) now ticked by doom.b after
+          game->ticker() (the sim never holds rr).  Validated
+          end-to-end (TEMP harness removed after): full view render
+          of the pool overlook, 614 window bytes differ across 8
+          tics, zero differ after 24 tics (exact 3-frame cycle
+          closure — rules out stand-frame flips, which are 20-tic).
+          Lesson for the porting notes: module globals are
+          per-load-instance; shared mutable state belongs on adts
+          passed by handle (rr/game pattern), never on modules.
+          (2) 1-COLUMN NUKAGE STRIPE (x=124, snaps 1-5; x=100/89,
+          snap0): VERDICT vanilla-faithful slime-trail artifact, no
+          code change.  Exhaustive analysis: the stripe is the pool
+          plane (NUKAGE3, sector 57 floor -48) showing through rows
+          where the neighbor columns show sector-60 brown
+          (FLOOR5_2, floor -24).  Per-column replay with engine-exact
+          math (scale bases from the snapshot DS records, WAD
+          heights/textures, camera) reproduces the framebuffer
+          exactly: at x=124 the far platform-top 1S wall (ld=269,
+          ~716u, visited first per BSP order) terminally closes the
+          column before the nearer 57|60 boundary wall (ld=182,
+          ~200u) can mark sector-60's floor, so only the pool mark
+          ([118,200], laid earlier by the platform front ld=201)
+          survives; at x=123 the boundary wall marks brown first
+          ([134,200]) and the pool mark stops at its top edge.
+          Every link verified against doomgeneric source: BSP walk
+          order (R_RenderBSPNode + R_CheckBBox prune is perf-only),
+          1S terminal close (r_segs.c: ceilingclip=h, floorclip=-1),
+          mark gating/windows (r_segs.c:315,345 + 219+), span merge
+          and plane draw order — all decision-identical, so vanilla
+          renders the byte-identical stripe at this vertex-exact
+          column.  Deliberately NOT "fixed": clamping 1S closes to
+          drawn rows would diverge from vanilla and break the
+          snapshot-validated sprite-clip model.  The imp alignment
+          in the snaps is viewpoint coincidence (imp stands on the
+          platform behind the boundary vertex).  Snap0 x=89 is
+          ordinary wall-edge texel variation, not the same defect
+          (no cross-column run).
+          FOLLOW-UP (user disputed vanilla-faithful + recent):
+          pushed much harder.  Bisection via headless warp-render
+          harness (TEMP, outside repo): stripe present in EVERY
+          testable build back through Oct 13 (6e097f45) — spanning
+          pre-gating, pre-near-plane-snap, pre-shut-skip, pre-view-
+          gates, pre-per-column-light code.  Predates all recent
+          work (M13/M10/A_Fall/autoaim/anim touched only game.b/
+          sound.m/doom.b/rend.b; the anim fix postdates the snaps).
+          Mechanism nailed to the frame level and cross-checked
+          against the snapshot's own drawseg records (solid evolution
+          + mark strips match exactly): far platform-top 1S wall
+          (ld=269, ~716u) closes column x=124 before the nearer
+          57|60 boundary wall (ld=182, ~200u) can mark sector-60's
+          brown floor, so the pool plane (marked [118,200] by the
+          platform front ld=201 beforehand) fills rows the brown
+          floor owns (134-199 verified geometrically: x=124 ray
+          enters sector 60 at ~199u, floor -24 owns rows 134+).
+          Visit order independently confirmed by replaying E1M1's
+          BSP walk in Python (subsector 163 before 177, matching
+          the engine DS order) — no walk bug.  Every link matches
+          doomgeneric source (walk incl. no-prune equivalence,
+          1S terminal close r_segs.c, mark gating r_segs.c:315/345,
+          span merge, creation-order plane draw, clip init,
+          duplicate rule R_CheckPlane, FixedMul int64 semantics);
+          pointonside-vs-R_PointOnSide disagreement tested: zero
+          on all E1M1 nodes, all snapshot cameras, full play-area
+          sweep.  So: present since the renderer first drew this
+          scene, vanilla-correspondent at every checkable link —
+          slime-trail class.  No code change (a "fix" would break
+          the validated terminal-close/sprite-clip model).  Honest
+          residual: vanilla parity is by source-equivalence +
+          bisection, not side-by-side execution (no vanilla binary
+          here); a vanilla screenshot differing at this spot
+          reopens it.  Working theory for "recent": the artifact is
+          viewpoint-specific (vertex-exact column) and only became
+          visible with F1 snapshot-freezing + recent playtesting of
+          new areas — not a code regression.
