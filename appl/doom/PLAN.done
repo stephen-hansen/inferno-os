@@ -1244,3 +1244,71 @@ Milestones (each independently testable)
           death scream audibly (call sites are live; SFX bodies
           stay M17).  Boot smoke clean (t=560 idle).  Visual feel
           (weapon bob/positioning) is the user's call in play.
+          M12 ENEMY AI (p_enemy.c + p_sight.c, GPL-2) CLOSED:
+          REJECT lump parse in map.b (m+9, byte matrix, short
+          degrades to visible), fast reject + full BSP sight walk
+          in game.b (P_DivlineSide tri-state with the vanilla
+          (!dy) x==node->y quirk kept per pre-edit Python pin,
+          InterceptVector2 reuse, CrossSubsector slope window via
+          fixeddivsat, CrossBSPNode recursion, validcount-gated
+          line/sector marks in parallel arrays + wrap guard),
+          P_RecursiveSound brute-force adjacency (no sec->lines;
+          ML_SOUNDBLOCK costs 1, closed doors block) + P_NoiseAlert
+          wired in P_FireWeapon, P_CheckMeleeRange (64u-20u+radius
+          + sight), P_CheckMissileRange (64u base, no-melee +128u,
+          Vile/Undead/Cyborg/Spider/Skull rules, JUSTHIT clear,
+          reactiontime gate, 200/160 clamps), P_Move (speed *
+          xspeed/yspeed LUTs order-exact, MF_FLOAT+floatok height
+          adjust + INFLOAT, spechit door drain newest-first) +
+          P_TryWalk (movecount=random&15), P_NewChaseDir (direct
+          diagonal via diags[((deltay<0)<<1)+(deltax>0)], axis swap
+          on random/steeper, old dir, full sweep, turnaround ban
+          via oppdirs), P_LookForPlayers (single-player: nil skip
+          without counting, c==2/stop gate, health/sight/180-degree
+          + MELEERANGE-behind rule), A_Look (threshold=0, sector
+          soundtarget first with AMBUSH sight gate, else 180-degree
+          scan; seesound posit1-3/bgsit1-2 cycling, Spider/Cyborg
+          full-volume; seestate), A_Chase (reaction/threshold,
+          angle pacing (7<<29 mask, ANG90/2 steps), target loss to
+          spawnstate, JUSTATTACKED+NIGHTMARE gate, melee then
+          missile (movecount gate) then nomissile chase + activesound),
+          A_FaceTarget (AMBUSH clear, pointtoangle2, shadow jitter
+          ((rand-rand)<<21)), A_PosAttack/SPosAttack(3x)/CPosAttack
+          (face+autoaim+spread ((rand-rand)<<20)+3d3), A_TroopAttack
+          (melee 3d3+claw else MT_TROOPSHOT), A_SargAttack (melee
+          4d10), A_BruisAttack (melee 10d8+claw else MT_BRUISERSHOT),
+          A_HeadAttack (melee 10d6 else MT_HEADSHOT), A_SkullAttack
+          (SKULLFLY charge SKULLSPEED + momz by dist), floater
+          z-track in zmovement (MF_FLOAT+target, not SKULLFLY/
+          INFLOAT, dist<|delta|*3), monster door-use gate in
+          P_UseSpecialLine (non-players only 1/32/33/34, never
+          secret; locked 32/33/34 fail in EV_VerticalDoor, only
+          plain 1 opens; monsters never close), ML_SECRET=32 +
+          DI_*/NUMDIRS + SKULLSPEED in game.m, ACT_LOOK/CHASE/
+          FACETARGET/POS/SPOS/CPOS/TROOP/SARG/BRUIS/HEAD/SKULL
+          resolution (sequential ifs: 28-deep else-if overflows
+          yacc) + doaction dispatch, P_FireWeapon NoiseAlert.
+          REAL ENGINE BUGS FOUND: Limbo << looser than + (angle+
+          (rand-rand)<<20 parses as (angle+rand)<<20 — every AI
+          spread/jitter parenthesised); ctop/cbot if/else scope
+          (declare before); >>= unsupported (use = >>1); dual
+          tdir := in one fn (tdir2); P_LookForPlayers nil counting
+          (nil slots must not count toward c/stop or single-player
+          gives up after one check); stuck-missile illusion (96u
+          east open vs 128u inside wall on E1M8 — placement, not
+          code; 4-offset trydamage/trymissile harness).  Validated
+          pre-edit (Python /tmp/opencode): opposite/diags/xspeed/
+          yspeed vs p_enemy.c exact, REJECT pnum/byte/bit vs
+          p_sight.c, diag index enumeration, melee/missile/angle/
+          shadow formulas, actnames roster (8 shareware AI + Head/
+          Skull/CPos for completeness; E1M1-E1M9 WAD scan: no
+          3005/3006 on E1, so Head/Skull/CPos have no E1 path).
+          Headless SPECTEST14 15/15 (TEMP, removed): T1 E1M1 has AI,
+          T2 victim, T3 acquires target, T4 chases, T5 zombie 100->
+          88, T6 killable, T7 imp exists, T8 imp 100->76 (fireball),
+          T9/T10 E1M2 REJECT load+tick, T11/T12 E1M8 load+tick, T13
+          shotgun damages, T14 demon bites, T15 baron plasma Missile
+          live or damages.  Boot smoke clean (t=70/140/210 idle,
+          health 100).  Residuals by design: Vile/Skel/Fat/Keen/
+          Brain bodies (no E1 path), fastparm/netgame branches
+          (single-player), blockmap perf (24).

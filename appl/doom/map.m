@@ -82,6 +82,8 @@ Map: module {
 		segs:	array of Seg;
 		subsectors:	array of Subsector;
 		nodes:	array of Node;
+		reject:	array of int;	# REJECT bytes as ints (fast
+					# P_CheckSight reject test)
 
 		# R_PointInSubsector: descend the BSP from node
 		# numnodes-1; always returns non-nil (node 0 if

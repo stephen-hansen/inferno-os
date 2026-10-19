@@ -72,7 +72,7 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 		i++;
 	}
 
-	l := ref Level(mapname, nil, nil, nil, nil, nil, nil, nil, nil);
+	l := ref Level(mapname, nil, nil, nil, nil, nil, nil, nil, nil, nil);
 	b := array[0] of byte;
 	err := "";
 
@@ -282,6 +282,22 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 			le16(b, o+4) << 16, le16(b, o+6) << 16, bbox, ch);
 	}
 	l.nodes = nodes;
+
+	# REJECT (m+9): sector-pair visibility bit matrix for the fast
+	# P_CheckSight reject.  WAD size must cover all pairs; short
+	# lumps degrade to no rejects (always visible), never to
+	# wrong rejects.
+	(b, err) = w.read(m+9);
+	if (b == nil)
+		return (nil, err);
+	rn := (ns * ns + 7) / 8;
+	reject := array[rn] of int;
+	for (i = 0; i < rn; i++)
+		reject[i] = 0;
+	if (len b >= rn)
+		for (i = 0; i < rn; i++)
+			reject[i] = int b[i];
+	l.reject = reject;
 
 	return (l, nil);
 }

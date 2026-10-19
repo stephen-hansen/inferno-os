@@ -1,10 +1,11 @@
 # Play simulation.  Reference: doomgeneric p_mobj.c p_map.c
 # p_maputl.c p_user.c p_tick.c p_doors.c p_spec.c p_switch.c
-# p_floor.c (GPL-2).  Collision walks every line/thing each check
-# (no blockmap); P_SlideMove traces its three leading corners
-# brute-force over all lines; doors + use-lines are in (milestone
-# 13 slice).  Item pickup, weapons/psprites and AI actions are
-# no-op stubs for now.
+# p_floor.c p_enemy.c p_sight.c (GPL-2).  Collision walks every
+# line/thing each check (no blockmap); P_SlideMove traces its three
+# leading corners brute-force over all lines; doors + use-lines are
+# in (milestone 13 slice).  Item pickup, weapons/psprites and enemy
+# AI (sight/sound/chase/attacks) are live; BFG/supershotgun +
+# non-shareware AI (Vile/Skel/Fat/CPos-full/Keen/Brain) stay no-ops.
 
 implement Game;
 
@@ -33,6 +34,22 @@ tmfloorz, tmceilingz, tmdropoffz: int;
 floatok: int;
 ceilingline: int;		# linedef index, -1 if none
 opentop, openbottom, openrange, lowfloor: int;
+
+# --- enemy AI (p_enemy.c + p_sight.c) temporaries ---
+# vanilla module globals: strace/t2x-t2y/sightzstart/slopes,
+# validcount-gated line/sector marks, REJECT fast path, sound
+# flood target, and the P_NewChaseDir LUTs (order-exact).
+aivalid: int;
+linevalid: array of int;	# [nlines] sight validcount marks
+secvalid: array of int;	# [nsectors] sight/sound validcount marks
+sectrav: array of int;	# [nsectors] soundtraversed depth
+secsound: array of ref Mobj;	# [nsectors] sector soundtarget
+soundtarget: ref Mobj;	# P_RecursiveSound flood source
+sightzstart, sighttopslope, sightbottomslope: int;
+stracex, stracey, tracedx, tracedy, t2x, t2y: int;
+xspeed, yspeed: array of int;	# [8] P_Move step table
+oppdirs: array of int;	# [9] P_NewChaseDir opposite LUT
+diagdirs: array of int;	# [4] P_NewChaseDir diagonal LUT
 
 # P_RadiusAttack temporaries (vanilla p_map.c globals)
 bombspot, bombsource: ref Mobj;
@@ -399,9 +416,32 @@ init(): string
 	players = array[MAXPLAYERS] of ref Player;
 	lvltime = 0;
 	prndindex = 0;
+	# P_Move / P_NewChaseDir LUTs (p_enemy.c order-exact):
+	# xspeed/yspeed are 16.16 steps (FRACUNIT + 47000 diagonals);
+	# opposite[olddir] is the turnaround ban; diags picks the
+	# diagonal for (deltax>0, deltay<0) as ((deltay<0)<<1)+(deltax>0).
+	xspeed = array[] of { FRACUNIT, 47000, 0, -47000,
+		-FRACUNIT, -47000, 0, 47000 };
+	yspeed = array[] of { 0, 47000, FRACUNIT, 47000,
+		0, -47000, -FRACUNIT, -47000 };
+	oppdirs = array[] of { 4, 5, 6, 7, 0, 1, 2, 3, 8 };
+	diagdirs = array[] of { 3, 1, 5, 7 };
+	aivalid = 1;
 	# resolve the A_* action indices for doaction/doactionps;
-	# M12 AI + BFG/supershotgun actions stay no-ops (no E1 path)
+	# BFG/supershotgun + non-shareware AI (Vile/Skel/Fat/CPos/
+	# Skull/Metal/Keen/Brain) stay no-ops (no E1 path)
 	ACT_FALL = -1;
+	ACT_LOOK = -1;
+	ACT_CHASE = -1;
+	ACT_FACETARGET = -1;
+	ACT_POSATTACK = -1;
+	ACT_SPOSATTACK = -1;
+	ACT_CPOSATTACK = -1;
+	ACT_TROOPATTACK = -1;
+	ACT_SARGATTACK = -1;
+	ACT_BRUISATTACK = -1;
+	ACT_HEADATTACK = -1;
+	ACT_SKULLATTACK = -1;
 	ACT_WEAPONREADY = -1;
 	ACT_LOWER = -1;
 	ACT_RAISE = -1;
@@ -428,49 +468,71 @@ init(): string
 		nm := inf->actnames[i];
 		if (nm == "A_Fall")
 			ACT_FALL = i;
-		else if (nm == "A_WeaponReady")
+		if (nm == "A_Look")
+			ACT_LOOK = i;
+		if (nm == "A_Chase")
+			ACT_CHASE = i;
+		if (nm == "A_FaceTarget")
+			ACT_FACETARGET = i;
+		if (nm == "A_PosAttack")
+			ACT_POSATTACK = i;
+		if (nm == "A_SPosAttack")
+			ACT_SPOSATTACK = i;
+		if (nm == "A_CPosAttack")
+			ACT_CPOSATTACK = i;
+		if (nm == "A_TroopAttack")
+			ACT_TROOPATTACK = i;
+		if (nm == "A_SargAttack")
+			ACT_SARGATTACK = i;
+		if (nm == "A_BruisAttack")
+			ACT_BRUISATTACK = i;
+		if (nm == "A_HeadAttack")
+			ACT_HEADATTACK = i;
+		if (nm == "A_SkullAttack")
+			ACT_SKULLATTACK = i;
+		if (nm == "A_WeaponReady")
 			ACT_WEAPONREADY = i;
-		else if (nm == "A_Lower")
+		if (nm == "A_Lower")
 			ACT_LOWER = i;
-		else if (nm == "A_Raise")
+		if (nm == "A_Raise")
 			ACT_RAISE = i;
-		else if (nm == "A_GunFlash")
+		if (nm == "A_GunFlash")
 			ACT_GUNFLASH = i;
-		else if (nm == "A_FirePistol")
+		if (nm == "A_FirePistol")
 			ACT_FIREPISTOL = i;
-		else if (nm == "A_FireShotgun")
+		if (nm == "A_FireShotgun")
 			ACT_FIRESHOTGUN = i;
-		else if (nm == "A_FireCGun")
+		if (nm == "A_FireCGun")
 			ACT_FIRECGUN = i;
-		else if (nm == "A_FireMissile")
+		if (nm == "A_FireMissile")
 			ACT_FIREMISSILE = i;
-		else if (nm == "A_FirePlasma")
+		if (nm == "A_FirePlasma")
 			ACT_FIREPLASMA = i;
-		else if (nm == "A_Punch")
+		if (nm == "A_Punch")
 			ACT_PUNCH = i;
-		else if (nm == "A_Saw")
+		if (nm == "A_Saw")
 			ACT_SAW = i;
-		else if (nm == "A_ReFire")
+		if (nm == "A_ReFire")
 			ACT_REFIRE = i;
-		else if (nm == "A_CheckReload")
+		if (nm == "A_CheckReload")
 			ACT_CHECKRELOAD = i;
-		else if (nm == "A_Light0")
+		if (nm == "A_Light0")
 			ACT_LIGHT0 = i;
-		else if (nm == "A_Light1")
+		if (nm == "A_Light1")
 			ACT_LIGHT1 = i;
-		else if (nm == "A_Light2")
+		if (nm == "A_Light2")
 			ACT_LIGHT2 = i;
-		else if (nm == "A_Scream")
+		if (nm == "A_Scream")
 			ACT_SCREAM = i;
-		else if (nm == "A_XScream")
+		if (nm == "A_XScream")
 			ACT_XSCREAM = i;
-		else if (nm == "A_Pain")
+		if (nm == "A_Pain")
 			ACT_PAIN = i;
-		else if (nm == "A_PlayerScream")
+		if (nm == "A_PlayerScream")
 			ACT_PLAYERSCREAM = i;
-		else if (nm == "A_BossDeath")
+		if (nm == "A_BossDeath")
 			ACT_BOSSDEATH = i;
-		else if (nm == "A_Explode")
+		if (nm == "A_Explode")
 			ACT_EXPLODE = i;
 	}
 	# weaponinfo (d_items.c order: fist, pistol, shotgun, chaingun,
@@ -550,6 +612,18 @@ setuplevel(l: ref Map->Level, skill: int): string
 	nspechit = 0;
 	exited = 0;
 	sexited = 0;
+	# AI sight/sound marks (p_sight.c validcount + REJECT): fresh
+	# arrays per level, zeroed (dirty heap); aivalid starts at 1 so
+	# the zero init never equals a live mark.
+	aivalid = 1;
+	linevalid = array[len l.lines] of int;
+	zeroarr(linevalid);
+	secvalid = array[len l.sectors] of int;
+	zeroarr(secvalid);
+	sectrav = array[len l.sectors] of int;
+	zeroarr(sectrav);
+	secsound = array[len l.sectors] of ref Mobj;
+	soundtarget = nil;
 	for (i := 0; i < MAXPLAYERS; i++)
 		players[i] = nil;
 
@@ -786,9 +860,9 @@ doaction(mo: ref Mobj, act: int)
 		mo.flags = mo.flags & ~inf->MF_SOLID;
 		return;
 	}
-	# milestone 5 stub: remaining A_Look/A_Chase/monster-attack
-	# routines come with the AI milestone 12; states still advance
-	# by tics.  Weapon/psprite/sound/impact actions below are live.
+	# M12 AI + M11 weapon/psprite/sound/impact actions are live;
+	# BFG/supershotgun + non-shareware AI (Vile/Skel/Fat/CPos-full/
+	# Keen/Brain) stay no-ops (no E1 path); states still advance.
 	if (act == ACT_SCREAM) {
 		# vanilla A_Scream: deathsound with podth/bgdth cycling
 		ds := mo.info.deathsound;
@@ -823,6 +897,50 @@ doaction(mo: ref Mobj, act: int)
 		# barrel bursts + missile impacts: radius damage around
 		# the thing, source included (nil-safe via pdamagemobj)
 		pradiusattack(mo, mo.target, 128);
+		return;
+	}
+	if (act == ACT_LOOK) {
+		alook(mo);
+		return;
+	}
+	if (act == ACT_CHASE) {
+		achase(mo);
+		return;
+	}
+	if (act == ACT_FACETARGET) {
+		afacetarget(mo);
+		return;
+	}
+	if (act == ACT_POSATTACK) {
+		aposattack(mo);
+		return;
+	}
+	if (act == ACT_SPOSATTACK) {
+		asposattack(mo);
+		return;
+	}
+	if (act == ACT_TROOPATTACK) {
+		atroopattack(mo);
+		return;
+	}
+	if (act == ACT_SARGATTACK) {
+		asargattack(mo);
+		return;
+	}
+	if (act == ACT_BRUISATTACK) {
+		abruisattack(mo);
+		return;
+	}
+	if (act == ACT_HEADATTACK) {
+		aheadattack(mo);
+		return;
+	}
+	if (act == ACT_CPOSATTACK) {
+		acposattack(mo);
+		return;
+	}
+	if (act == ACT_SKULLATTACK) {
+		askullattack(mo);
 		return;
 	}
 }
@@ -973,8 +1091,7 @@ pcheckammo(p: ref Player): int
 }
 
 # vanilla P_FireWeapon: check ammo, strike the attack pose, run the
-# weapon's attack state (P_NoiseAlert deferred to M12: monsters
-# stay deaf until AI lands)
+# weapon's attack state + wake monsters with the gunshot
 pfireweapon(p: ref Player)
 {
 	if (pcheckammo(p) == 0)
@@ -982,6 +1099,7 @@ pfireweapon(p: ref Player)
 	setmobjstate(p.mo, inf->S_PLAY_ATK1);
 	newstate := weaponinfo[p.readyweapon].atkstate;
 	psetpsprite(p, PS_WEAPON, newstate);
+	pnoisealert(p.mo, p.mo);
 }
 
 # vanilla P_BulletSlope: triple-try autoaim (straight, +-1<<26 BAM),
@@ -1024,8 +1142,9 @@ decreaseammo(p: ref Player, ammonum, amount: int)
 
 # psprite action dispatch (vanilla acp2 half: (player, psp) actions).
 # Mobj actions (Scream/XScream/Pain/PlayerScream/BossDeath/Explode/
-# Fall) stay in doaction; the M12 AI set + BFG/supershotgun (no E1
-# path) stay no-ops there.
+# Fall/Look/Chase/FaceTarget/Pos/SPos/CPos/Troop/Sarg/Bruis/Head/
+# Skull) stay in doaction; BFG/supershotgun + non-shareware AI
+# (Vile/Skel/Fat/Keen/Brain) stay no-ops there.
 doactionps(p: ref Player, psi, act: int)
 {
 	if (act == 0)
@@ -1766,8 +1885,16 @@ usespecialline(mo: ref Mobj, li, side: int): int
 	ld := lev.lines[li];
 	if (side != 0)
 		return 0;		# 124 only (unused); vanilla early-out
-	if (mo.player == nil)
-		return 0;		# monster use (1/32/33/34) with AI later
+	# vanilla P_UseSpecialLine monster gate (p_switch.c): non-players
+	# can only use 1/32/33/34, never secret doors; locked 32/33/34
+	# then fail in EV_VerticalDoor (no keys), so only plain 1 opens.
+	if (mo.player == nil) {
+		if ((ld.flags & ML_SECRET) != 0)
+			return 0;
+		if (ld.special != 1 && ld.special != 32 &&
+		    ld.special != 33 && ld.special != 34)
+			return 0;
+	}
 	if (ld.special == 11) {		# S1 exit (p_switch.c)
 		changeswitchtexture(li, 0);
 		gexitlevel();
@@ -1939,6 +2066,10 @@ ACT_REFIRE, ACT_CHECKRELOAD: int;
 ACT_LIGHT0, ACT_LIGHT1, ACT_LIGHT2: int;
 ACT_SCREAM, ACT_XSCREAM, ACT_PAIN, ACT_PLAYERSCREAM: int;
 ACT_BOSSDEATH, ACT_EXPLODE: int;
+ACT_LOOK, ACT_CHASE, ACT_FACETARGET: int;
+ACT_POSATTACK, ACT_SPOSATTACK, ACT_CPOSATTACK: int;
+ACT_TROOPATTACK, ACT_SARGATTACK, ACT_BRUISATTACK: int;
+ACT_HEADATTACK, ACT_SKULLATTACK: int;
 
 # psprite geometry (p_pspr.h)
 WEAPONBOTTOM: con 128 * FRACUNIT;
@@ -3573,7 +3704,20 @@ zmovement(mo: ref Mobj)
 
 	mo.z = mo.z + mo.momz;
 
-	# float-to-target skipped (no floaters with targets yet)
+	# vanilla P_ZMovement floater adjust (p_mobj.c): floaters track
+	# the target height when close, unless skullflying or infloat
+	if ((mo.flags & inf->MF_FLOAT) != 0 && mo.target != nil) {
+		if ((mo.flags & inf->MF_SKULLFLY) == 0 &&
+		    (mo.flags & inf->MF_INFLOAT) == 0) {
+			fdist := approxdistance(mo.x - mo.target.x,
+				mo.y - mo.target.y);
+			fdelta := (mo.target.z + (mo.height >> 1)) - mo.z;
+			if (fdelta < 0 && fdist < -(fdelta * 3))
+				mo.z = mo.z - FLOATSPEED;
+			else if (fdelta > 0 && fdist < fdelta * 3)
+				mo.z = mo.z + FLOATSPEED;
+		}
+	}
 
 	if (mo.z <= mo.floorz) {
 		if (mo.momz < 0) {
@@ -4247,13 +4391,701 @@ pdamagemobj(target, inflictor, source: ref Mobj, damage: int)
 	}
 }
 
-# sight gate for radius attacks (vanilla P_CheckSight, owned by AI
-# milestone 12); permissive until then (no callers exist yet)
+# ---------------------------------------------------------------------------
+# enemy AI: sight, sound, movement, attacks (milestone 12, p_enemy.c +
+# p_sight.c).  Reference: doomgeneric p_sight.c / p_enemy.c (GPL-2).
+# Transcribed except: brute-force sector adjacency (no sec->lines;
+# every line is tested like the collision / CrossSubsector walks),
+# parallel validcount arrays (Sector/Line adts carry no marks), and
+# single-player simplifications (no netgame/fastparm; nightmare still
+# gates refire like vanilla).  REJECT lives in map.b (zero-filled
+# when the lump is short, so short degrades to visible).
+# ---------------------------------------------------------------------------
+
+# sector index for REJECT / sound arrays (pointer scan; refs alias
+# the Level.sectors entries, so == is the identity test)
+secindex(sec: ref Map->Sector): int
+{
+	for (i := 0; i < len lev.sectors; i++)
+		if (lev.sectors[i] == sec)
+			return i;
+	return -1;
+}
+
+# vanilla P_DivlineSide (p_sight.c) tri-state 0/1/2, including the
+# vanilla (!dy) typo testing x==node->y (kept: doomgeneric has it,
+# and the pre-edit Python check pins it)
+sightdivside(x, y, nx, ny, ndx, ndy: int): int
+{
+	if (ndx == 0) {
+		if (x == nx)
+			return 2;
+		if (x <= nx)
+			return ndy > 0;
+		return ndy < 0;
+	}
+	if (ndy == 0) {
+		if (x == ny)
+			return 2;
+		if (y <= ny)
+			return ndx < 0;
+		return ndx > 0;
+	}
+	dx := x - nx;
+	dy := y - ny;
+	left := (ndy >> FRACBITS) * (dx >> FRACBITS);
+	right := (dy >> FRACBITS) * (ndx >> FRACBITS);
+	if (right < left)
+		return 0;
+	if (left == right)
+		return 2;
+	return 1;
+}
+
+# vanilla P_CrossSubsector (p_sight.c): 1 = trace passes this
+# subsector, 0 = blocked.  front/back come from the seg side
+# (side 0 = line front, side 1 = line back).
+crosssubsector(num: int): int
+{
+	if (num < 0 || num >= len lev.subsectors)
+		return 1;
+	sub := lev.subsectors[num];
+	for (k := 0; k < sub.numsegs; k++) {
+		sgi := sub.firstseg + k;
+		if (sgi < 0 || sgi >= len lev.segs)
+			continue;
+		sg := lev.segs[sgi];
+		li := sg.linedef;
+		if (li < 0 || li >= len lev.lines)
+			continue;
+		if (linevalid[li] == aivalid)
+			continue;
+		linevalid[li] = aivalid;
+		ld := lev.lines[li];
+		v1 := lev.vertices[ld.v1];
+		v2 := lev.vertices[ld.v2];
+		s1 := sightdivside(v1.x, v1.y, stracex, stracey, tracedx, tracedy);
+		s2 := sightdivside(v2.x, v2.y, stracex, stracey, tracedx, tracedy);
+		if (s1 == s2)
+			continue;
+		s1 = sightdivside(stracex, stracey, v1.x, v1.y, ld.dx, ld.dy);
+		s2 = sightdivside(t2x, t2y, v1.x, v1.y, ld.dx, ld.dy);
+		if (s1 == s2)
+			continue;
+		if (ld.backsector == nil)
+			return 0;
+		if ((ld.flags & ML_TWOSIDED) == 0)
+			return 0;
+		front := ld.frontsector;
+		back := ld.backsector;
+		if (sg.side != 0) {
+			front = ld.backsector;
+			back = ld.frontsector;
+		}
+		if (front == nil || back == nil)
+			return 0;
+		if (front.floorheight == back.floorheight &&
+		    front.ceilingheight == back.ceilingheight)
+			continue;
+		ctop: int;
+		cbot: int;
+		if (front.ceilingheight < back.ceilingheight)
+			ctop = front.ceilingheight;
+		else
+			ctop = back.ceilingheight;
+		if (front.floorheight > back.floorheight)
+			cbot = front.floorheight;
+		else
+			cbot = back.floorheight;
+		if (cbot >= ctop)
+			return 0;
+		frac := interceptvector(stracex, stracey, tracedx, tracedy,
+			v1.x, v1.y, ld.dx, ld.dy);
+		if (front.floorheight != back.floorheight) {
+			sl := fixeddivsat(cbot - sightzstart, frac);
+			if (sl > sightbottomslope)
+				sightbottomslope = sl;
+		}
+		if (front.ceilingheight != back.ceilingheight) {
+			sl2 := fixeddivsat(ctop - sightzstart, frac);
+			if (sl2 < sighttopslope)
+				sighttopslope = sl2;
+		}
+		if (sighttopslope <= sightbottomslope)
+			return 0;
+	}
+	return 1;
+}
+
+# vanilla P_CrossBSPNode (p_sight.c)
+crossbspnode(bspnum: int): int
+{
+	if ((bspnum & map->NF_SUBSECTOR) != 0) {
+		if (bspnum == -1)
+			return crosssubsector(0);
+		return crosssubsector(bspnum & 16r7FFF);
+	}
+	if (bspnum < 0 || bspnum >= len lev.nodes)
+		return 1;
+	bsp := lev.nodes[bspnum];
+	side := sightdivside(stracex, stracey, bsp.x, bsp.y, bsp.dx, bsp.dy);
+	if (side == 2)
+		side = 0;
+	if (crossbspnode(bsp.children[side]) == 0)
+		return 0;
+	if (side == sightdivside(t2x, t2y, bsp.x, bsp.y, bsp.dx, bsp.dy))
+		return 1;
+	return crossbspnode(bsp.children[side ^ 1]);
+}
+
+# vanilla P_CheckSight (p_sight.c): REJECT fast path, then the eye-
+# to-target trace through the BSP with the floor/ceiling slope
+# window.  Replaces the milestone-9 permissive stub (radius attacks
+# already call through here).
 pchecksight(a, b: ref Mobj): int
 {
-	a = a;
-	b = b;
+	if (a == nil || b == nil)
+		return 0;
+	if (a.subsector == nil || b.subsector == nil)
+		return 0;
+	if (lev == nil)
+		return 0;
+	s1 := secindex(a.subsector.sector);
+	s2 := secindex(b.subsector.sector);
+	if (s1 < 0 || s2 < 0)
+		return 1;
+	ns := len lev.sectors;
+	pnum := s1 * ns + s2;
+	bytenum := pnum >> 3;
+	if (bytenum < 0 || bytenum >= len lev.reject)
+		return 1;
+	bit := 1 << (pnum & 7);
+	if ((lev.reject[bytenum] & bit) != 0)
+		return 0;
+	aivalid = aivalid + 1;
+	if (aivalid == 0) {
+		zeroarr(linevalid);
+		zeroarr(secvalid);
+		aivalid = 1;
+	}
+	sightzstart = a.z + a.height - (a.height >> 2);
+	sighttopslope = (b.z + b.height) - sightzstart;
+	sightbottomslope = b.z - sightzstart;
+	stracex = a.x;
+	stracey = a.y;
+	t2x = b.x;
+	t2y = b.y;
+	tracedx = t2x - stracex;
+	tracedy = t2y - stracey;
+	if (len lev.nodes == 0)
+		return crosssubsector(0);
+	return crossbspnode(len lev.nodes - 1);
+}
+
+# vanilla P_RecursiveSound (p_enemy.c): flood soundtarget through
+# two-sided lines with an open gap; ML_SOUNDBLOCK costs one extra
+# level (doors muffle).  Brute-forces adjacency (no sec->lines).
+precursivesound(si, soundblocks: int)
+{
+	if (si < 0 || si >= len lev.sectors)
+		return;
+	if (secvalid[si] == aivalid && sectrav[si] <= soundblocks + 1)
+		return;
+	secvalid[si] = aivalid;
+	sectrav[si] = soundblocks + 1;
+	secsound[si] = soundtarget;
+	sec := lev.sectors[si];
+	for (li := 0; li < len lev.lines; li++) {
+		ld := lev.lines[li];
+		other: ref Map->Sector = nil;
+		if (ld.frontsector == sec)
+			other = ld.backsector;
+		else if (ld.backsector == sec)
+			other = ld.frontsector;
+		else
+			continue;
+		if (other == nil)
+			continue;
+		if ((ld.flags & ML_TWOSIDED) == 0)
+			continue;
+		lineopening(li);
+		if (openrange <= 0)
+			continue;
+		oi := secindex(other);
+		if (oi < 0)
+			continue;
+		if ((ld.flags & ML_SOUNDBLOCK) != 0) {
+			if (soundblocks == 0)
+				precursivesound(oi, 1);
+		} else
+			precursivesound(oi, soundblocks);
+	}
+}
+
+# vanilla P_NoiseAlert (p_enemy.c): monster gunfire wakes the
+# emitter's sector flood (doors use P_UseSpecialLine, not sound)
+pnoisealert(target, emmiter: ref Mobj)
+{
+	if (target == nil || emmiter == nil)
+		return;
+	if (emmiter.subsector == nil)
+		return;
+	soundtarget = target;
+	aivalid = aivalid + 1;
+	if (aivalid == 0) {
+		zeroarr(linevalid);
+		zeroarr(secvalid);
+		aivalid = 1;
+	}
+	si := secindex(emmiter.subsector.sector);
+	if (si < 0)
+		return;
+	precursivesound(si, 0);
+}
+
+# vanilla P_CheckMeleeRange (p_enemy.c)
+pcheckmeleerange(actor: ref Mobj): int
+{
+	if (actor == nil || actor.target == nil)
+		return 0;
+	pl := actor.target;
+	dist := approxdistance(pl.x - actor.x, pl.y - actor.y);
+	if (dist >= MELEERANGE - 20 * FRACUNIT + pl.info.radius)
+		return 0;
+	if (pchecksight(actor, actor.target) == 0)
+		return 0;
 	return 1;
+}
+
+# vanilla P_CheckMissileRange (p_enemy.c, single-player subset:
+# no netgame re-target, no fastparm; nightmare still gates refire)
+pcheckmissilerange(actor: ref Mobj): int
+{
+	if (actor == nil || actor.target == nil)
+		return 0;
+	if (pchecksight(actor, actor.target) == 0)
+		return 0;
+	if ((actor.flags & inf->MF_JUSTHIT) != 0) {
+		actor.flags = actor.flags & ~inf->MF_JUSTHIT;
+		return 1;
+	}
+	if (actor.reactiontime != 0)
+		return 0;
+	dist := approxdistance(actor.x - actor.target.x,
+		actor.y - actor.target.y) - 64 * FRACUNIT;
+	if (actor.info.meleestate == inf->S_NULL)
+		dist = dist - 128 * FRACUNIT;
+	dist = dist >> 16;
+	if (actor.typ == inf->MT_VILE) {
+		if (dist > 14 * 64)
+			return 0;
+	}
+	if (actor.typ == inf->MT_UNDEAD) {
+		if (dist < 196)
+			return 0;
+		dist = dist >> 1;
+	}
+	if (actor.typ == inf->MT_CYBORG || actor.typ == inf->MT_SPIDER ||
+	    actor.typ == inf->MT_SKULL)
+		dist = dist >> 1;
+	if (dist > 200)
+		dist = 200;
+	if (actor.typ == inf->MT_CYBORG && dist > 160)
+		dist = 160;
+	if (prandom() < dist)
+		return 0;
+	return 1;
+}
+
+# vanilla P_Move (p_enemy.c): step along movedir; floaters adjust
+# height when blocked; blocked doors drain spechit via
+# P_UseSpecialLine (monsters only open 1/32/33/34 per the gate)
+pmove(actor: ref Mobj): int
+{
+	if (actor.movedir == DI_NODIR)
+		return 0;
+	if (actor.movedir < 0 || actor.movedir >= 8)
+		fail("pmove: bad movedir");
+	tryx := actor.x + actor.info.speed * xspeed[actor.movedir];
+	tryy := actor.y + actor.info.speed * yspeed[actor.movedir];
+	if (trymove(actor, tryx, tryy) == 0) {
+		if ((actor.flags & inf->MF_FLOAT) != 0 && floatok != 0) {
+			if (actor.z < tmfloorz)
+				actor.z = actor.z + FLOATSPEED;
+			else
+				actor.z = actor.z - FLOATSPEED;
+			actor.flags = actor.flags | inf->MF_INFLOAT;
+			return 1;
+		}
+		if (nspechit == 0)
+			return 0;
+		actor.movedir = DI_NODIR;
+		good := 0;
+		for (nspechit = nspechit - 1; nspechit >= 0; nspechit--) {
+			ld := spechit[nspechit];
+			if (usespecialline(actor, ld, 0) != 0)
+				good = 1;
+		}
+		return good;
+	} else
+		actor.flags = actor.flags & ~inf->MF_INFLOAT;
+	if ((actor.flags & inf->MF_FLOAT) == 0)
+		actor.z = actor.floorz;
+	return 1;
+}
+
+# vanilla P_TryWalk (p_enemy.c)
+ptrywalk(actor: ref Mobj): int
+{
+	if (pmove(actor) == 0)
+		return 0;
+	actor.movecount = prandom() & 15;
+	return 1;
+}
+
+# vanilla P_NewChaseDir (p_enemy.c): direct diagonal, then axis
+# swap on random/steeper axis, then old dir, then full sweep
+pnewchasedir(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		fail("pnewchasedir: no target");
+	olddir := actor.movedir;
+	turnaround := oppdirs[olddir];
+	deltax := actor.target.x - actor.x;
+	deltay := actor.target.y - actor.y;
+	d1 := DI_NODIR;
+	d2 := DI_NODIR;
+	if (deltax > 10 * FRACUNIT)
+		d1 = DI_EAST;
+	else if (deltax < -10 * FRACUNIT)
+		d1 = DI_WEST;
+	if (deltay < -10 * FRACUNIT)
+		d2 = DI_SOUTH;
+	else if (deltay > 10 * FRACUNIT)
+		d2 = DI_NORTH;
+	if (d1 != DI_NODIR && d2 != DI_NODIR) {
+		actor.movedir = diagdirs[((deltay < 0) << 1) + (deltax > 0)];
+		if (actor.movedir != turnaround && ptrywalk(actor) != 0)
+			return;
+	}
+	if (prandom() > 200 || absi(deltay) > absi(deltax)) {
+		t := d1;
+		d1 = d2;
+		d2 = t;
+	}
+	if (d1 == turnaround)
+		d1 = DI_NODIR;
+	if (d2 == turnaround)
+		d2 = DI_NODIR;
+	if (d1 != DI_NODIR) {
+		actor.movedir = d1;
+		if (ptrywalk(actor) != 0)
+			return;
+	}
+	if (d2 != DI_NODIR) {
+		actor.movedir = d2;
+		if (ptrywalk(actor) != 0)
+			return;
+	}
+	if (olddir != DI_NODIR) {
+		actor.movedir = olddir;
+		if (ptrywalk(actor) != 0)
+			return;
+	}
+	if ((prandom() & 1) != 0) {
+		for (tdir := DI_EAST; tdir <= DI_SOUTHEAST; tdir++) {
+			if (tdir != turnaround) {
+				actor.movedir = tdir;
+				if (ptrywalk(actor) != 0)
+					return;
+			}
+		}
+	} else {
+		for (tdir2 := DI_SOUTHEAST; tdir2 >= DI_EAST; tdir2--) {
+			if (tdir2 != turnaround) {
+				actor.movedir = tdir2;
+				if (ptrywalk(actor) != 0)
+					return;
+			}
+		}
+	}
+	if (turnaround != DI_NODIR) {
+		actor.movedir = turnaround;
+		if (ptrywalk(actor) != 0)
+			return;
+	}
+	actor.movedir = DI_NODIR;
+}
+
+# vanilla P_LookForPlayers (p_enemy.c, single-player: only slot 0
+# can be non-nil; playeringame check is nil)
+plookforplayers(actor: ref Mobj, allaround: int): int
+{
+	c := 0;
+	stop := (actor.lastlook - 1) & 3;
+	for (;;) {
+		ll := actor.lastlook;
+		if (players[ll] == nil) {
+			actor.lastlook = (ll + 1) & 3;
+			continue;
+		}
+		if (c == 2 || ll == stop)
+			return 0;
+		c = c + 1;
+		pl := players[ll];
+		if (pl.health <= 0 || pl.mo == nil) {
+			actor.lastlook = (ll + 1) & 3;
+			continue;
+		}
+		if (pchecksight(actor, pl.mo) == 0) {
+			actor.lastlook = (ll + 1) & 3;
+			continue;
+		}
+		if (allaround == 0) {
+			an := pointtoangle2(actor.x, actor.y,
+				pl.mo.x, pl.mo.y) - actor.angle;
+			if (an > ANG90 && an < ANG270) {
+				dist := approxdistance(pl.mo.x - actor.x,
+					pl.mo.y - actor.y);
+				if (dist > MELEERANGE) {
+					actor.lastlook = (ll + 1) & 3;
+					continue;
+				}
+			}
+		}
+		actor.target = pl.mo;
+		return 1;
+	}
+	return 0;
+}
+
+# vanilla A_Look (p_enemy.c): sector soundtarget first (deaf
+# ambush needs sight), else the 180-degree player scan; seesound
+# with the posit/bgsit cycling, then the seestate
+alook(actor: ref Mobj)
+{
+	actor.threshold = 0;
+	si := -1;
+	if (actor.subsector != nil)
+		si = secindex(actor.subsector.sector);
+	targ: ref Mobj = nil;
+	if (si >= 0)
+		targ = secsound[si];
+	if (targ != nil && (targ.flags & inf->MF_SHOOTABLE) != 0) {
+		actor.target = targ;
+		if ((actor.flags & inf->MF_AMBUSH) != 0) {
+			if (pchecksight(actor, actor.target) != 0) {
+				# seeyou below
+			} else
+				return;
+		}
+	} else if (plookforplayers(actor, 0) == 0)
+		return;
+	if (actor.info.seesound != 0) {
+		soundnum := actor.info.seesound;
+		if (soundnum == sound->SFX_POSIT1 || soundnum == sound->SFX_POSIT2 ||
+		    soundnum == sound->SFX_POSIT3)
+			soundnum = sound->SFX_POSIT1 + prandom() % 3;
+		else if (soundnum == sound->SFX_BGSIT1 || soundnum == sound->SFX_BGSIT2)
+			soundnum = sound->SFX_BGSIT1 + prandom() % 2;
+		if (actor.typ == inf->MT_SPIDER || actor.typ == inf->MT_CYBORG)
+			sound->startsound(0, 0, soundnum);
+		else
+			sound->startsound(actor.x, actor.y, soundnum);
+	}
+	setmobjstate(actor, actor.info.seestate);
+}
+
+# vanilla A_Chase (p_enemy.c, single-player subset)
+achase(actor: ref Mobj)
+{
+	if (actor.reactiontime != 0)
+		actor.reactiontime = actor.reactiontime - 1;
+	if (actor.threshold != 0) {
+		if (actor.target == nil || actor.target.health <= 0)
+			actor.threshold = 0;
+		else
+			actor.threshold = actor.threshold - 1;
+	}
+	if (actor.movedir < 8) {
+		actor.angle = actor.angle & (7 << 29);
+		delta := actor.angle - (actor.movedir << 29);
+		if (delta > 0)
+			actor.angle = actor.angle - ANG90 / 2;
+		else if (delta < 0)
+			actor.angle = actor.angle + ANG90 / 2;
+	}
+	if (actor.target == nil || (actor.target.flags & inf->MF_SHOOTABLE) == 0) {
+		if (plookforplayers(actor, 1) != 0)
+			return;
+		setmobjstate(actor, actor.info.spawnstate);
+		return;
+	}
+	if ((actor.flags & inf->MF_JUSTATTACKED) != 0) {
+		actor.flags = actor.flags & ~inf->MF_JUSTATTACKED;
+		if (gameskill != SK_NIGHTMARE)
+			pnewchasedir(actor);
+		return;
+	}
+	if (actor.info.meleestate != inf->S_NULL && pcheckmeleerange(actor) != 0) {
+		if (actor.info.attacksound != 0)
+			sound->startsound(actor.x, actor.y, actor.info.attacksound);
+		setmobjstate(actor, actor.info.meleestate);
+		return;
+	}
+	if (actor.info.missilestate != inf->S_NULL) {
+		if (gameskill < SK_NIGHTMARE && actor.movecount != 0)
+			nomissile(actor);
+		else if (pcheckmissilerange(actor) == 0)
+			nomissile(actor);
+		else {
+			setmobjstate(actor, actor.info.missilestate);
+			actor.flags = actor.flags | inf->MF_JUSTATTACKED;
+			return;
+		}
+	} else
+		nomissile(actor);
+}
+
+# A_Chase tail (vanilla nomissile label): keep chasing
+nomissile(actor: ref Mobj)
+{
+	actor.movecount = actor.movecount - 1;
+	if (actor.movecount < 0 || pmove(actor) == 0)
+		pnewchasedir(actor);
+	if (actor.info.activesound != 0 && prandom() < 3)
+		sound->startsound(actor.x, actor.y, actor.info.activesound);
+}
+
+# vanilla A_FaceTarget (p_enemy.c)
+afacetarget(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		return;
+	actor.flags = actor.flags & ~inf->MF_AMBUSH;
+	actor.angle = pointtoangle2(actor.x, actor.y,
+		actor.target.x, actor.target.y);
+	if ((actor.target.flags & inf->MF_SHADOW) != 0)
+		actor.angle = actor.angle + ((prandom() - prandom()) << 21);
+}
+
+# vanilla A_PosAttack (p_enemy.c): face, autoaim, pistol shot
+aposattack(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		return;
+	afacetarget(actor);
+	angle := actor.angle;
+	slope := paimlineattack(actor, angle, MISSILERANGE);
+	sound->startsound(actor.x, actor.y, sound->SFX_PISTOL);
+	angle = angle + ((prandom() - prandom()) << 20);
+	damage := (prandom() % 5 + 1) * 3;
+	plineattack(actor, angle, MISSILERANGE, slope, damage);
+}
+
+# vanilla A_SPosAttack (p_enemy.c): 3-shot spread
+asposattack(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		return;
+	sound->startsound(actor.x, actor.y, sound->SFX_SHOTGN);
+	afacetarget(actor);
+	bangle := actor.angle;
+	slope := paimlineattack(actor, bangle, MISSILERANGE);
+	for (i := 0; i < 3; i++) {
+		angle := bangle + ((prandom() - prandom()) << 20);
+		damage := (prandom() % 5 + 1) * 3;
+		plineattack(actor, angle, MISSILERANGE, slope, damage);
+	}
+}
+
+# vanilla A_TroopAttack (p_enemy.c): melee or imp fireball
+atroopattack(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		return;
+	afacetarget(actor);
+	if (pcheckmeleerange(actor) != 0) {
+		sound->startsound(actor.x, actor.y, sound->SFX_CLAW);
+		damage := (prandom() % 8 + 1) * 3;
+		pdamagemobj(actor.target, actor, actor, damage);
+		return;
+	}
+	pspawnmissile(actor, actor.target, inf->MT_TROOPSHOT);
+}
+
+# vanilla A_SargAttack (p_enemy.c): demon bite
+asargattack(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		return;
+	afacetarget(actor);
+	if (pcheckmeleerange(actor) != 0) {
+		damage := (prandom() % 10 + 1) * 4;
+		pdamagemobj(actor.target, actor, actor, damage);
+	}
+}
+
+# vanilla A_BruisAttack (p_enemy.c): melee or baron plasma
+abruisattack(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		return;
+	if (pcheckmeleerange(actor) != 0) {
+		sound->startsound(actor.x, actor.y, sound->SFX_CLAW);
+		damage := (prandom() % 8 + 1) * 10;
+		pdamagemobj(actor.target, actor, actor, damage);
+		return;
+	}
+	pspawnmissile(actor, actor.target, inf->MT_BRUISERSHOT);
+}
+
+# vanilla A_HeadAttack (p_enemy.c): cacodemon melee or head fireball
+aheadattack(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		return;
+	afacetarget(actor);
+	if (pcheckmeleerange(actor) != 0) {
+		damage := (prandom() % 6 + 1) * 10;
+		pdamagemobj(actor.target, actor, actor, damage);
+		return;
+	}
+	pspawnmissile(actor, actor.target, inf->MT_HEADSHOT);
+}
+
+# vanilla A_CPosAttack (p_enemy.c): single shotgun blast
+acposattack(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		return;
+	sound->startsound(actor.x, actor.y, sound->SFX_SHOTGN);
+	afacetarget(actor);
+	bangle := actor.angle;
+	slope := paimlineattack(actor, bangle, MISSILERANGE);
+	angle := bangle + ((prandom() - prandom()) << 20);
+	damage := (prandom() % 5 + 1) * 3;
+	plineattack(actor, angle, MISSILERANGE, slope, damage);
+}
+
+# vanilla A_SkullAttack (p_enemy.c): lost-soul charge (skullfly)
+askullattack(actor: ref Mobj)
+{
+	if (actor.target == nil)
+		return;
+	dest := actor.target;
+	actor.flags = actor.flags | inf->MF_SKULLFLY;
+	if (actor.info.attacksound != 0)
+		sound->startsound(actor.x, actor.y, actor.info.attacksound);
+	afacetarget(actor);
+	an := (actor.angle >> ANGLETOFINESHIFT) & FINEMASK;
+	actor.momx = rend->fixedmul(SKULLSPEED, inf->finesine[(an + 2048) & FINEMASK]);
+	actor.momy = rend->fixedmul(SKULLSPEED, inf->finesine[an]);
+	dist := approxdistance(dest.x - actor.x, dest.y - actor.y);
+	dist = dist / SKULLSPEED;
+	if (dist < 1)
+		dist = 1;
+	actor.momz = (dest.z + (dest.height >> 1) - actor.z) / dist;
 }
 
 # vanilla PIT_RadiusAttack (p_map.c): concussion damage with linear

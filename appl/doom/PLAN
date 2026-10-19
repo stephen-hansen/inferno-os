@@ -62,7 +62,7 @@ Status snapshot (what works today)
   [x] 320x200 XRGB32 present path, input (scancode down/up), 35Hz
       tic clock decoupled from keys
   [x] map load: THINGS/LINEDEFS/SIDEDEFS/VERTEXES/SEGS/SSECTORS/
-      NODES/SECTORS (REJECT/BLOCKMAP found but NOT parsed)
+      NODES/SECTORS/REJECT (BLOCKMAP found but NOT parsed)
   [x] world render: BSP walk, wall columns (one-sided + two-sided
       upper/lower), floor/ceiling visplanes, sky, vanilla lighting
       (zlight/scalelight), occlusion model verified
@@ -74,11 +74,15 @@ Status snapshot (what works today)
       damage/death/gibbing (M9), hitscan + autoaim + missiles +
       use-lines + gunshot specials + interim autoaim pistol (M10),
       full psprite weapons (M11: raise/fire/reload/switch/ammo/
-      flash, extralight muzzle flashes); line/sector specials
-      PARTIAL (M13 slices: doors, exit, walkover switches, floors,
-      plats, teleport, lights, stairs, donut; ceilings/crushers +
-      remaining E1 types still open)
-  [ ] EVERYTHING else: AI, remaining specials, sector specials/
+      flash, extralight muzzle flashes); enemy AI (M12: REJECT +
+      P_CheckSight BSP walk, NoiseAlert/RecursiveSound flood,
+      P_Move/TryWalk/NewChaseDir/LookForPlayers, A_Look/Chase/
+      FaceTarget/Pos/SPos/CPos/Troop/Sarg/Bruis/Head/Skull +
+      floater z-track, monster door-use 1/32/33/34); line/sector
+      specials PARTIAL (M13 slices: doors, exit, walkover switches,
+      floors, plats, teleport, lights, stairs, donut; ceilings/
+      crushers + remaining E1 types still open)
+  [ ] EVERYTHING else: remaining specials, sector specials/
       secrets, sound bodies, status bar, HUD, automap, menu,
       intermission, level progression, finale, demos, cheats,
       mouse, save/load, music
@@ -361,8 +365,20 @@ Part B — combat & simulation completeness
          DEPS: 8 (sprite draw), 10 (attack primitives), 9 (ammo
            give + damage).
 
-  [ ] 12 Enemy AI (p_enemy.c + p_sight.c)
-         WHY: monsters spawn and stand frozen (doaction no-op);
+  [x] 12 Enemy AI (p_enemy.c + p_sight.c)
+          (CLOSED this session: REJECT parse + P_CheckSight BSP walk
+          with the vanilla (!dy) x==node->y quirk, NoiseAlert flood,
+          P_Move/TryWalk/NewChaseDir/LookForPlayers + melee/missile
+          range gates, A_Look/Chase/FaceTarget/Pos/SPos/CPos/Troop/
+          Sarg/Bruis/Head/Skull + floater z-track, monster door-use
+          1/32/33/34, P_FireWeapon NoiseAlert.  Validated pre-edit
+          (LUTs, REJECT bits, roster) + headless SPECTEST14 15/15:
+          zombie chase/damage/kill, imp fireball, shotgun spread,
+          demon bite, baron plasma, E1M2/E1M8 REJECT loads.  Detail
+          in PLAN.done.  Residuals by design: Vile/Skel/Fat/CPos-
+          full/Keen/Brain bodies (no E1 path — stubs), fastparm/
+          netgame branches (single-player), blockmap perf (24).)
+          WHY: monsters spawn and stand frozen (doaction no-op);
          E1M1 plays as a walking tour.
          SOURCES: p_enemy.c (A_Look, A_Chase, A_FaceTarget, all
            attack A_* — roster = info.b:25 names), p_sight.c

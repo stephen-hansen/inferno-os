@@ -32,6 +32,7 @@ Game: module {
 	STOPSPEED:	con 16r1000;
 	GRAVITY:	con FRACUNIT;
 	MAXMOVE:	con 30*FRACUNIT;
+	SKULLSPEED:	con 20 * FRACUNIT;	# lost-soul charge speed
 	FLOATSPEED:	con 4*FRACUNIT;
 	VIEWHEIGHT:	con 41*FRACUNIT;
 	MAXBOB:	con 16r100000;
@@ -69,6 +70,8 @@ Game: module {
 	ML_BLOCKING:	con 1;
 	ML_BLOCKMONSTERS:	con 2;
 	ML_TWOSIDED:	con 4;
+	ML_SECRET:	con 32;	# monsters never open secret doors
+	ML_SOUNDBLOCK:	con 64;	# sound does not cross (p_sight.c)
 
 	# weapon/ammo (doomdef.h); minimal for G_PlayerReborn
 	WP_FIST, WP_PISTOL, WP_SHOTGUN, WP_CHAINGUN, WP_MISSILE,
@@ -142,6 +145,13 @@ Game: module {
 	# psprite slots (p_pspr.h psprnum_t)
 	PS_WEAPON, PS_FLASH: con iota;
 	NUMPSPRITES:	con 2;
+
+	# chase directions (p_enemy.c dirtype_t + LUTs, verbatim order:
+	# east, northeast, north, northwest, west, southwest, south,
+	# southeast, no direction)
+	DI_EAST, DI_NORTHEAST, DI_NORTH, DI_NORTHWEST,
+	DI_WEST, DI_SOUTHWEST, DI_SOUTH, DI_SOUTHEAST,
+	DI_NODIR, NUMDIRS: con iota;
 
 	# overlay psprite (p_pspr.h pspdef_t): state is an S_ index,
 	# S_NULL when inactive
