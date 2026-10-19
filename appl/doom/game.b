@@ -399,12 +399,94 @@ init(): string
 	players = array[MAXPLAYERS] of ref Player;
 	lvltime = 0;
 	prndindex = 0;
-	# resolve the A_Fall action index for doaction (all other A_*
-	# stay no-ops until the M11/12 dispatch table)
+	# resolve the A_* action indices for doaction/doactionps;
+	# M12 AI + BFG/supershotgun actions stay no-ops (no E1 path)
 	ACT_FALL = -1;
-	for (i := 0; i < len inf->actnames; i++)
-		if (inf->actnames[i] == "A_Fall")
+	ACT_WEAPONREADY = -1;
+	ACT_LOWER = -1;
+	ACT_RAISE = -1;
+	ACT_GUNFLASH = -1;
+	ACT_FIREPISTOL = -1;
+	ACT_FIRESHOTGUN = -1;
+	ACT_FIRECGUN = -1;
+	ACT_FIREMISSILE = -1;
+	ACT_FIREPLASMA = -1;
+	ACT_PUNCH = -1;
+	ACT_SAW = -1;
+	ACT_REFIRE = -1;
+	ACT_CHECKRELOAD = -1;
+	ACT_LIGHT0 = -1;
+	ACT_LIGHT1 = -1;
+	ACT_LIGHT2 = -1;
+	ACT_SCREAM = -1;
+	ACT_XSCREAM = -1;
+	ACT_PAIN = -1;
+	ACT_PLAYERSCREAM = -1;
+	ACT_BOSSDEATH = -1;
+	ACT_EXPLODE = -1;
+	for (i := 0; i < len inf->actnames; i++) {
+		nm := inf->actnames[i];
+		if (nm == "A_Fall")
 			ACT_FALL = i;
+		else if (nm == "A_WeaponReady")
+			ACT_WEAPONREADY = i;
+		else if (nm == "A_Lower")
+			ACT_LOWER = i;
+		else if (nm == "A_Raise")
+			ACT_RAISE = i;
+		else if (nm == "A_GunFlash")
+			ACT_GUNFLASH = i;
+		else if (nm == "A_FirePistol")
+			ACT_FIREPISTOL = i;
+		else if (nm == "A_FireShotgun")
+			ACT_FIRESHOTGUN = i;
+		else if (nm == "A_FireCGun")
+			ACT_FIRECGUN = i;
+		else if (nm == "A_FireMissile")
+			ACT_FIREMISSILE = i;
+		else if (nm == "A_FirePlasma")
+			ACT_FIREPLASMA = i;
+		else if (nm == "A_Punch")
+			ACT_PUNCH = i;
+		else if (nm == "A_Saw")
+			ACT_SAW = i;
+		else if (nm == "A_ReFire")
+			ACT_REFIRE = i;
+		else if (nm == "A_CheckReload")
+			ACT_CHECKRELOAD = i;
+		else if (nm == "A_Light0")
+			ACT_LIGHT0 = i;
+		else if (nm == "A_Light1")
+			ACT_LIGHT1 = i;
+		else if (nm == "A_Light2")
+			ACT_LIGHT2 = i;
+		else if (nm == "A_Scream")
+			ACT_SCREAM = i;
+		else if (nm == "A_XScream")
+			ACT_XSCREAM = i;
+		else if (nm == "A_Pain")
+			ACT_PAIN = i;
+		else if (nm == "A_PlayerScream")
+			ACT_PLAYERSCREAM = i;
+		else if (nm == "A_BossDeath")
+			ACT_BOSSDEATH = i;
+		else if (nm == "A_Explode")
+			ACT_EXPLODE = i;
+	}
+	# weaponinfo (d_items.c order: fist, pistol, shotgun, chaingun,
+	# missile, plasma, bfg, chainsaw, supershotgun; ammo + up/down/
+	# ready/atk/flash states; plasma/bfg/supershotgun rows are data
+	# only in shareware — never selected, noted at P_CheckAmmo)
+	weaponinfo = array[NUMWEAPONS] of ref Wepinfo;
+	weaponinfo[WP_FIST] = ref Wepinfo(AM_NOAMMO, inf->S_PUNCHUP, inf->S_PUNCHDOWN, inf->S_PUNCH, inf->S_PUNCH1, inf->S_NULL);
+	weaponinfo[WP_PISTOL] = ref Wepinfo(AM_CLIP, inf->S_PISTOLUP, inf->S_PISTOLDOWN, inf->S_PISTOL, inf->S_PISTOL1, inf->S_PISTOLFLASH);
+	weaponinfo[WP_SHOTGUN] = ref Wepinfo(AM_SHELL, inf->S_SGUNUP, inf->S_SGUNDOWN, inf->S_SGUN, inf->S_SGUN1, inf->S_SGUNFLASH1);
+	weaponinfo[WP_CHAINGUN] = ref Wepinfo(AM_CLIP, inf->S_CHAINUP, inf->S_CHAINDOWN, inf->S_CHAIN, inf->S_CHAIN1, inf->S_CHAINFLASH1);
+	weaponinfo[WP_MISSILE] = ref Wepinfo(AM_MISL, inf->S_MISSILEUP, inf->S_MISSILEDOWN, inf->S_MISSILE, inf->S_MISSILE1, inf->S_MISSILEFLASH1);
+	weaponinfo[WP_PLASMA] = ref Wepinfo(AM_CELL, inf->S_PLASMAUP, inf->S_PLASMADOWN, inf->S_PLASMA, inf->S_PLASMA1, inf->S_PLASMAFLASH1);
+	weaponinfo[WP_BFG] = ref Wepinfo(AM_CELL, inf->S_BFGUP, inf->S_BFGDOWN, inf->S_BFG, inf->S_BFG1, inf->S_BFGFLASH1);
+	weaponinfo[WP_CHAINSAW] = ref Wepinfo(AM_NOAMMO, inf->S_SAWUP, inf->S_SAWDOWN, inf->S_SAW, inf->S_SAW1, inf->S_NULL);
+	weaponinfo[WP_SUPERSHOTGUN] = ref Wepinfo(AM_SHELL, inf->S_DSGUNUP, inf->S_DSGUNDOWN, inf->S_DSGUN, inf->S_DSGUN1, inf->S_DSGUNFLASH1);
 	return nil;
 }
 
@@ -473,6 +555,10 @@ setuplevel(l: ref Map->Level, skill: int): string
 
 	for (i = 0; i < len l.things; i++)
 		spawnmapthing(l.things[i]);
+	# vanilla P_SetupPsprites: bring each player's ready weapon up
+	pp := players[0];
+	if (pp != nil && pp.mo != nil)
+		psetuppsprites(pp);
 	spawnspecialsectors();
 	# vanilla P_SpawnSpecials (line-effects subset): collect scroll-
 	# left lines (special 48).  Full special dispatch is milestone
@@ -546,10 +632,10 @@ spawnplayer(t: Thing)
 	if (i < 0 || i >= MAXPLAYERS)
 		return;
 	if (players[i] == nil) {
-		np := ref Player(nil, Ticcmd(0, 0, 0, 0), PST_REBORN,
-			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			nil, nil, nil, nil, nil,
-			0, 0, nil, 0, 0, 0, nil);
+	np := ref Player(nil, Ticcmd(0, 0, 0, 0), PST_REBORN,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		nil, nil, nil, nil, nil,
+		0, 0, nil, 0, 0, 0, nil, nil, 0, 0);
 		players[i] = np;
 	}
 	p := players[i];
@@ -599,6 +685,11 @@ playerreborn(p: ref Player)
 	p.bonuscount = 0;
 	p.damagecount = 0;
 	p.attacker = nil;
+	p.psp = array[NUMPSPRITES] of ref Psp;
+	for (i := 0; i < NUMPSPRITES; i++)
+		p.psp[i] = ref Psp(inf->S_NULL, 0, 0, 0);
+	p.extralight = 0;
+	p.refire = 0;
 	p.usedown = 1;
 	p.attackdown = 1;
 	p.killcount = 0;
@@ -695,9 +786,509 @@ doaction(mo: ref Mobj, act: int)
 		mo.flags = mo.flags & ~inf->MF_SOLID;
 		return;
 	}
-	# milestone 5 stub: remaining A_Look/A_Chase/weapon routines
-	# come with the AI and psprite milestones; states still
-	# advance by tics.
+	# milestone 5 stub: remaining A_Look/A_Chase/monster-attack
+	# routines come with the AI milestone 12; states still advance
+	# by tics.  Weapon/psprite/sound/impact actions below are live.
+	if (act == ACT_SCREAM) {
+		# vanilla A_Scream: deathsound with podth/bgdth cycling
+		ds := mo.info.deathsound;
+		if (ds == 0)
+			return;
+		if (ds == sound->SFX_PODTH1)
+			ds = sound->SFX_PODTH1 + prandom() % 3;
+		else if (ds == sound->SFX_BGDTH1)
+			ds = sound->SFX_BGDTH1 + prandom() % 2;
+		sound->startsound(mo.x, mo.y, ds);
+		return;
+	}
+	if (act == ACT_XSCREAM) {
+		sound->startsound(mo.x, mo.y, sound->SFX_SLOP);
+		return;
+	}
+	if (act == ACT_PAIN) {
+		if (mo.info.painsound != 0)
+			sound->startsound(mo.x, mo.y, mo.info.painsound);
+		return;
+	}
+	if (act == ACT_PLAYERSCREAM) {
+		# shareware: always pldeth (pdiehi needs commercial gib)
+		sound->startsound(mo.x, mo.y, sound->SFX_PLDETH);
+		return;
+	}
+	if (act == ACT_BOSSDEATH) {
+		abossdeath(mo);
+		return;
+	}
+	if (act == ACT_EXPLODE) {
+		# barrel bursts + missile impacts: radius damage around
+		# the thing, source included (nil-safe via pdamagemobj)
+		pradiusattack(mo, mo.target, 128);
+		return;
+	}
+}
+
+# shareware E1M8 finale check (vanilla A_BossDeath/CheckBossEnd,
+# shareware branch): all barons dead + a player alive opens the
+# tag-666 floor (the exit beyond).  Only barons carry A_BossDeath
+# in shareware states, so type+map is the whole check.
+abossdeath(mo: ref Mobj)
+{
+	if (gamemapnum != 8 || mo.typ != inf->MT_BRUISER)
+		return;
+	if (players[0] == nil || players[0].health <= 0)
+		return;
+	for (i := 0; i < len mobjs; i++) {
+		m := mobjs[i];
+		if (!m.removed && m != mo && m.typ == inf->MT_BRUISER &&
+		    m.health > 0)
+			return;
+	}
+	evdofloortag(666, FL_LOWERFLOORTOWELOWEST);
+}
+
+# vanilla EV_DoFloor by tag (A_BossDeath synthesizes line tag 666;
+# no line number exists).  Only lowerFloorToLowest is needed (E1M8
+# barons); the per-line multi-type dispatcher stays untouched.
+evdofloortag(tag, fltype: int)
+{
+	for (i := 0; i < len lev.sectors; i++) {
+		if (lev.sectors[i].tag != tag)
+			continue;
+		sec := lev.sectors[i];
+		if (sec.specialdata != -1)
+			continue;	# already moving
+		if (fltype != FL_LOWERFLOORTOWELOWEST)
+			continue;
+		f := ref Floor;
+		f.sec = sec;
+		f.fltype = fltype;
+		f.crush = 0;
+		f.texture = "";
+		f.newspecial = 0;
+		f.direction = -1;
+		f.speed = FLOORSPEED;
+		f.floordestheight = findlowestfloorsec(sec);
+		th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
+		n := len thinkers;
+		nt := array[n + 1] of ref Thinker;
+		if (n > 0)
+			nt[0:] = thinkers;
+		nt[n] = th;
+		thinkers = nt;
+		sec.specialdata = n;
+	}
+}
+
+# ---------------------------------------------------------------------------
+# weapons & psprites (milestone 11; vanilla p_pspr.c, GPL-2)
+# ---------------------------------------------------------------------------
+
+# vanilla P_SetPsprite: install state (misc coords, action with
+# zero-tic chaining like setmobjstate), psi = PS_WEAPON/PS_FLASH
+psetpsprite(p: ref Player, psi, stnum: int)
+{
+	ps := p.psp[psi];
+	for (;;) {
+		if (stnum == inf->S_NULL) {
+			ps.state = inf->S_NULL;
+			break;
+		}
+		st := inf->states[stnum];
+		ps.state = stnum;
+		ps.tics = st.tics;
+		if (st.misc1 != 0) {
+			ps.sx = st.misc1 << FRACBITS;
+			ps.sy = st.misc2 << FRACBITS;
+		}
+		doactionps(p, psi, st.action);
+		if (ps.state == inf->S_NULL)
+			break;
+		stnum = inf->states[ps.state].nextstate;
+		if (ps.tics != 0)
+			break;
+	}
+}
+
+# vanilla P_BringUpWeapon: raise pending (== ready if none); the
+# sy slam to WEAPONBOTTOM starts the raise animation
+pbringupweapon(p: ref Player)
+{
+	if (p.pendingweapon == WP_NOCHANGE)
+		p.pendingweapon = p.readyweapon;
+	if (p.pendingweapon == WP_CHAINSAW)
+		sound->startsound(p.mo.x, p.mo.y, sound->SFX_SAWUP);
+	newstate := weaponinfo[p.pendingweapon].upstate;
+	p.pendingweapon = WP_NOCHANGE;
+	p.psp[PS_WEAPON].sy = WEAPONBOTTOM;
+	psetpsprite(p, PS_WEAPON, newstate);
+}
+
+# vanilla P_SetupPsprites: clear both slots, bring the ready weapon up
+psetuppsprites(p: ref Player)
+{
+	for (i := 0; i < NUMPSPRITES; i++)
+		p.psp[i].state = inf->S_NULL;
+	p.pendingweapon = p.readyweapon;
+	pbringupweapon(p);
+}
+
+# vanilla P_MovePsprites: tick both psprite states; flash follows gun
+pmovepsprites(p: ref Player)
+{
+	for (i := 0; i < NUMPSPRITES; i++) {
+		ps := p.psp[i];
+		if (ps.state != inf->S_NULL && ps.tics != -1) {
+			ps.tics--;
+			if (ps.tics == 0)
+				psetpsprite(p, i,
+					inf->states[ps.state].nextstate);
+		}
+	}
+	p.psp[PS_FLASH].sx = p.psp[PS_WEAPON].sx;
+	p.psp[PS_FLASH].sy = p.psp[PS_WEAPON].sy;
+}
+
+# vanilla P_CheckAmmo, shareware path (no plasma/bfg/supershotgun
+# branches — gamemode is always shareware here).  On empty: pick a
+# fallback in vanilla preference order and lower the current gun.
+pcheckammo(p: ref Player): int
+{
+	ammo := weaponinfo[p.readyweapon].ammo;
+	if (ammo == AM_NOAMMO || p.ammo[ammo] >= 1)
+		return 1;
+	if (p.weaponowned[WP_CHAINGUN] != 0 && p.ammo[AM_CLIP] != 0)
+		p.pendingweapon = WP_CHAINGUN;
+	else if (p.weaponowned[WP_SHOTGUN] != 0 && p.ammo[AM_SHELL] != 0)
+		p.pendingweapon = WP_SHOTGUN;
+	else if (p.ammo[AM_CLIP] != 0)
+		p.pendingweapon = WP_PISTOL;
+	else if (p.weaponowned[WP_CHAINSAW] != 0)
+		p.pendingweapon = WP_CHAINSAW;
+	else if (p.weaponowned[WP_MISSILE] != 0 && p.ammo[AM_MISL] != 0)
+		p.pendingweapon = WP_MISSILE;
+	else
+		p.pendingweapon = WP_FIST;
+	psetpsprite(p, PS_WEAPON, weaponinfo[p.readyweapon].downstate);
+	return 0;
+}
+
+# vanilla P_FireWeapon: check ammo, strike the attack pose, run the
+# weapon's attack state (P_NoiseAlert deferred to M12: monsters
+# stay deaf until AI lands)
+pfireweapon(p: ref Player)
+{
+	if (pcheckammo(p) == 0)
+		return;
+	setmobjstate(p.mo, inf->S_PLAY_ATK1);
+	newstate := weaponinfo[p.readyweapon].atkstate;
+	psetpsprite(p, PS_WEAPON, newstate);
+}
+
+# vanilla P_BulletSlope: triple-try autoaim (straight, +-1<<26 BAM),
+# else flat 0 (P_GunShot consumers read the bulletslope global)
+pbulletslope(mo: ref Mobj)
+{
+	an := mo.angle;
+	slope := paimlineattack(mo, an, MISSILERANGE);
+	if (linetarget == nil) {
+		an += 1 << 26;
+		slope = paimlineattack(mo, an, MISSILERANGE);
+		if (linetarget == nil) {
+			an -= 2 << 26;
+			slope = paimlineattack(mo, an, MISSILERANGE);
+		}
+	}
+	bulletslope = slope;
+}
+
+# vanilla P_GunShot: 5d3 hitscan on the autoaim slope (spread when
+# inaccurate: first pistol shot and aimed shots are exact)
+pgunshot(mo: ref Mobj, accurate: int)
+{
+	damage := 5 * ((prandom() % 3) + 1);
+	angle := mo.angle;
+	if (accurate == 0)
+		angle += (prandom() - prandom()) << 18;
+	plineattack(mo, angle, MISSILERANGE, bulletslope, damage);
+}
+
+# vanilla ammo decrement (doomgeneric guard: over-wide types would
+# hit maxammo instead; no E1 path does)
+decreaseammo(p: ref Player, ammonum, amount: int)
+{
+	if (ammonum < NUMAMMO)
+		p.ammo[ammonum] -= amount;
+	else
+		p.maxammo[ammonum - NUMAMMO] -= amount;
+}
+
+# psprite action dispatch (vanilla acp2 half: (player, psp) actions).
+# Mobj actions (Scream/XScream/Pain/PlayerScream/BossDeath/Explode/
+# Fall) stay in doaction; the M12 AI set + BFG/supershotgun (no E1
+# path) stay no-ops there.
+doactionps(p: ref Player, psi, act: int)
+{
+	if (act == 0)
+		return;
+	if (act == ACT_WEAPONREADY) {
+		aweaponready(p, psi);
+		return;
+	}
+	if (act == ACT_LOWER) {
+		alower(p, psi);
+		return;
+	}
+	if (act == ACT_RAISE) {
+		araise(p, psi);
+		return;
+	}
+	if (act == ACT_GUNFLASH) {
+		agunflash(p, psi);
+		return;
+	}
+	if (act == ACT_FIREPISTOL) {
+		afirepistol(p, psi);
+		return;
+	}
+	if (act == ACT_FIRESHOTGUN) {
+		afireshotgun(p, psi);
+		return;
+	}
+	if (act == ACT_FIRECGUN) {
+		afirecgun(p, psi);
+		return;
+	}
+	if (act == ACT_FIREMISSILE) {
+		afiremissile(p, psi);
+		return;
+	}
+	if (act == ACT_FIREPLASMA) {
+		afireplasma(p, psi);
+		return;
+	}
+	if (act == ACT_PUNCH) {
+		apunch(p, psi);
+		return;
+	}
+	if (act == ACT_SAW) {
+		asaw(p, psi);
+		return;
+	}
+	if (act == ACT_REFIRE) {
+		arefire(p, psi);
+		return;
+	}
+	if (act == ACT_CHECKRELOAD) {
+		pcheckammo(p);
+		return;
+	}
+	if (act == ACT_LIGHT0) {
+		p.extralight = 0;
+		return;
+	}
+	if (act == ACT_LIGHT1) {
+		p.extralight = 1;
+		return;
+	}
+	if (act == ACT_LIGHT2) {
+		p.extralight = 2;
+		return;
+	}
+}
+
+# vanilla A_WeaponReady: leave attack state, idle chainsaw buzz,
+# weapon-change request, fire on rising edge (missile excepted
+# from autofire), else bob the gun with movement
+aweaponready(p: ref Player, psi: int)
+{
+	if (p.mo.state == inf->S_PLAY_ATK1 ||
+	    p.mo.state == inf->S_PLAY_ATK2)
+		setmobjstate(p.mo, inf->S_PLAY);
+	if (p.readyweapon == WP_CHAINSAW &&
+	    p.psp[psi].state == inf->S_SAW)
+		sound->startsound(p.mo.x, p.mo.y, sound->SFX_SAWIDL);
+	if (p.pendingweapon != WP_NOCHANGE || p.health <= 0) {
+		newstate := weaponinfo[p.readyweapon].downstate;
+		psetpsprite(p, psi, newstate);
+		return;
+	}
+	if ((p.cmd.buttons & BT_ATTACK) != 0) {
+		if (p.attackdown == 0 ||
+		    (p.readyweapon != WP_MISSILE &&
+		     p.readyweapon != WP_BFG)) {
+			p.attackdown = 1;
+			pfireweapon(p);
+			return;
+		}
+	} else
+		p.attackdown = 0;
+	angle := (128 * lvltime) & FINEMASK;
+	p.psp[psi].sx = FRACUNIT +
+		rend->fixedmul(p.bob, inf->finesine[angle]);
+	angle &= FINEANGLES / 2 - 1;
+	p.psp[psi].sy = WEAPONTOP +
+		rend->fixedmul(p.bob, inf->finesine[angle]);
+}
+
+# vanilla A_ReFire: keep firing while held (change/ammo/death
+# break out through P_CheckAmmo)
+arefire(p: ref Player, psi: int)
+{
+	psi = psi;
+	if ((p.cmd.buttons & BT_ATTACK) != 0 &&
+	    p.pendingweapon == WP_NOCHANGE && p.health > 0) {
+		p.refire++;
+		pfireweapon(p);
+	} else {
+		p.refire = 0;
+		pcheckammo(p);
+	}
+}
+
+# vanilla A_Lower: slide down; at the bottom swap to pending and
+# raise it (dead players keep it down)
+alower(p: ref Player, psi: int)
+{
+	ps := p.psp[psi];
+	ps.sy += LOWERSPEED;
+	if (ps.sy < WEAPONBOTTOM)
+		return;
+	if (p.playerstate == PST_DEAD) {
+		ps.sy = WEAPONBOTTOM;
+		return;
+	}
+	if (p.health <= 0) {
+		psetpsprite(p, psi, inf->S_NULL);
+		return;
+	}
+	p.readyweapon = p.pendingweapon;
+	pbringupweapon(p);
+}
+
+# vanilla A_Raise: slide up; at the top go ready
+araise(p: ref Player, psi: int)
+{
+	ps := p.psp[psi];
+	ps.sy -= RAISESPEED;
+	if (ps.sy > WEAPONTOP)
+		return;
+	ps.sy = WEAPONTOP;
+	newstate := weaponinfo[p.readyweapon].readystate;
+	psetpsprite(p, psi, newstate);
+}
+
+# vanilla A_GunFlash: attack pose + muzzle-flash psprite
+agunflash(p: ref Player, psi: int)
+{
+	setmobjstate(p.mo, inf->S_PLAY_ATK2);
+	psetpsprite(p, PS_FLASH, weaponinfo[p.readyweapon].flashstate);
+}
+
+# vanilla A_FirePistol: sound, pose, ammo, flash, autoaim, shot
+afirepistol(p: ref Player, psi: int)
+{
+	psi = psi;
+	sound->startsound(p.mo.x, p.mo.y, sound->SFX_PISTOL);
+	setmobjstate(p.mo, inf->S_PLAY_ATK2);
+	decreaseammo(p, weaponinfo[p.readyweapon].ammo, 1);
+	psetpsprite(p, PS_FLASH, weaponinfo[p.readyweapon].flashstate);
+	pbulletslope(p.mo);
+	pgunshot(p.mo, p.refire == 0);
+}
+
+# vanilla A_FireShotgun: 7-pellet spread, all unaimed
+afireshotgun(p: ref Player, psi: int)
+{
+	psi = psi;
+	sound->startsound(p.mo.x, p.mo.y, sound->SFX_SHOTGN);
+	setmobjstate(p.mo, inf->S_PLAY_ATK2);
+	decreaseammo(p, weaponinfo[p.readyweapon].ammo, 1);
+	psetpsprite(p, PS_FLASH, weaponinfo[p.readyweapon].flashstate);
+	pbulletslope(p.mo);
+	for (i := 0; i < 7; i++)
+		pgunshot(p.mo, 0);
+}
+
+# vanilla A_FireCGun: ammo-checked chain fire; flash frame tracks
+# the S_CHAIN1..3 position (pointer difference -> state index delta)
+afirecgun(p: ref Player, psi: int)
+{
+	if (p.ammo[weaponinfo[p.readyweapon].ammo] == 0)
+		return;
+	sound->startsound(p.mo.x, p.mo.y, sound->SFX_PISTOL);
+	setmobjstate(p.mo, inf->S_PLAY_ATK2);
+	decreaseammo(p, weaponinfo[p.readyweapon].ammo, 1);
+	psetpsprite(p, PS_FLASH, weaponinfo[p.readyweapon].flashstate +
+		(p.psp[psi].state - inf->S_CHAIN1));
+	pbulletslope(p.mo);
+	pgunshot(p.mo, p.refire == 0);
+}
+
+# vanilla A_FireMissile: rocket with autoaim
+afiremissile(p: ref Player, psi: int)
+{
+	psi = psi;
+	decreaseammo(p, weaponinfo[p.readyweapon].ammo, 1);
+	pspawnplayermissile(p.mo, inf->MT_ROCKET);
+}
+
+# vanilla A_FirePlasma: plasma with autoaim, 2-frame flash flicker
+afireplasma(p: ref Player, psi: int)
+{
+	psi = psi;
+	decreaseammo(p, weaponinfo[p.readyweapon].ammo, 1);
+	psetpsprite(p, PS_FLASH, weaponinfo[p.readyweapon].flashstate +
+		(prandom() & 1));
+	pspawnplayermissile(p.mo, inf->MT_PLASMA);
+}
+
+# vanilla A_Punch: 2d8 melee (+berserk x10), autoaim, face target
+apunch(p: ref Player, psi: int)
+{
+	psi = psi;
+	damage := ((prandom() % 10) + 1) << 1;
+	if (p.powers[PW_STRENGTH] != 0)
+		damage *= 10;
+	# NB: Limbo << binds looser than + (verified by probe): the
+	# spread MUST stay parenthesised or the whole angle shifts
+	angle := p.mo.angle + ((prandom() - prandom()) << 18);
+	slope := paimlineattack(p.mo, angle, MELEERANGE);
+	plineattack(p.mo, angle, MELEERANGE, slope, damage);
+	if (linetarget != nil) {
+		sound->startsound(p.mo.x, p.mo.y, sound->SFX_PUNCH);
+		p.mo.angle = pointtoangle2(p.mo.x, p.mo.y,
+			linetarget.x, linetarget.y);
+	}
+}
+
+# vanilla A_Saw: 2d10 chain + autoaim; whiff/miss sounds, stepped
+# face-turn + JUSTATTACKED lunge (consumed by moveplayer)
+asaw(p: ref Player, psi: int)
+{
+	psi = psi;
+	damage := 2 * ((prandom() % 10) + 1);
+	angle := p.mo.angle + ((prandom() - prandom()) << 18);
+	slope := paimlineattack(p.mo, angle, MELEERANGE + FRACUNIT);
+	plineattack(p.mo, angle, MELEERANGE + FRACUNIT, slope, damage);
+	if (linetarget == nil) {
+		sound->startsound(p.mo.x, p.mo.y, sound->SFX_SAWFUL);
+		return;
+	}
+	sound->startsound(p.mo.x, p.mo.y, sound->SFX_SAWHIT);
+	angle = pointtoangle2(p.mo.x, p.mo.y,
+		linetarget.x, linetarget.y);
+	if (angle - p.mo.angle > ANG180) {
+		if (angle - p.mo.angle < -(ANG90 / 20))
+			p.mo.angle = angle + ANG90 / 21;
+		else
+			p.mo.angle -= ANG90 / 20;
+	} else {
+		if (angle - p.mo.angle > ANG90 / 20)
+			p.mo.angle = angle - ANG90 / 21;
+		else
+			p.mo.angle += ANG90 / 20;
+	}
+	p.mo.flags = p.mo.flags | inf->MF_JUSTATTACKED;
 }
 
 explodemissile(mo: ref Mobj)
@@ -1329,6 +1920,35 @@ uselines(p: ref Player)
 	}
 }
 
+# --- weapons & psprites (milestone 11) ---
+# Vanilla p_pspr.c/d_items.c/d_player.h transcribed (GPL-2):
+# weaponinfo rows are (ammo, up/down/ready/atk/flash states);
+# shareware has no plasma/bfg/supershotgun paths (skipped where
+# vanilla branches on gamemode).
+Wepinfo: adt {
+	ammo, upstate, downstate, readystate, atkstate, flashstate: int;
+};
+weaponinfo: array of ref Wepinfo;	# [NUMWEAPONS], built at init
+
+# psprite action indices into inf->actnames (0 = none), resolved
+# at init; the M12 AI/monster-attack actions stay no-ops
+ACT_WEAPONREADY, ACT_LOWER, ACT_RAISE, ACT_GUNFLASH: int;
+ACT_FIREPISTOL, ACT_FIRESHOTGUN, ACT_FIRECGUN: int;
+ACT_FIREMISSILE, ACT_FIREPLASMA, ACT_PUNCH, ACT_SAW: int;
+ACT_REFIRE, ACT_CHECKRELOAD: int;
+ACT_LIGHT0, ACT_LIGHT1, ACT_LIGHT2: int;
+ACT_SCREAM, ACT_XSCREAM, ACT_PAIN, ACT_PLAYERSCREAM: int;
+ACT_BOSSDEATH, ACT_EXPLODE: int;
+
+# psprite geometry (p_pspr.h)
+WEAPONBOTTOM: con 128 * FRACUNIT;
+WEAPONTOP: con 32 * FRACUNIT;
+LOWERSPEED: con 6 * FRACUNIT;
+RAISESPEED: con 6 * FRACUNIT;
+
+# P_BulletSlope result (vanilla bulletslope global)
+bulletslope: int;
+
 # --- attacks: hitscan traces, autoaim, missiles (milestone 10) ---
 # Reference: doomgeneric p_map.c (P_AimLineAttack, PTR_AimTraverse,
 # P_LineAttack, PTR_ShootTraverse), p_maputl.c (intercept math),
@@ -1777,27 +2397,6 @@ pcheckmissilespawn(th: ref Mobj)
 	th.z += th.momz >> 1;
 	if (!trymove(th, th.x, th.y))
 		explodemissile(th);
-}
-
-# interim direct-fire pistol on the BT_ATTACK rising edge (vanilla
-# A_FirePistol/P_BulletSlope/P_GunShot minus psprites: triple-try
-# autoaim, exact first-shot aim, vanilla 5d3; flash/ammo/refire
-# spread stay milestone 11's job)
-firepistol(p: ref Player)
-{
-	an := p.mo.angle;
-	slope := paimlineattack(p.mo, an, MISSILERANGE);
-	if (linetarget == nil) {
-		an += 1 << 26;
-		slope = paimlineattack(p.mo, an, MISSILERANGE);
-		if (linetarget == nil) {
-			an -= 2 << 26;
-			slope = paimlineattack(p.mo, an, MISSILERANGE);
-		}
-	}
-	damage := 5 * ((prandom() % 3) + 1);
-	plineattack(p.mo, p.mo.angle, MISSILERANGE, slope, damage);
-	sound->startsound(p.mo.x, p.mo.y, sound->SFX_PISTOL);
 }
 
 # ---------------------------------------------------------------------------
@@ -2840,19 +3439,21 @@ playerthink(p: ref Player)
 	calcheight(p);
 
 	# weapon change requests (vanilla P_PlayerThink order: change,
-	# then use, then psprites; validation + switch animation land
-	# with milestone 11, which consumes pendingweapon)
+	# then use, then psprites).  validated like vanilla: fist key
+	# with a chainsaw takes the saw (unless berserk-fisting with
+	# it); shareware never auto-selects plasma/bfg, even cheated.
 	if ((p.cmd.buttons & BT_CHANGE) != 0) {
 		newweapon := (p.cmd.buttons & BT_WEAPONMASK) >> BT_WEAPONSHIFT;
-		if (newweapon == WP_CHAINSAW && p.weaponowned[WP_CHAINSAW] != 0 &&
+		if (newweapon == WP_FIST && p.weaponowned[WP_CHAINSAW] != 0 &&
 		    !(p.readyweapon == WP_CHAINSAW && p.powers[PW_STRENGTH] != 0))
-			newweapon = WP_FIST;
-		if (p.weaponowned[newweapon] != 0 && newweapon != p.readyweapon)
+			newweapon = WP_CHAINSAW;
+		if (p.weaponowned[newweapon] != 0 &&
+		    newweapon != p.readyweapon &&
+		    newweapon != WP_PLASMA && newweapon != WP_BFG)
 			p.pendingweapon = newweapon;
 	}
 
-	# use-lines on the BT_USE rising edge (vanilla P_PlayerThink);
-	# weapon change / specials damage later
+	# use-lines on the BT_USE rising edge (vanilla P_PlayerThink)
 	if ((p.cmd.buttons & BT_USE) != 0) {
 		if (p.usedown == 0) {
 			uselines(p);
@@ -2861,15 +3462,10 @@ playerthink(p: ref Player)
 	} else
 		p.usedown = 0;
 
-	# attack on the BT_ATTACK rising edge; interim direct-fire pistol
-	# (milestone 11 wires A_FirePistol psprite states instead)
-	if ((p.cmd.buttons & BT_ATTACK) != 0) {
-		if (p.attackdown == 0) {
-			p.attackdown = 1;
-			firepistol(p);
-		}
-	} else
-		p.attackdown = 0;
+	# cycle weapon psprites (vanilla P_PlayerThink position: firing
+	# itself is driven by A_WeaponReady/A_ReFire reading BT_ATTACK,
+	# not by a playerthink edge)
+	pmovepsprites(p);
 
 	# P_PlayerInSpecialSector: later
 }
@@ -3507,11 +4103,10 @@ ptouchspecialthing(special, toucher: ref Mobj)
 		sound->startsound(0, 0, soundnum);
 }
 
-# vanilla P_DropWeapon hook: puts the weapon away on death by
-# lowering the psprite (owned by weapons milestone 11); no-op here.
-psprdropweapon(p: ref Player)
+# vanilla P_DropWeapon: put the gun away on death
+pdropweapon(p: ref Player)
 {
-	p = p;
+	psetpsprite(p, PS_WEAPON, weaponinfo[p.readyweapon].downstate);
 }
 
 # vanilla P_KillMobj (p_inter.c): corpse flags, counts, player
@@ -3546,7 +4141,7 @@ pkillmobj(source, target: ref Mobj)
 		}
 		target.flags = target.flags & ~inf->MF_SOLID;
 		p.playerstate = PST_DEAD;
-		psprdropweapon(p);
+		pdropweapon(p);
 	}
 	if (target.health < -target.info.spawnhealth &&
 	    target.info.xdeathstate != inf->S_NULL)

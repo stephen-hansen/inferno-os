@@ -158,6 +158,14 @@ RShift:	con KShift|5;
 
 # X11 evdev keycodes (/dev/scancode, +8: press=code, release=code|0x80)
 XK_Esc:	con 9;
+XK_1:	con 10;	# evdev top-row digits 2..9 (keys 1..8) + 8
+XK_2:	con 11;
+XK_3:	con 12;
+XK_4:	con 13;
+XK_5:	con 14;
+XK_6:	con 15;
+XK_7:	con 16;
+XK_8:	con 17;
 XK_Q:	con 24;
 XK_W:	con 25;
 XK_E:	con 26;
@@ -286,7 +294,7 @@ play(path: string, wmctxt: ref Draw->Context)
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
 	mo := p.mo;
-	sys->print("play: E1M1 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, esc=quit, F1=snapshot, F2=review\n");
+	sys->print("play: E1M1 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot, F2=review\n");
 	sys->print("  player at %d,%d angle %d deg\n",
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
 
@@ -513,6 +521,11 @@ play(path: string, wmctxt: ref Draw->Context)
 			btn |= 2;		# BT_USE
 		if (keystate[LCtrl] || keystate[RCtrl])
 			btn |= 1;		# BT_ATTACK
+		# weapon number keys 1-8 (vanilla: slot i selects
+		# weapon i-1; validated in playerthink)
+		for (d := '1'; d <= '8'; d++)
+			if (keystate[d] != 0)
+				btn |= 4 | ((d - '1') << 3);
 
 
 		game->setcmd(fm, sm, at, btn);
@@ -576,6 +589,22 @@ keysym(code: int): int
 	case code {
 	XK_Esc =>
 		return Esc;
+	XK_1 =>
+		return '1';
+	XK_2 =>
+		return '2';
+	XK_3 =>
+		return '3';
+	XK_4 =>
+		return '4';
+	XK_5 =>
+		return '5';
+	XK_6 =>
+		return '6';
+	XK_7 =>
+		return '7';
+	XK_8 =>
+		return '8';
 	XK_Q =>
 		return 'q';
 	XK_W =>

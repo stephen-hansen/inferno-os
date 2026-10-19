@@ -43,6 +43,9 @@ vx, vy, vz:	int;	# 16.16
 	dbgframes:	int;
 	cltopfrom, clbotfrom: array of int;
 vcos, vsin:	int;	# 16.16
+viewextra:	int;	# console player's muzzle-flash light boost
+			# (vanilla extralight: A_Light0/1/2 set it, the
+			# render adds it to every light index)
 
 # renderer state (set by init)
 r:	ref Rend->Renderer;
@@ -372,6 +375,14 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 	vangle = viewangle;
 	vcos = viewcos;
 	vsin = viewsin;
+	# muzzle-flash light for this frame (vanilla extralight, set by
+	# A_Light1/2 on firing and cleared by A_Light0)
+	viewextra = 0;
+	if (gmod != nil) {
+		cp := gmod->consoleplayer();
+		if (cp != nil)
+			viewextra = cp.extralight;
+	}
 	# per-frame plane step axes (vanilla r_plane.c:200-201):
 	#   basexscale =  finecosine[viewangle-ANG90] / centerxfrac
 	#   baseyscale = -finesine  [viewangle-ANG90] / centerxfrac
@@ -727,7 +738,7 @@ addline(segnum: int)
 	# with extralight = 0; wall columns additionally get the orientation
 	# hack (r_segs.c:649-653: horizontal segs one step darker, vertical
 	# one step brighter, then clamp to [0,LIGHTLEVELS-1]).
-	pllight := sec.lightlevel >> LIGHTSEGSHIFT;
+	pllight := (sec.lightlevel >> LIGHTSEGSHIFT) + viewextra;
 	if (pllight < 0)
 		pllight = 0;
 	if (pllight >= LIGHTLEVELS)
@@ -1548,7 +1559,7 @@ projectmo(mo: ref Game->Mobj)
 			pdrop("nosec", 0, 0, mo.sprite);
 			return;
 		}
-		lnum := sec.lightlevel >> LIGHTSEGSHIFT;
+		lnum := (sec.lightlevel >> LIGHTSEGSHIFT) + viewextra;
 		if (lnum < 0)
 			lnum = 0;
 		if (lnum >= LIGHTLEVELS)
@@ -1683,6 +1694,104 @@ drawvis(vis: ref Vissprite)
 		sys->print("POFF f=%d gx=%d gy=%d sc=%d x1=%d x2=%d gz=%d gzt=%d tmid=%d sprtop=%d\n",
 			dbgframes, vis.gx, vis.gy, vis.scale, vis.x1, vis.x2,
 			vis.gz, vis.gzt, vis.texturemid, sprtop);
+}
+
+# draw one psprite (vanilla R_DrawPSprite + R_DrawVisSprite): the
+# weapon is always on top (no drawseg clipping — masked mids were
+# flushed first), fullbright for flash frames, dim otherwise, at the
+# psprite's (sx, sy) with per-column posts like things.  NUMPSPRITES
+# slots drawn in order (weapon, then flash over it).
+drawpsprite(p: ref Game->Player, psi: int)
+{
+	ps := p.psp[psi];
+	if (ps == nil || ps.state == inf->S_NULL)
+		return;
+	st := inf->states[ps.state];
+	if (st.sprite < 0 || st.sprite >= len sprdefs)
+		return;
+	sd := sprdefs[st.sprite];
+	fr := st.frame & FF_FRAMEMASK;
+	if (fr < 0 || fr >= len sd.frames)
+		return;
+	lump := sd.frames[fr].lump[0];
+	flip := sd.frames[fr].flip[0];
+	sp := sprpatch[lump];
+	if (sp == nil)
+		return;
+	# screen edges (vanilla: tx = sx - center, minus leftoffset)
+	tx := ps.sx - (centerx << 16);
+	tx -= sp.xoff;
+	x1 := centerx + (tx >> 16);
+	if (x1 >= w)
+		return;
+	tx += sp.w << 16;
+	x2 := centerx + (tx >> 16) - 1;
+	if (x2 < 0)
+		return;
+	if (x1 < 0)
+		x1 = 0;
+	if (x2 >= w)
+		x2 = w - 1;
+	# light: fullbright flash, else dim fixed row (vanilla uses the
+	# last sprite's scalelight row; the console player's sector row
+	# is the stable equivalent)
+	light := 0;
+	if ((st.frame & FF_FULLBRIGHT) == 0) {
+		li := p.mo.subsector.sector.lightlevel >> LIGHTSEGSHIFT;
+		li += viewextra;
+		if (li < 0)
+			li = 0;
+		if (li >= LIGHTLEVELS)
+			li = LIGHTLEVELS - 1;
+		light = scalelight[li][MAXLIGHTSCALE - 1];
+		# invisibility flicker draws the gun as fuzz (vanilla
+		# R_DrawPSprite colormap NULL path); maskpost takes
+		# light -1 for fuzz
+		if (gmod != nil) {
+			inv := p.powers[gmod->PW_INVISIBILITY];
+			if (inv > 4 * 32 || (inv & 8) != 0)
+				light = -1;
+		}
+	}
+	tmid := (r.centery << 16) + (FRACUNIT >> 1) -
+		(ps.sy - sp.yoff);
+	sprtop := (r.centery << 16) - tmid;
+	frac := 0;
+	iscale := FRACUNIT;
+	if (flip != 0) {
+		frac = (sp.w - 1) << 16;
+		iscale = -FRACUNIT;
+	}
+	for (x := x1; x <= x2; x++) {
+		tc := frac >> 16;
+		frac += iscale;
+		if (tc < 0)
+			tc = 0;
+		if (tc >= sp.w)
+			tc = sp.w - 1;
+		pos := sp.colofs[tc];
+		while (pos >= 0 && pos + 3 < len sp.raw) {
+			td := int sp.raw[pos];
+			if (td == 16rff)
+				break;
+			ln := int sp.raw[pos + 1];
+			if (ln <= 0 || pos + 3 + ln > len sp.raw)
+				break;
+			topscreen := sprtop + td * FRACUNIT;
+			bottomscreen := topscreen + ln * FRACUNIT;
+			yl := (topscreen + 65535) >> 16;
+			yh := (bottomscreen - 1) >> 16;
+			if (yl < 0)
+				yl = 0;
+			if (yh >= h)
+				yh = h - 1;
+			if (yl <= yh)
+				maskpost(x, yl, yh, light,
+					tmid - (td << 16), FRACUNIT,
+					sp.raw, pos + 3, ln);
+			pos += ln + 4;
+		}
+	}
 }
 
 # scan drawsegs for clipping, then draw (vanilla R_DrawSprite):
@@ -1840,6 +1949,15 @@ drawmasked()
 		if (dssegs[i].midxex != nil) {
 			flushmask(i, dssegs[i].x1, dssegs[i].x2);
 			nmasked++;
+		}
+	}
+	# weapon psprites on top of everything (vanilla R_DrawMasked
+	# tail; skipped on the automap overlay, which we lack)
+	if (gmod != nil) {
+		cp := gmod->consoleplayer();
+		if (cp != nil && cp.mo != nil && cp.psp != nil) {
+			drawpsprite(cp, Game->PS_WEAPON);
+			drawpsprite(cp, Game->PS_FLASH);
 		}
 	}
 }

@@ -72,14 +72,16 @@ Status snapshot (what works today)
       movement (run key, walk/run tables, turn ramp)
   [x] combat substrate: thing sprites + masked mids, pickups/
       damage/death/gibbing (M9), hitscan + autoaim + missiles +
-      use-lines + gunshot specials + interim autoaim pistol (M10);
-      line/sector specials PARTIAL (M13 slices: doors, exit,
-      walkover switches, floors, plats, teleport, lights, stairs,
-      donut; ceilings/crushers + remaining E1 types still open)
-  [ ] EVERYTHING else: weapon sprites/psprites, AI, remaining
-      specials, sector specials/secrets, sound bodies, status bar,
-      HUD, automap, menu, intermission, level progression, finale,
-      demos, cheats, mouse, save/load, music
+      use-lines + gunshot specials + interim autoaim pistol (M10),
+      full psprite weapons (M11: raise/fire/reload/switch/ammo/
+      flash, extralight muzzle flashes); line/sector specials
+      PARTIAL (M13 slices: doors, exit, walkover switches, floors,
+      plats, teleport, lights, stairs, donut; ceilings/crushers +
+      remaining E1 types still open)
+  [ ] EVERYTHING else: AI, remaining specials, sector specials/
+      secrets, sound bodies, status bar, HUD, automap, menu,
+      intermission, level progression, finale, demos, cheats,
+      mouse, save/load, music
   Each gap below is a milestone; nothing else is hidden here.
 
 Known latent issues (found during the survey; fixed by their
@@ -298,7 +300,30 @@ Part B — combat & simulation completeness
            facing a door line records a crossing.
          DEPS: 8 (puff/blood sprites), 9 (damage).
 
-  [ ] 11 Weapons & psprites (p_pspr.c)
+  [x] 11 Weapons & psprites (p_pspr.c)
+         (CLOSED this session: full psprite state machine
+         (setup/bringup/move/setpsprite, misc coords, zero-tic
+         chaining), doaction split acp1 (mobj) / acp2 (player,
+         psprite), all shareware-reachable weapon A_ actions
+         (ready/lower/raise/flash/firepistol/fireshotgun/firecgun/
+         firemissile/fireplasma/punch/saw/refire/checkreload/
+         light0-2), ammo table + auto-switch on dry fire, melee
+         with autoaim, muzzle-flash light (extralight into wall/
+         thing/plane/weapon lighting), R_DrawPSprite in the masked
+         pass (fullbright flashes, dim otherwise, invisibility
+         fuzz), BT_CHANGE + number keys 1-8 incl. fist/chainsaw and
+         shareware plasma/bfg refusal, A_BossDeath E1M8 tag-666
+         floor, A_Explode barrel/map-explosion damage,
+         scream/xscream/pain/playerscream hooks.           Validated:
+         31/31 weapon state rows vs info.c, SPECTEST13 36/36
+         (raise/ready/centered gun, fire/ammo/kill, chaingun +
+         shotgun + rocket + punch + saw damage, weapon switching
+         incl. dry-fire auto-switch to fist, muzzle-flash light
+         pulse + decay, shareware plasma refusal, E1M8 baron
+         deaths lower the exit floor).  Detail in PLAN.done.
+         DEPS satisfied (8 sprite draw, 10 attack primitives,
+         9 ammo/damage).  Left for later: M12 AI attack actions +
+         noise alert, 18 HUD ammo face, 21 menus.)
          WHY: no weapon on screen, no firing loop, no ammo drain.
          SOURCES: p_pspr.c (P_SetupPsprites, P_MovePsprites,
            P_BringUpWeapon, all A_WeaponReady/Lower/Raise/
@@ -937,10 +962,13 @@ Porting notes (C -> Limbo idioms)
 - portal occlusion must CLAMP cclip/fclip to [0..h]: projy returns
   extreme values for near-camera geometry, and one unclamped write
   inverts the visible region (yt > yb) for the rest of the frame
-- Limbo `<<`/`>>` and `*`/`/` share precedence but the SHIFT RHS
-  extends over the multiplicative expression: `a << 16 / b` parses
-  as `a << (16 / b)` (type clash int/big).  Always parenthesize:
-  `(a << 16) / b`.  Mixed big/int arithmetic is also a type clash:
+- Limbo shifts bind looser than everything else (verified by probe:
+  `a + b << c` parses as `(a+b) << c`, like C).  THIS BIT US: melee
+  autoaim went silent until `angle + spread << 18` was parenthesised.
+  ALWAYS parenthesise both sides of every shift in a mixed
+  expression: `(a << 16) / b`, `(x << 16) + y`, `a + (b << c)`.
+  `a << 16 / b` parses as `a << (16 / b)` (type clash int/big).
+  Mixed big/int arithmetic is also a type clash:
   `big(x) * 16r10000` errors — wrap BOTH sides in big()
 - big vs int comparisons are type clashes: `bigv < 0` fails — use
   `bigv < big(0)`; hex literals over int32 (16r100000000) are big;

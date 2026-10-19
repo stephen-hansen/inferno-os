@@ -1195,3 +1195,52 @@ Milestones (each independently testable)
           3000/3000 random key combos agree, ramp progression exact
           (5x320 then full).  Boot smoke clean.  Feel is the user's
           call in playtesting.
+          M11 WEAPONS + PSRITES (p_pspr.c family, GPL-2) CLOSED:
+          full state machine (P_SetupPsprites at spawn, P_BringUp-
+          Weapon, P_MovePsprites every playerthink tic + flash
+          follows gun, P_SetPsprite with misc coords + zero-tic
+          chaining exactly like setmobjstate), doaction split
+          acp1 (mobj) / acp2 (player, psprite via new doactionps),
+          21-entry ACT_* name resolution at init, weaponinfo table
+          transcribed from d_items.c (all 9 rows; bfg/supershotgun
+          data-only), A_WeaponReady (attack-state exit, chainsaw
+          idle, pending/health gates, attackdown latch, bob from
+          lvltime), A_Lower/A_Raise (LOWER/RAISESPEED, dead-player
+          and S_NULL paths), A_GunFlash, all shareware firing
+          actions (FirePistol/Shotgun(7x unaimed)/CGun(with the
+          S_CHAIN1 state-delta flash quirk)/Missile/Plasma flicker
+          +Punch 2d8+berserk x10+face-target/Saw 2d10+face-turn+
+          JUSTATTACKED), A_ReFire (refire counter + held refire),
+          A_CheckReload, A_Light0/1/2 into player.extralight,
+          A_Scream (podth/bgdth cycling)/A_XScream/A_Pain/
+          A_PlayerScream (shareware: always pldeth), A_Explode
+          (barrel + missile splash via P_RadiusAttack), A_BossDeath
+          E1M8 tag-666 floor (shareware CheckBossEnd shape),
+          P_CheckAmmo shareware preference order + auto-lower on
+          dry fire, P_FireWeapon, P_DropWeapon on death, BT_CHANGE
+          + number keys 1-8 incl. fist/chainsaw rule and shareware
+          plasma/bfg refusal, R_DrawPSprite in the masked pass
+          (centered via leftoff, fullbright flashes, dim
+          scalelight[plight][47] otherwise, invisibility fuzz),
+          extralight added to wall/thing/plane light indices.
+          Melee spread and fire refire use the fixed << binds loose.
+          REAL ENGINE BUG FOUND BY THE HARNESS: Limbo << binds
+          looser than + (verified by probe: a+b<<c == (a+b)<<c),
+          so unparenthesised spread terms turned the whole angle
+          into garbage and melee went silent — every shift operand
+          is now parenthesised, porting note corrected.  Harness
+          lesson: teleported ledge-spawns warp to stale floorz on
+          the first tick (out of the melee slope window) — pin
+          floorz/ceilingz on harness teleports.  Validated:
+          31/31 weapon state rows (sprite/frame/tics/action/next)
+          vs doomgeneric info.c; SPECTEST13 36/36 over two runs
+          (raise/ready/centered gun, pistol kill + ammo + flash,
+          chaingun sustained + kill, shotgun 1-shell kill, dry
+          auto-switch to fist, flash light pulse + decay,
+          rocket spawn, plasma refusal per shareware, punch/saw
+          damage, E1M8 both barons dead + tag-666 floor 208->-13).
+          Known-unvalidated: super-shotgun/BFG bodies (no E1 path),
+          sight-check on masked use, gib xdeath branch, player
+          death scream audibly (call sites are live; SFX bodies
+          stay M17).  Boot smoke clean (t=560 idle).  Visual feel
+          (weapon bob/positioning) is the user's call in play.

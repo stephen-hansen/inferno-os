@@ -74,6 +74,7 @@ Game: module {
 	WP_FIST, WP_PISTOL, WP_SHOTGUN, WP_CHAINGUN, WP_MISSILE,
 	WP_PLASMA, WP_BFG, WP_CHAINSAW, WP_SUPERSHOTGUN: con iota;
 	NUMWEAPONS:	con 9;
+	WP_NOCHANGE:	con 9;	# no pending weapon (vanilla wp_nochange)
 	AM_CLIP, AM_SHELL, AM_CELL, AM_MISL: con iota;
 	AM_NOAMMO:	con 4;
 	NUMAMMO:	con 4;
@@ -138,6 +139,17 @@ Game: module {
 		buttons:	int;
 	};
 
+	# psprite slots (p_pspr.h psprnum_t)
+	PS_WEAPON, PS_FLASH: con iota;
+	NUMPSPRITES:	con 2;
+
+	# overlay psprite (p_pspr.h pspdef_t): state is an S_ index,
+	# S_NULL when inactive
+	Psp: adt {
+		state, tics:	int;
+		sx, sy:	int;		# 16.16 screen offset
+	};
+
 	# moving object (p_mobj.h mobj_t).  state/sprite/frame are
 	# table indices; typ not type (Limbo keyword).  info is a
 	# copy of the (immutable) mobjinfo row.  No sector/block
@@ -183,6 +195,9 @@ Game: module {
 		backpack:	int;
 		bonuscount, damagecount:	int;	# HUD flashes (M15/18)
 		attacker:	ref Mobj;	# last damager (M12 retaliation)
+		psp:	array of ref Psp;	# [NUMPSPRITES] weapon + flash
+		extralight:	int;	# muzzle-flash light boost (A_Light*)
+		refire:	int;		# held-trigger refire count
 	};
 
 	# --- world state (one level; set by setuplevel) ---
@@ -243,4 +258,5 @@ Game: module {
 	# vanilla R_PointToAngle relative to (x1,y1) in BAM; used by the
 	# renderer to pick sprite rotations
 	pointtoangle2:	fn(x1, y1, x2, y2: int): int;
+
 };
