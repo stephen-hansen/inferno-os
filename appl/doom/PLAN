@@ -68,11 +68,18 @@ Status snapshot (what works today)
       (zlight/scalelight), occlusion model verified
   [x] play sim: spawn per skill, mobj/state tables, P_Random,
       gravity/bob/friction movement, brute-force collision, step
-      up/down, P_SlideMove (flush + along-wall)
-  [ ] EVERYTHING else: thing sprites, weapon sprites, combat,
-      pickups, damage/death, AI, line/sector specials, sound,
-      status bar, HUD, automap, menu, intermission, level
-      progression, finale, demos, cheats, mouse, save/load, music
+      up/down, P_SlideMove (flush + along-wall), vanilla keyboard
+      movement (run key, walk/run tables, turn ramp)
+  [x] combat substrate: thing sprites + masked mids, pickups/
+      damage/death/gibbing (M9), hitscan + autoaim + missiles +
+      use-lines + gunshot specials + interim autoaim pistol (M10);
+      line/sector specials PARTIAL (M13 slices: doors, exit,
+      walkover switches, floors, plats, teleport, lights, stairs,
+      donut; ceilings/crushers + remaining E1 types still open)
+  [ ] EVERYTHING else: weapon sprites/psprites, AI, remaining
+      specials, sector specials/secrets, sound bodies, status bar,
+      HUD, automap, menu, intermission, level progression, finale,
+      demos, cheats, mouse, save/load, music
   Each gap below is a milestone; nothing else is hidden here.
 
 Known latent issues (found during the survey; fixed by their
@@ -81,24 +88,30 @@ milestones — do not "discover" them again)
   - doom.b:688/689: Space does `btn |= 1` labelled BT_USE and Ctrl
     `btn |= 2` labelled BT_ATTACK, but game.m defines BT_ATTACK=1,
     BT_USE=2 — bits are SWAPPED.  Dormant (nothing reads buttons
-    yet).  Fixed in milestone 10 (first consumer).
+    yet).  [x] FIXED in milestone 10 (first consumer).
   - game.b:696: missile explode-on-sky-ceiling check skipped ("no
-    skyflatnum yet").  Milestone 10.
+    skyflatnum yet").  [x] FIXED in milestone 10 (shootwall sky +
+    sky-hack branches).
   - game.b:910: PIT_CheckThing missile/special branches stubbed.
-    Milestones 9/10.
+    [x] FIXED in milestones 9 (special/pickup) + 10 (missile
+    contact).
   - game.b:969 + 896: spechit accumulation + special-line crossing
-    "later".  Milestones 10/13.
+    "later".  [x] FIXED in milestones 10 (use-trace) + 13 slices
+    (walkover drain).
   - game.b:750: P_FloatChase ("float-to-target") skipped.  12.
   - game.b:473: doaction() is the single no-op hook for ALL A_*
-    state routines.  11/12.
+    state routines.  PARTIAL: A_Fall live (10); rest 11/12.
   - game.b:651: P_PlayerInSpecialSector / weapon change / use lines
-    "later".  10/11/14.
+    "later".  PARTIAL: use-lines + BT_USE/BT_ATTACK edges live
+    (10); weapon change pending (11); special sectors (14).
   - game.b:622: use-button respawn in deaththink.  16.
-  - game.b:1267: P_UpdateSpecials / P_RespawnSpecials "later".  13.
+  - game.b:1267: P_UpdateSpecials / P_RespawnSpecials "later".
+    PARTIAL: animtic + scroll + button timers live (10/13);
+    full specials + respawn still 13.
   - game.m:135: totalkills/totalitems exist, totalsecret does not.
     14 (consumed by 16).
   - view.b:529: two-sided midtextures explicitly skipped ("draw
-    upper and lower, skip middle").  8.
+    upper and lower, skip middle").  [x] FIXED in milestone 8.
   - doom.b:411/561: skill hardcoded SK_MEDIUM.  21.
 
 Milestones (each independently testable)
@@ -221,7 +234,21 @@ Part B — combat & simulation completeness
          DEPS: 8 (blood/puff visibility is cosmetic but the pickup
            flash of items requires items drawn).
 
-  [ ] 10 Player use + attacks: hitscan, missiles, use-lines
+  [x] 10 Player use + attacks: hitscan, missiles, use-lines
+         (CLOSED this session: brute-force P_PathTraverse-equivalent
+         intercept walks (vanilla long/short-trace rule), autoaim +
+         hitscan + gunshot-46 + missiles + puff/blood + missile-
+         contact branch, interim autoaim pistol on the BT_ATTACK
+         edge, A_Fall corpse-unsolidifying as the first live A_*
+         action, vanilla G_BuildTiccmd keyboard movement (run key,
+         walk/run tables, turn ramp).  Validated numerically
+         (109/109 vanilla-vs-port trace agreement incl. positive
+         and negative autoaim slopes) and headless (pistol kill
+         5d3, missile contact damage, G46 door, corpse walk-through,
+         autoaim up/down exact).  Detail in PLAN.done M10 entries.
+         Residuals by design: psprite states/flash/ammo/refire
+         (11), monster-fired missiles (12), blockmap parity (24),
+         message/sound bodies (17/19).)
          WHY: no way to shoot or open doors; use-lines crossing is
          also the substrate for specials (13).
          SOURCES: p_map.c (P_LineAttack, P_AimLineAttack,
@@ -359,7 +386,11 @@ Part C — specials & progression (make an episode completable)
 ================================================================================
 
   [ ] 13 Line & sector specials (p_spec.c family) — biggest systems
-         milestone; split into 13a/13b if needed, both before 14.
+          milestone; split into 13a/13b if needed, both before 14.
+          (PARTIAL, slices landed + harness-validated: doors/use,
+          exit + walkover switches, floors, plats, stairs, donut,
+          teleport, lights, switches w/ timers.  OPEN: ceilings/
+          crushers (EV_DoCeiling), remaining E1 line types.)
          WHY: no doors/lifts/exits — E1M1 cannot be finished.
          SOURCES: p_spec.c (special dispatcher: P_UseSpecialLine,
            P_ShootSpecialLine, P_CrossSpecialLine, P_ChangeSwitch-
@@ -843,6 +874,11 @@ Process rule
   screenshot loops; never hold-decay key timing.
 - Keep finding/fixing bugs until none remain; add each fix entry to
   PLAN (or PLAN.done for completed-milestone fixes).
+- When a milestone closes, update PLAN itself, not just PLAN.done:
+  flip its checkbox ([ ] -> [x]) with a close-out summary, refresh
+  the status snapshot (what works today) and any dependency notes
+  that changed.  PLAN.done alone is NOT sufficient — PLAN is the
+  live record; PLAN.done is the historical log.
 
 Porting notes (C -> Limbo idioms)
 ---------------------------------

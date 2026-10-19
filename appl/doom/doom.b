@@ -153,6 +153,8 @@ Snap:	con KView|6;	# F1: dump a frame snapshot log for offline replay
 Rev:	con KView|7;	# F2: toggle frame-history review (step with Left/Right)
 LCtrl:	con KShift|2;
 RCtrl:	con KShift|3;
+LShift:	con KShift|4;	# run key (vanilla key_speed)
+RShift:	con KShift|5;
 
 # X11 evdev keycodes (/dev/scancode, +8: press=code, release=code|0x80)
 XK_Esc:	con 9;
@@ -160,6 +162,8 @@ XK_Q:	con 24;
 XK_W:	con 25;
 XK_E:	con 26;
 XK_LCtrl:	con 37;
+XK_LShift:	con 50;	# evdev LeftShift 42 + 8
+XK_RShift:	con 62;	# evdev RightShift 54 + 8
 XK_A:	con 38;
 XK_S:	con 39;
 XK_D:	con 40;
@@ -181,6 +185,7 @@ review:		int;		# -1 = live; else logical ring index under review
 revshow:	int;		# review frame needs presenting
 prevleft, prevright:	int;	# nav edge state in review
 navhold:	int;		# held-nav repeat counter in review
+turnheld:	int;		# vanilla accelerative-turn counter (tics)
 verbose:	int;		# TEMP: -v enables view sprite diagnostics
 
 play(path: string, wmctxt: ref Draw->Context)
@@ -261,6 +266,7 @@ play(path: string, wmctxt: ref Draw->Context)
 	}
 
 	keystate = array[NKEYS] of int;
+	turnheld = 0;	# vanilla accelerative turning starts slow
 	# buffered: kbdreader must keep draining emu's gkscanq even while
 	# the game loop is rendering.  gkscanq is a 256-byte queue and
 	# qproduce SILENTLY DROPS events when full (emu/port/qio.c), so
@@ -280,7 +286,7 @@ play(path: string, wmctxt: ref Draw->Context)
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
 	mo := p.mo;
-	sys->print("play: E1M1 skill medium: arrows/wasd move, space=use, esc=quit, F1=snapshot, F2=review\n");
+	sys->print("play: E1M1 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, esc=quit, F1=snapshot, F2=review\n");
 	sys->print("  player at %d,%d angle %d deg\n",
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
 
@@ -442,29 +448,59 @@ play(path: string, wmctxt: ref Draw->Context)
 
 		tic++;
 
-		# build ticcmd from key state (modern-port style: always
-		# run - forward 50, strafe 40, instant full turn 1280.
-		# MAXPLMOVE clamps both axes to +-50.)
+		# build ticcmd from key state — vanilla G_BuildTiccmd
+		# keyboard subset (g_game.c): walk/run tables selected by
+		# the speed key, two-stage accelerative turning (slow 320
+		# until turnheld reaches SLOWTURNTICS=6, then 640 walk /
+		# 1280 run), independent keys (opposites cancel),
+		# MAXPLMOVE clamp.
+		# (no mouse/joystick/chat/weapon-keys: milestones 21/25;
+		# A/D/Q/E direct strafe keys have no vanilla equivalent
+		# but use vanilla sidemove steps.)
+		speed := 0;
+		if (keystate[LShift] || keystate[RShift])
+			speed = 1;
+		if (keystate[Left] || keystate[Right])
+			turnheld++;
+		else
+			turnheld = 0;
+		# walk/run step tables (vanilla forwardmove/sidemove);
+		# turn ramps: 320 for the first 6 tics, then 640/1280
+		fmstep, smstep: int;
+		if (speed != 0) {
+			fmstep = 50;
+			smstep = 40;
+		} else {
+			fmstep = 25;
+			smstep = 24;
+		}
+		atstep := 320;
+		if (turnheld >= 6) {
+			if (speed != 0)
+				atstep = 1280;
+			else
+				atstep = 640;
+		}
 		fm := 0;
 		sm := 0;
 		at := 0;
 		btn := 0;
 		if (keystate[Up] || keystate['w'])
-			fm += 50;
+			fm += fmstep;
 		if (keystate[Down] || keystate['s'])
-			fm -= 50;
+			fm -= fmstep;
 		if (keystate[Left])
-			at += 1280;
+			at += atstep;
 		if (keystate[Right])
-			at -= 1280;
-		if (keystate['a'] && !keystate[Left])
-			sm -= 40;
-		if (keystate['d'] && !keystate[Right])
-			sm += 40;
+			at -= atstep;
+		if (keystate['a'])
+			sm -= smstep;
+		if (keystate['d'])
+			sm += smstep;
 		if (keystate['q'])
-			sm -= 40;
+			sm -= smstep;
 		if (keystate['e'])
-			sm += 40;
+			sm += smstep;
 		if (fm > 50)
 			fm = 50;
 		if (fm < -50)
@@ -548,6 +584,10 @@ keysym(code: int): int
 		return 'e';
 	XK_LCtrl =>
 		return LCtrl;
+	XK_LShift =>
+		return LShift;
+	XK_RShift =>
+		return RShift;
 	XK_A =>
 		return 'a';
 	XK_S =>

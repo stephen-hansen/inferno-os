@@ -1181,3 +1181,17 @@ Milestones (each independently testable)
           viewpoint-specific (vertex-exact column) and only became
           visible with F1 snapshot-freezing + recent playtesting of
           new areas — not a code regression.
+          VANILLA MOVEMENT RESTORED (user request; reverts the
+          always-run divergence above): G_BuildTiccmd keyboard subset
+          transcribed from g_game.c — Shift selects run (50/40/1280)
+          vs walk (25/24/640); turnheld counter with SLOWTURNTICS=6
+          (slow 320 until the 6th held tic, then 640/1280); independent
+          keys (opposites cancel); MAXPLMOVE clamp kept.  Scancodes:
+          evdev LShift 42 / RShift 54 (+8).  No strafe modifier (port
+          keeps A/D/Q/E direct strafe on vanilla sidemove steps),
+          no mouse/joystick/chat/weapon keys (21/25), turnheld resets
+          when no turn key is held.  Validated numerically before
+          editing: Python model of vanilla vs the transcription,
+          3000/3000 random key combos agree, ramp progression exact
+          (5x320 then full).  Boot smoke clean.  Feel is the user's
+          call in playtesting.
