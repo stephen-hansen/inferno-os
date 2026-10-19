@@ -1312,3 +1312,29 @@ Milestones (each independently testable)
           health 100).  Residuals by design: Vile/Skel/Fat/Keen/
           Brain bodies (no E1 path), fastparm/netgame branches
           (single-player), blockmap perf (24).
+          PERF PASS (no milestone; user-reported "solid but slow"):
+          headless bench (TEMP, removed) showed the loop at ~50ms/
+          frame vs the 28ms 35Hz budget — tick itself 0.07ms, render
+          ~38ms (walls/planes pixel loops in Limbo), convert ~11ms
+          (64k palette map) — so the old blocking tick chan starved
+          the sim to ~17 game-tics/sec: slow motion, not low fps.
+          Fixes, all behavior-identical (bench checksums match before/
+          after on 3 views): tick/render decoupling with ticdup-style
+          catch-up (tick chan buffered [8], drain all owed ticks per
+          frame, cap 4; ticcmd rebuilt per ticker so turn ramp stays
+          exact; game time now tracks wall time at 35 tps), wall
+          top/bottom texture lookup hoisted out of the per-column loop
+          (was a 125-entry string scan per column), drawplanes row-
+          major span emission (same span set; drops the per-plane
+          array[h] alloc and the per-column close-scan), rdrawcolumn
+          power-of-2 row-mask fast path (100/125 TEXTURE1 heights are
+          128), rclear via pre-zeroed slice copy (was a 64k loop).
+          F2 review ring gated behind doom -R (default off; per-frame
+          fb+clip copy ~1ms + masked scans; F1 snapshot unaffected —
+          it reads the live frame).  After: E1M1 start 33ms/frame
+          (~30fps, planes 14ms/walls 8-10ms/convert 11ms), spin view
+          28ms, wall-closeup 21ms; game speed real-time even where
+          frames drop.  Residuals: per-pixel loops + convert are the
+          floor in Limbo (needs the M24 blockmap for tick-side scale
+          and, if more fps wanted, per-column big-op fast paths or
+          half-rate rendering).

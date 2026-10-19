@@ -459,8 +459,10 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 	# sprites back-to-front, then remaining masked midtextures
 	drawmasked();
 
-	# record this frame in the history ring (F2 review)
-	if (ring != nil && ringhead >= 0 && ringhead < RINGSZ
+	# record this frame in the history ring (F2 review) — only
+	# when enabled (doom -R).  the per-frame fb+clip copy is pure
+	# overhead during real play, so it defaults to off.
+	if (ringenable && ring != nil && ringhead >= 0 && ringhead < RINGSZ
 	    && ring[ringhead] != nil) {
 		capture(ring[ringhead]);
 		ringhead++;
@@ -1076,6 +1078,17 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 			lx1, lx2);
 
 	tspan := ox2 - ox1;
+	# perf: resolve wall textures once per seg, not per column.
+	# sd.toptexture/bottomtexture are seg-constant, so hoisting the
+	# linear string-table scan out of the x-loop is behavior-identical
+	# (same texture object used for every column below).
+	toptex: ref Rend->Texture = nil;
+	bottex: ref Rend->Texture = nil;
+	if (bceilz < fceilz && sd.toptexture != "" && sd.toptexture != "-"
+		&& !(fsec.ceilingtexture == SKYFLAT && bceiltex == SKYFLAT))
+		toptex = rend->rtexture(r, sd.toptexture);
+	if (bfloorz > ffloorz && sd.bottomtexture != "" && sd.bottomtexture != "-")
+		bottex = rend->rtexture(r, sd.bottomtexture);
 	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
 		if (tspan > 0)
@@ -1122,61 +1135,54 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 		# across height-changing outdoor areas.  our clip advance below
 		# (cclip = max(cclip, fctop)) already matches vanilla's
 		# markceiling branch (ceilingclip = yl-1) for undrawn uppers.
-		if (bceilz < fceilz && sd.toptexture != "" && sd.toptexture != "-"
-			&& !(fsec.ceilingtexture == SKYFLAT && bceiltex == SKYFLAT)) {
-			tex := rend->rtexture(r,sd.toptexture);
-			if (tex != nil) {
-				yt := r.centery - int(big(fceilz - vz) * big(scale) >> 32);
-				yb := r.centery - int(big(bceilz - vz) * big(scale) >> 32);
-				if (yt < cclip) yt = cclip;
-				if (yt < 0) yt = 0;
-				if (yb >= fclip) yb = fclip - 1;
-				if (yb >= h) yb = h - 1;
-				if (yt <= yb) {
-					# upper texture anchor (r_segs.c:571-585):
-					# DONTPEGTOP -> row 0 at the front ceiling, else
-					# texture bottom at the back ceiling (vanilla vtop);
-					# both + rowoffset.
-					tmid: int;
-					if (ldflags & ML_DONTPEGTOP)
-						tmid = fceilz - vz;
-					else
-						tmid = bceilz + (tex.height << 16) - vz;
-					tmid += sd.rowoffset;
-					rend->rdrawcolumn(r,x, yt, yb, wrow, tex, col, tmid, iscale);
-					ncolumns++;
-					cclip = yb + 1;
-				}
+		if (toptex != nil) {
+			yt := r.centery - int(big(fceilz - vz) * big(scale) >> 32);
+			yb := r.centery - int(big(bceilz - vz) * big(scale) >> 32);
+			if (yt < cclip) yt = cclip;
+			if (yt < 0) yt = 0;
+			if (yb >= fclip) yb = fclip - 1;
+			if (yb >= h) yb = h - 1;
+			if (yt <= yb) {
+				# upper texture anchor (r_segs.c:571-585):
+				# DONTPEGTOP -> row 0 at the front ceiling, else
+				# texture bottom at the back ceiling (vanilla vtop);
+				# both + rowoffset.
+				tmid: int;
+				if (ldflags & ML_DONTPEGTOP)
+					tmid = fceilz - vz;
+				else
+					tmid = bceilz + (toptex.height << 16) - vz;
+				tmid += sd.rowoffset;
+				rend->rdrawcolumn(r,x, yt, yb, wrow, toptex, col, tmid, iscale);
+				ncolumns++;
+				cclip = yb + 1;
 			}
 		}
 
 		# lower texture: from front floor to back floor
-		if (bfloorz > ffloorz && sd.bottomtexture != "" && sd.bottomtexture != "-") {
-			tex := rend->rtexture(r,sd.bottomtexture);
-			if (tex != nil) {
-				# big: fixedmul(dz, scale)>>16 overflows for
-				# close walls (dz ~200 units * scale 640px/u)
-				yt := r.centery - int(big(bfloorz - vz) * big(scale) >> 32);
-				yb := r.centery - int(big(ffloorz - vz) * big(scale) >> 32);
-				if (yt < cclip) yt = cclip;
-				if (yt < 0) yt = 0;
-				if (yb >= fclip) yb = fclip - 1;
-				if (yb >= h) yb = h - 1;
-				if (yt <= yb) {
-					# lower texture anchor (r_segs.c:591-599):
-					# DONTPEGBOTTOM -> row 0 at the front ceiling,
-					# else top at the back floor (worldlow);
-					# both + rowoffset.
-					tmid: int;
-					if (ldflags & ML_DONTPEGBOTTOM)
-						tmid = fceilz - vz;
-					else
-						tmid = bfloorz - vz;
-					tmid += sd.rowoffset;
-					rend->rdrawcolumn(r,x, yt, yb, wrow, tex, col, tmid, iscale);
-					ncolumns++;
-					fclip = yt;
-				}
+		if (bottex != nil) {
+			# big: fixedmul(dz, scale)>>16 overflows for
+			# close walls (dz ~200 units * scale 640px/u)
+			yt := r.centery - int(big(bfloorz - vz) * big(scale) >> 32);
+			yb := r.centery - int(big(ffloorz - vz) * big(scale) >> 32);
+			if (yt < cclip) yt = cclip;
+			if (yt < 0) yt = 0;
+			if (yb >= fclip) yb = fclip - 1;
+			if (yb >= h) yb = h - 1;
+			if (yt <= yb) {
+				# lower texture anchor (r_segs.c:591-599):
+				# DONTPEGBOTTOM -> row 0 at the front ceiling,
+				# else top at the back floor (worldlow);
+				# both + rowoffset.
+				tmid: int;
+				if (ldflags & ML_DONTPEGBOTTOM)
+					tmid = fceilz - vz;
+				else
+					tmid = bfloorz - vz;
+				tmid += sd.rowoffset;
+				rend->rdrawcolumn(r,x, yt, yb, wrow, bottex, col, tmid, iscale);
+				ncolumns++;
+				fclip = yt;
 			}
 		}
 
@@ -2663,9 +2669,14 @@ markplane(pl, x, t, b: int)
 	vps[pl].bottom[x] = b;
 }
 
-# Emit the spans for one plane: walk columns minx..maxx and, wherever a
-# column has a marked [top,bottom], walk the row run and hand each row's
-# x-run to mapplane.  Rows with no mark in this column close the run.
+# Emit the spans for one plane: for each screen row, walk columns
+# minx..maxx and hand each maximal marked x-run to mapplane.
+# Rows/columns with no mark ([top] < 0) close the run.  This emits
+# the same span set as the old column-major run tracker (every row
+# of every column is claimed by exactly one plane, so maximal x-runs
+# per row are unique) but in a single row-major pass: no per-plane
+# array, and rows outside the plane's marked vertical extent are
+# never visited.
 drawplanes()
 {
 	for (pl := 0; pl < nvp; pl++) {
@@ -2700,35 +2711,39 @@ drawplanes()
 		if (fl == nil)
 			continue;
 		plfl = fl;
-		# spanstart[y] = x where the current run on row y began; -1 = closed
-		spanstart := array[h] of int;
-		y := 0;
-		for (y = 0; y < h; y++)
-			spanstart[y] = -1;
-		for (x := vp.minx; x <= vp.maxx; x++) {
-			t := vp.top[x];
-			b := vp.bottom[x];
-			# close runs on rows that no longer expose this plane
-			for (y = 0; y < h; y++) {
-				if (spanstart[y] >= 0 && (t < 0 || y < t || y > b)) {
-					mapplane(y, spanstart[y], x - 1, vp.z, vp.light);
-					spanstart[y] = -1;
-				}
-			}
-			if (t < 0)
-				continue;
-			# open or continue runs on rows that expose it
-			for (y = t; y <= b; y++) {
-				if (spanstart[y] < 0)
-					spanstart[y] = x;
+		# bound the rows this plane can touch (marked columns only)
+		ymin := h;
+		ymax := -1;
+		for (bx := vp.minx; bx <= vp.maxx; bx++) {
+			bt := vp.top[bx];
+			if (bt >= 0) {
+				if (bt < ymin)
+					ymin = bt;
+				bb := vp.bottom[bx];
+				if (bb > ymax)
+					ymax = bb;
 			}
 		}
-		# close any runs still open at maxx
-		for (y = 0; y < h; y++) {
-			if (spanstart[y] >= 0) {
-				mapplane(y, spanstart[y], vp.maxx, vp.z, vp.light);
-				spanstart[y] = -1;
+		if (ymax < ymin)
+			continue;
+		if (ymin < 0)
+			ymin = 0;
+		if (ymax >= h)
+			ymax = h - 1;
+		for (ry := ymin; ry <= ymax; ry++) {
+			run := -1;
+			for (rx := vp.minx; rx <= vp.maxx; rx++) {
+				rt := vp.top[rx];
+				if (rt >= 0 && ry >= rt && ry <= vp.bottom[rx]) {
+					if (run < 0)
+						run = rx;
+				} else if (run >= 0) {
+					mapplane(ry, run, rx - 1, vp.z, vp.light);
+					run = -1;
+				}
 			}
+			if (run >= 0)
+				mapplane(ry, run, vp.maxx, vp.z, vp.light);
 		}
 	}
 }

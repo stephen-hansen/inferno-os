@@ -31,6 +31,9 @@ Rend: module {
 		w, h:	int;
 		centery:	int;
 		fb8:	array of byte;		# w*h palette indices
+		zerofb:	array of byte;		# w*h pre-zeroed; clear(0)
+						# memmoves it (C speed) instead of
+						# a 64k interpreted loop
 		palr, palg, palb:	array of byte;	# 256 entries, PLAYPAL palette 0
 		colormap:	array of byte;	# 34*256 light tables
 		flats:	array of ref Flat;

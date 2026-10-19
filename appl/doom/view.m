@@ -30,9 +30,13 @@ View: module {
 
 	# debug stats from the last render
 	nsegs, ncolumns, nspans:	int;
-	nsprites, ndrawsegs:		int;
+	nsprites, ndrawsegs:	int;
 	nmasked:			int;	# masked mid segs flushed last frame
 	dbgprints:			int;	# TEMP: 1 enables sprite diagnostics
+	ringenable:			int;	# 1 = capture F2 review ring
+						# (per-frame fb+clip copy; off = real
+						# play pays nothing, F1 snapshot still
+						# works — it reads the live frame)
 
 	# user-triggered frame snapshot (F1): dump camera, mobjs,
 	# vissprites, drawsegs, clip arrays and fb8 to path for

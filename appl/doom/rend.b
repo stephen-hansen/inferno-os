@@ -413,6 +413,11 @@ Renderer.init(r: self ref Renderer, w: ref Wad->File, width, height: int): strin
 	r.h = height;
 	r.centery = height / 2;
 	r.fb8 = array[width * height] of byte;
+	# pre-zeroed clear source (heap comes back dirty, so zero once
+	# here; per-frame clear(0) then slice-copies at C speed)
+	r.zerofb = array[width * height] of byte;
+	for (j := 0; j < width * height; j++)
+		r.zerofb[j] = byte 0;
 
 	# PLAYPAL: palette 0 is the first 768 bytes, RGB triplets
 	i := w.find("PLAYPAL");
@@ -426,7 +431,7 @@ Renderer.init(r: self ref Renderer, w: ref Wad->File, width, height: int): strin
 	r.palr = array[256] of byte;
 	r.palg = array[256] of byte;
 	r.palb = array[256] of byte;
-	for (j := 0; j < 256; j++) {
+	for (j = 0; j < 256; j++) {
 		r.palr[j] = b[j*3];
 		r.palg[j] = b[j*3+1];
 		r.palb[j] = b[j*3+2];
@@ -477,6 +482,10 @@ Renderer.texture(r: self ref Renderer, name: string): ref Texture
 
 Renderer.clear(r: self ref Renderer, color: int)
 {
+	if (color == 0 && r.zerofb != nil && len r.zerofb == len r.fb8) {
+		r.fb8[0:] = r.zerofb;
+		return;
+	}
 	c := byte color;
 	for (i := 0; i < len r.fb8; i++)
 		r.fb8[i] = c;
@@ -500,6 +509,18 @@ Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 	fracstep := iscale;
 	frac := texturemid + (yl - r.centery) * fracstep;
 	th := tex.height;
+	# fast path: power-of-two heights (100/125 TEXTURE1 entries are
+	# 128 tall) wrap with & instead of a per-pixel modulo division
+	if (th > 0 && (th & (th - 1)) == 0) {
+		m := th - 1;
+		for (i := 0; i <= count; i++) {
+			row := (frac >> 16) & m;
+			r.fb8[dest] = r.colormap[cm + int tex.data[src + row]];
+			dest += r.w;
+			frac += fracstep;
+		}
+		return;
+	}
 	for (i := 0; i <= count; i++) {
 		row := (frac >> 16) % th;
 		if (row < 0)

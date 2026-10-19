@@ -48,17 +48,18 @@ init(ctxt: ref Draw->Context, args: list of string)
 		nil;
 
 	args = tl args;
+	ringflag := 0;
 	for (;;) {
-		if (args == nil ||
-		    (hd args != "-v"))
+		if (args == nil)
 			break;
-		if (hd args == "-v")
+		if (hd args == "-v") {
 			verbose = 1;
-		else {
-			usage();
-			return;
-		}
-		args = tl args;
+			args = tl args;
+		} else if (hd args == "-R") {
+			ringflag = 1;
+			args = tl args;
+		} else
+			break;
 	}
 	path := WADPATH;
 	if (args != nil) {
@@ -96,7 +97,7 @@ init(ctxt: ref Draw->Context, args: list of string)
 	w.close();
 
 	# interactive play; -v: sprite diagnostics (PDROP/PROJ/CMISS/POFF)
-	play(path, ctxt);
+	play(path, ctxt, ringflag);
 }
 
 checkread(w: ref Wad->File, name: string, expect: int)
@@ -124,7 +125,10 @@ vid_h := 200;
 
 usage()
 {
-	sys->fprint(sys->fildes(2), "usage: doom [-v] [doom.wad]\n");
+	sys->fprint(sys->fildes(2), "usage: doom [-v] [-R] [doom.wad]\n");
+	sys->fprint(sys->fildes(2), "  -v  sprite/masked diagnostics on stdout\n");
+	sys->fprint(sys->fildes(2), "  -R  enable F2 frame-history review ring\n");
+	sys->fprint(sys->fildes(2), "      (off by default: the per-frame copy costs real play)\n");
 	raise "fail:usage";
 }
 
@@ -196,7 +200,7 @@ navhold:	int;		# held-nav repeat counter in review
 turnheld:	int;		# vanilla accelerative-turn counter (tics)
 verbose:	int;		# TEMP: -v enables view sprite diagnostics
 
-play(path: string, wmctxt: ref Draw->Context)
+play(path: string, wmctxt: ref Draw->Context, doring: int)
 {
 	game = load Game Game->PATH;
 	if (game == nil)
@@ -255,6 +259,7 @@ play(path: string, wmctxt: ref Draw->Context)
 		fail(err);
 	if (verbose)
 		view->dbgprints = 1;
+	view->ringenable = doring;
 
 	err = game->setuplevel(l, game->SK_MEDIUM);
 	if (err != nil)
@@ -294,16 +299,24 @@ play(path: string, wmctxt: ref Draw->Context)
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
 	mo := p.mo;
-	sys->print("play: E1M1 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot, F2=review\n");
+	sys->print("play: E1M1 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
+	if (doring)
+		sys->print(", F2=review");
+	sys->print("\n");
 	sys->print("  player at %d,%d angle %d deg\n",
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
 
 	TICMS := 1000 / 35;
-	tick := chan of int;
+	# buffered: the tick sender blocks only when 8 ticks (~228ms)
+	# are already pending, so a slow frame doesn't lose game time.
+	# the loop drains every pending tick and runs that many tickers
+	# (capped per frame), vanilla-ticdup style: game time stays at
+	# 35 tps even when rendering is slower, frames just drop.
+	tick := chan [8] of int;
 	spawn timerproc(tick, TICMS);
 	tic := 0;
 	quit := 0;
-	dotic := 0;
+	nticks := 0;
 	exitshown := 0;		# level-complete announced once
 	for (; !quit;) {
 		# key events only update keystate; tics come SOLELY from the
@@ -348,12 +361,16 @@ play(path: string, wmctxt: ref Draw->Context)
 				break;
 		}
 		# idle: block for the next key or tic; keys arriving while
-		# waiting are handled immediately, exactly as before
+		# waiting are handled immediately, exactly as before.
+		# then drain any further pending ticks (catch-up when a
+		# frame overran: each loop runs every owed ticker, capped,
+		# so game time tracks wall time at 35 tps).
+		nticks = 0;
 		alt {
 		k := <-keych =>
 			quit = handlekey(k);
 		<-tick =>
-			dotic = 1;
+			nticks = 1;
 		}
 		if (quit) {
 			if (review != -1) {
@@ -365,16 +382,37 @@ play(path: string, wmctxt: ref Draw->Context)
 			} else
 				break;
 		}
-		if (!dotic)
+		for (;;) {
+			more := 0;
+			alt {
+			<-tick =>
+				more = 1;
+			* =>
+				more = 0;
+			}
+			if (!more)
+				break;
+			nticks++;
+		}
+		if (nticks == 0) {
+			# woken by a key with no tick owed: input state is
+			# already updated above; wait for the next tick.
 			continue;
-		dotic = 0;
+		}
+		# ticdup-style cap: at most 4 tickers per rendered frame
+		# (140 tps burst); anything older stays buffered (max 8)
+		# for the next frame.  sustained 20fps needs 2/frame.
+		if (nticks > 4)
+			nticks = 4;
 
 		# frame-history review (F2): sim frozen, step through the
 		# ring with Left/Right (tap = step, hold = scroll), F1
 		# snapshots the shown frame, F2/Esc resumes live play.
 		if (revreq) {
 			revreq = 0;
-			if (review != -1) {
+			if (!doring) {
+				sys->print("review: ring disabled (restart with -R)\n");
+			} else if (review != -1) {
 				review = -1;
 				sys->print("review: resumed live\n");
 			} else {
@@ -454,6 +492,12 @@ play(path: string, wmctxt: ref Draw->Context)
 		prevleft = keystate[Left];
 		prevright = keystate[Right];
 
+		# run every owed ticker (ticdup-style catch-up), then render
+		# once: game time tracks wall time at 35 tps even when a
+		# frame overruns.  ticcmd is rebuilt per ticker so the
+		# accelerative-turn ramp advances in bursts exactly as if
+		# the tics had run on time (vanilla duplicates the cmd).
+		for (ti := 0; ti < nticks; ti++) {
 		tic++;
 
 		# build ticcmd from key state — vanilla G_BuildTiccmd
@@ -543,6 +587,7 @@ play(path: string, wmctxt: ref Draw->Context)
 		    exitshown == 0) {
 			exitshown = 1;
 			sys->print("level complete\n");
+		}
 		}
 
 		# render: update view from player, walk BSP, present
