@@ -82,9 +82,11 @@ Status snapshot (what works today)
       specials (M13: doors, exit + walkover switches, floors,
       plats, stairs, donut, teleport, lights, switches w/ timers,
       ceilings/crushers + crush damage); E1M1 fully completable
-      (doors open, lift works, exit switch ends the level)
-  [ ] EVERYTHING else: remaining non-E1 line specials, sector
-      specials/secrets, sound bodies, status bar, HUD, automap, menu,
+      (doors open, lift works, exit switch ends the level); player
+      special sectors + secrets (M14: nukage/slime damage on the
+      32-tic cadence, count-once secrets + totalsecret, E1M8 exit)
+  [ ] EVERYTHING else: remaining non-E1 line specials, sound
+      bodies, status bar, HUD, automap, menu,
       intermission, level progression, finale, demos, cheats,
       mouse, save/load, music
   Each gap below is a milestone; nothing else is hidden here.
@@ -109,14 +111,14 @@ milestones — do not "discover" them again)
   - game.b:473: doaction() is the single no-op hook for ALL A_*
     state routines.  PARTIAL: A_Fall live (10); rest 11/12.
   - game.b:651: P_PlayerInSpecialSector / weapon change / use lines
-    "later".  PARTIAL: use-lines + BT_USE/BT_ATTACK edges live
-    (10); weapon change pending (11); special sectors (14).
+    "later".  [x] FIXED in milestone 14 (special sectors live;
+    use-lines + BT_USE/BT_ATTACK edges 10; weapon change 11).
   - game.b:622: use-button respawn in deaththink.  16.
   - game.b:1267: P_UpdateSpecials / P_RespawnSpecials "later".
     PARTIAL: animtic + scroll + button timers live (10/13);
     full specials + respawn still 13.
   - game.m:135: totalkills/totalitems exist, totalsecret does not.
-    14 (consumed by 16).
+    [x] FIXED in milestone 14 (consumed by 16).
   - view.b:529: two-sided midtextures explicitly skipped ("draw
     upper and lower, skip middle").  [x] FIXED in milestone 8.
   - doom.b:411/561: skill hardcoded SK_MEDIUM.  21.
@@ -513,8 +515,21 @@ Part C — specials & progression (make an episode completable)
          DEPS: 10 (use-lines crossing + spechit + button), 13 uses
            9's sounds via stub.
 
-  [ ] 14 Player special sectors + secrets
-         WHY: damaging floors/secrets are core E1 (nukage runs,
+  [x] 14 Player special sectors + secrets
+          (CLOSED this session: P_PlayerInSpecialSector (p_spec.c
+          1019) runs from playerthink gated on nonzero special —
+          standing check (z == floor), damage 10/5/20 on the 32-tic
+          cadence for 5/7/16+4 (ironfeet gate; 4/16 bypass on
+          prandom<5), secret count-once via special=0, E1M8 case-11
+          godmode-strip + 20-damage + exit at hp<=10; totalsecret in
+          game.m counted at P_SpawnSpecials.  Validated pre-edit
+          (E1 SECTORS histogram, cadence math) + headless SPECTEST16
+          22/22 (TEMP, removed): totalsecret 3, nukage exact -15,
+          ironfeet blocks, secret counted once + cleared, exit
+          triggers at 1hp/128 tics, slime16 exact -60, all E1 tick
+          clean.  Detail in PLAN.done.  Residuals by design: message
+          bodies (19), intermission carry (16).)
+          WHY: damaging floors/secrets are core E1 (nukage runs,
            secret walls count); intermission (16) needs totals.
          SOURCES: p_user.c P_PlayerInSpecialSector (sector special
            5 nukage 20%/5%, 7 light-bleed 10%, 9 secret marker,

@@ -227,6 +227,7 @@ Game: module {
 	gameskill:	int;
 	gamemapnum:	int;		# ExMy map number (teleport boss rule)
 	totalkills, totalitems:	int;
+	totalsecret:	int;		# secret sectors (P_SpawnSpecials 9)
 	scrolllines:	array of int;	# scroll-left linedefs (special 48)
 	nscrolllines:	int;
 

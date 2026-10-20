@@ -618,6 +618,7 @@ setuplevel(l: ref Map->Level, skill: int): string
 	lvltime = 0;
 	totalkills = 0;
 	totalitems = 0;
+	totalsecret = 0;
 	mobjs = array[0] of ref Mobj;
 	thinkers = array[0] of ref Thinker;
 	activeplats = array[0] of ref Thinker;
@@ -3309,7 +3310,8 @@ evceilingcrushstop(li: int): int
 # p_spec.c P_SpawnSpecials/EV_LightTurnOn, p_doors.c door spawners.
 # Transcribed line-for-line except brute-force neighbour scans (no
 # sec->lines) and the separate thinker list.  Sector special 9
-# (secret count) belongs to milestone 14; 7/11/16 spawn nothing.
+# (secret count -> totalsecret) landed with milestone 14; 7/11/16
+# spawn nothing (their damage lives in P_PlayerInSpecialSector).
 # ---------------------------------------------------------------------------
 
 # vanilla P_FindMinSurroundingLight (p_spec.c): min neighbour light,
@@ -3494,8 +3496,10 @@ spawnspecialsectors()
 		else if (sec.special == 4) {
 			spawnstrobeflash(sec, FASTDARK, 0);
 			sec.special = 4;
-		} else if (sec.special == 8)
+		} 		else if (sec.special == 8)
 			spawnglowinglight(sec);
+		else if (sec.special == 9)
+			totalsecret++;	# SECRET SECTOR (count only; M14)
 		else if (sec.special == 10)
 			spawndoorclosein30(sec);
 		else if (sec.special == 12)
@@ -3777,6 +3781,41 @@ deaththink(p: ref Player)
 	# use-button respawn / messaging later
 }
 
+# vanilla P_PlayerInSpecialSector (p_spec.c): runs every tic the
+# player origin is in a special sector (gated on nonzero special by
+# the caller).  Falling (z above floor) skips.  Damage cadence is
+# every 32nd tic (leveltime & 31); secrets count once by clearing
+# the special.  Unknown specials are ignored (vanilla I_Errors;
+# the port never aborts on map data).
+pinspecialsector(p: ref Player)
+{
+	sec := p.mo.subsector.sector;
+	if (p.mo.z != sec.floorheight)
+		return;			# falling, not all the way down yet
+	if (sec.special == 5) {		# HELLSLIME DAMAGE
+		if (p.powers[PW_IRONFEET] == 0 && (lvltime & 31) == 0)
+			pdamagemobj(p.mo, nil, nil, 10);
+	} else if (sec.special == 7) {	# NUKAGE DAMAGE
+		if (p.powers[PW_IRONFEET] == 0 && (lvltime & 31) == 0)
+			pdamagemobj(p.mo, nil, nil, 5);
+	} else if (sec.special == 16 || sec.special == 4) {
+					# SUPER HELLSLIME / STROBE HURT
+		if (p.powers[PW_IRONFEET] == 0 || prandom() < 5) {
+			if ((lvltime & 31) == 0)
+				pdamagemobj(p.mo, nil, nil, 20);
+		}
+	} else if (sec.special == 9) {	# SECRET SECTOR
+		p.secretcount++;
+		sec.special = 0;
+	} else if (sec.special == 11) {	# EXIT SUPER DAMAGE (E1M8 finale)
+		p.cheats = p.cheats & ~CF_GODMODE;
+		if ((lvltime & 31) == 0)
+			pdamagemobj(p.mo, nil, nil, 20);
+		if (p.health <= 10)
+			gexitlevel();
+	}
+}
+
 playerthink(p: ref Player)
 {
 	if ((p.cheats & CF_NOCLIP) != 0)
@@ -3819,6 +3858,11 @@ playerthink(p: ref Player)
 
 	calcheight(p);
 
+	# vanilla P_PlayerThink order: sector specials run here (after
+	# CalcHeight, before weapon change), gated on nonzero special
+	if (p.mo.subsector.sector.special != 0)
+		pinspecialsector(p);
+
 	# weapon change requests (vanilla P_PlayerThink order: change,
 	# then use, then psprites).  validated like vanilla: fist key
 	# with a chainsaw takes the saw (unless berserk-fisting with
@@ -3847,8 +3891,6 @@ playerthink(p: ref Player)
 	# itself is driven by A_WeaponReady/A_ReFire reading BT_ATTACK,
 	# not by a playerthink edge)
 	pmovepsprites(p);
-
-	# P_PlayerInSpecialSector: later
 }
 
 xymovement(mo: ref Mobj)

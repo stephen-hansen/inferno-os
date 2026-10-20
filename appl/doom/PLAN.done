@@ -1373,3 +1373,30 @@ Milestones (each independently testable)
           switch arms for types with no E1 path, e.g. S1 41/43 —
           E1M1-E1M9 need none), message/sound bodies (17/19),
           damaging floors + secrets counting (14).
+          M14 PLAYER SPECIAL SECTORS + SECRETS (p_spec.c 1019,
+          GPL-2) CLOSED: P_PlayerInSpecialSector runs from
+          playerthink gated on nonzero sector special (vanilla
+          order: after CalcHeight, before weapon change) — falling
+          check (z == floorheight), HELLSLIME 10 (5) / NUKAGE 5 (7)
+          / SUPER-HELLSLIME 20 (16) + STROBE-HURT 20 (4) on the
+          32-tic cadence (leveltime & 31; PLAN's "16-tick" note was
+          wrong), ironfeet gate with the prandom<5 bypass for 4/16,
+          SECRET 9 counts once by clearing special to 0 (PLAN's
+          "bit 9" note was wrong — vanilla assigns 0), E1M8 case 11
+          strips godmode + 20-damage + G_ExitLevel at hp<=10 (the
+          E1M8 hell-hack cap in P_DamageMobj keeps the player alive
+          to reach it).  totalsecret added to game.m, zeroed in
+          setuplevel, counted in P_SpawnSpecials case 9 (E1M1 = 3);
+          unknown specials ignored silently (vanilla I_Errors; the
+          port never aborts on map data).  Validated pre-edit
+          (Python: E1 SECTORS histogram — E1M1 has 4x7 + 3x9, E1M8
+          1x11, E1M3 5x16; cadence math 100 tics from L=1 -> 3 hits)
+          + headless SPECTEST16 22/22 (TEMP, removed): totalsecret 3,
+          nukage exact 95->80 (-15), ironfeet blocks, secret counted
+          once + cleared + total unchanged, godmode stripped, exit at
+          1hp after 128 tics, slime16 exact 80->20 (-60), all
+          E1M1-E1M9 load + 35 ticks clean.  Harness lesson: read
+          baselines (secretcount) BEFORE the placement tick, which
+          already fires the sector.  Boot smoke clean (35tps).
+          Residuals by design: message bodies (19), intermission
+          totals carry (16).
