@@ -71,6 +71,7 @@ THINK_DOOR: con 0;
 THINK_FLOOR: con 1;
 THINK_PLAT: con 2;
 THINK_LIGHT: con 3;
+THINK_CEILING: con 4;
 RES_OK: con 0;			# T_MovePlane result_e
 RES_CRUSHED: con 1;
 RES_PASTDEST: con 2;
@@ -114,12 +115,23 @@ Plat: adt {			# vanilla plat_t (subset)
 	crush:	int;
 	tag:	int;
 };
+Ceiling: adt {			# vanilla ceiling_t (p_spec.h, subset)
+	sec:	ref Map->Sector;
+	ctype:	int;		# CEIL_* (lower/raise/crush family)
+	topheight, bottomheight:	int;	# 16.16
+	speed:	int;		# 16.16 per tic
+	direction:	int;	# 0 stasis, 1 up, -1 down
+	olddirection:	int;	# stasis resume (EV_CeilingCrushStop)
+	crush:	int;
+	tag:	int;
+};
 Thinker: adt {
-	kind:	int;		# THINK_DOOR/FLOOR/PLAT/LIGHT (ceilings later)
+	kind:	int;		# THINK_DOOR/FLOOR/PLAT/LIGHT/CEILING
 	door:	ref Door;
 	floor:	ref Floor;
 	plat:	ref Plat;
 	light:	ref Light;
+	ceiling:	ref Ceiling;
 	removed:	int;		# lazy unlink, like mobjs
 };
 
@@ -136,6 +148,7 @@ Light: adt {
 };
 thinkers: array of ref Thinker;
 activeplats: array of ref Thinker;	# plats only (p_plats.c list)
+activeceilings: array of ref Thinker;	# ceilings only (p_ceilng.c list)
 Button: adt {			# vanilla button_t (p_switch.c)
 	li:	int;		# linedef index
 	where:	int;		# BW_TOP/MIDDLE/BOTTOM
@@ -378,6 +391,7 @@ init(): string
 	mobjs = array[0] of ref Mobj;
 	thinkers = array[0] of ref Thinker;
 	activeplats = array[0] of ref Thinker;
+	activeceilings = array[0] of ref Thinker;
 	buttonlist = array[MAXBUTTONS] of ref Button;
 	for (bi := 0; bi < MAXBUTTONS; bi++)
 		buttonlist[bi] = ref Button(-1, 0, "", 0);
@@ -607,6 +621,7 @@ setuplevel(l: ref Map->Level, skill: int): string
 	mobjs = array[0] of ref Mobj;
 	thinkers = array[0] of ref Thinker;
 	activeplats = array[0] of ref Thinker;
+	activeceilings = array[0] of ref Thinker;
 	for (bi := 0; bi < MAXBUTTONS; bi++)
 		buttonlist[bi] = ref Button(-1, 0, "", 0);
 	nspechit = 0;
@@ -986,7 +1001,7 @@ evdofloortag(tag, fltype: int)
 		f.direction = -1;
 		f.speed = FLOORSPEED;
 		f.floordestheight = findlowestfloorsec(sec);
-		th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
+		th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, nil, 0);
 		n := len thinkers;
 		nt := array[n + 1] of ref Thinker;
 		if (n > 0)
@@ -1496,10 +1511,12 @@ runthinkers()
 			tverticaldoor(th);
 		else if (th.kind == THINK_FLOOR)
 			tmovefloor(th);
-		else if (th.kind == THINK_PLAT)
+		else 		if (th.kind == THINK_PLAT)
 			tplatraise(th);
 		else if (th.kind == THINK_LIGHT)
 			tlightthink(th);
+		else if (th.kind == THINK_CEILING)
+			tmoveceiling(th);
 	}
 }
 
@@ -1539,6 +1556,30 @@ findlowestceilingsurrounding(sec: ref Map->Sector): int
 	return height;
 }
 
+# vanilla P_FindHighestCeilingSurrounding (p_spec.c): max neighbour
+# ceiling (init 0, so a one-sided sector yields 0)
+findhighestceilingsurrounding(sec: ref Map->Sector): int
+{
+	height := 0;
+	for (i := 0; i < len lev.lines; i++) {
+		ld := lev.lines[i];
+		other := ld.frontsector;
+		if (ld.frontsector == sec) {
+			if (ld.backsector == sec)
+				continue;	# self-referencing: getNextSector nil
+			other = ld.backsector;
+		} else if (ld.backsector == sec) {
+			other = ld.frontsector;
+		} else
+			continue;		# line doesn't touch sec
+		if (other == nil)
+			continue;
+		if (other.ceilingheight > height)
+			height = other.ceilingheight;
+	}
+	return height;
+}
+
 # vanilla P_ThingHeightClip (p_maputl.c): refit mo to its sector
 # stack after a height change; returns fit (1) or crushed (0).
 # The checkposition result is discarded like vanilla (globals keep
@@ -1560,8 +1601,10 @@ thingheightclip(mo: ref Mobj): int
 	return 0;
 }
 
-# vanilla PIT_ChangeSector (p_maputl.c): 1 = keep scanning, 0 = nofit
-pitchangesector(mo: ref Mobj): int
+# vanilla PIT_ChangeSector (p_map.c): 1 = keep scanning, 0 = nofit.
+# crush (P_ChangeSector's crunch) damages stuck shootables 10 every
+# 4th tic with a blood spray (vanilla crushchange + !(leveltime&3)).
+pitchangesector(mo: ref Mobj, crush: int): int
 {
 	if (thingheightclip(mo) != 0)
 		return 1;
@@ -1578,12 +1621,21 @@ pitchangesector(mo: ref Mobj): int
 	}
 	if ((mo.flags & inf->MF_SHOOTABLE) == 0)
 		return 1;
+	if (crush != 0 && (lvltime & 3) == 0) {
+		pdamagemobj(mo, nil, nil, 10);
+		blood := spawnmobj(mo.x, mo.y, mo.z + mo.height / 2,
+			inf->MT_BLOOD);
+		blood.momx = (prandom() - prandom()) << 12;
+		blood.momy = (prandom() - prandom()) << 12;
+	}
 	return 0;
 }
 
 # vanilla P_ChangeSector (p_floor.c): refit every thing in sec;
-# returns nofit (1 = blocked/crushed)
-pchangesector(sec: ref Map->Sector): int
+# returns nofit (1 = blocked/crushed).  crush damages stuck
+# shootables via PIT_ChangeSector (ceiling crushers; floors/plats
+# always pass 0).
+pchangesector(sec: ref Map->Sector, crush: int): int
 {
 	nofit := 0;
 	for (i := 0; i < len mobjs; i++) {
@@ -1594,7 +1646,7 @@ pchangesector(sec: ref Map->Sector): int
 			continue;
 		if (!(mo.subsector.sector == sec))
 			continue;
-		if (pitchangesector(mo) == 0)
+		if (pitchangesector(mo, crush) == 0)
 			nofit = 1;
 	}
 	return nofit;
@@ -1610,17 +1662,17 @@ tmoveplane(sec: ref Map->Sector, speed, dest: int, crush, floor, direction: int)
 			if (sec.floorheight - speed < dest) {
 				lastpos = sec.floorheight;
 				sec.floorheight = dest;
-				if (pchangesector(sec) != 0) {
+				if (pchangesector(sec, crush) != 0) {
 					sec.floorheight = lastpos;
-					pchangesector(sec);
+					pchangesector(sec, crush);
 				}
 				return RES_PASTDEST;
 			}
 			lastpos = sec.floorheight;
 			sec.floorheight = sec.floorheight - speed;
-			if (pchangesector(sec) != 0) {
+			if (pchangesector(sec, crush) != 0) {
 				sec.floorheight = lastpos;
-				pchangesector(sec);
+				pchangesector(sec, crush);
 				return RES_CRUSHED;
 			}
 			return RES_OK;
@@ -1628,34 +1680,40 @@ tmoveplane(sec: ref Map->Sector, speed, dest: int, crush, floor, direction: int)
 		if (sec.floorheight + speed > dest) {	# UP
 			lastpos = sec.floorheight;
 			sec.floorheight = dest;
-			if (pchangesector(sec) != 0) {
+			if (pchangesector(sec, crush) != 0) {
 				sec.floorheight = lastpos;
-				pchangesector(sec);
+				pchangesector(sec, crush);
 			}
 			return RES_PASTDEST;
 		}
 		lastpos = sec.floorheight;
 		sec.floorheight = sec.floorheight + speed;
-		pchangesector(sec);
+		if (pchangesector(sec, crush) != 0) {
+			if (crush == 0) {	# vanilla: crush stays moved
+				sec.floorheight = lastpos;
+				pchangesector(sec, crush);
+			}
+			return RES_CRUSHED;
+		}
 		return RES_OK;
 	}
 	if (direction == -1) {		# CEILING DOWN
 		if (sec.ceilingheight - speed < dest) {
 			lastpos = sec.ceilingheight;
 			sec.ceilingheight = dest;
-			if (pchangesector(sec) != 0) {
+			if (pchangesector(sec, crush) != 0) {
 				sec.ceilingheight = lastpos;
-				pchangesector(sec);
+				pchangesector(sec, crush);
 			}
 			return RES_PASTDEST;
 		}
 		lastpos = sec.ceilingheight;
 		sec.ceilingheight = sec.ceilingheight - speed;
-		if (pchangesector(sec) != 0) {
+		if (pchangesector(sec, crush) != 0) {
 			if (crush != 0)
 				return RES_CRUSHED;	# stay crushed (milestone 9)
 			sec.ceilingheight = lastpos;
-			pchangesector(sec);
+			pchangesector(sec, crush);
 			return RES_CRUSHED;
 		}
 		return RES_OK;
@@ -1663,15 +1721,15 @@ tmoveplane(sec: ref Map->Sector, speed, dest: int, crush, floor, direction: int)
 	if (sec.ceilingheight + speed > dest) {	# CEILING UP
 		lastpos = sec.ceilingheight;
 		sec.ceilingheight = dest;
-		if (pchangesector(sec) != 0) {
+		if (pchangesector(sec, crush) != 0) {
 			sec.ceilingheight = lastpos;
-			pchangesector(sec);
+			pchangesector(sec, crush);
 		}
 		return RES_PASTDEST;
 	}
 	lastpos = sec.ceilingheight;
 	sec.ceilingheight = sec.ceilingheight + speed;
-	pchangesector(sec);
+	pchangesector(sec, crush);
 	return RES_OK;
 }
 
@@ -1834,7 +1892,7 @@ evverticaldoor(li: int, mo: ref Mobj): int
 	else
 		d.topheight = findlowestceilingsurrounding(sec) - 4 * FRACUNIT;
 	d.topcountdown = 0;
-	th := ref Thinker(THINK_DOOR, d, nil, nil, nil, 0);
+	th := ref Thinker(THINK_DOOR, d, nil, nil, nil, nil, 0);
 	sectorthinker(sec, th);
 	return 1;
 }
@@ -1866,7 +1924,7 @@ evdodoor(li, dtype: int): int
 				if (d.topheight != sec.ceilingheight)
 					sound->startsound(0, 0, sound->SFX_DOROPN);
 			}
-			th := ref Thinker(THINK_DOOR, d, nil, nil, nil, 0);
+			th := ref Thinker(THINK_DOOR, d, nil, nil, nil, nil, 0);
 			sectorthinker(sec, th);
 		}
 		secnum = findsectorfromlinetag(li, secnum);
@@ -2680,7 +2738,7 @@ evbuildstairs(li: int): int
 			height := sec.floorheight + stairsize;
 			f := ref Floor(sec, FL_RAISEFLOOR, height, speed,
 				1, 0, "", 0);
-			th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
+			th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, nil, 0);
 			sectorthinker(sec, th);
 			texture := sec.floortexture;
 			for (;;) {
@@ -2702,7 +2760,7 @@ evbuildstairs(li: int): int
 					sec = tsec;
 					f = ref Floor(sec, FL_RAISEFLOOR, height,
 						speed, 1, 0, "", 0);
-					th = ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
+					th = ref Thinker(THINK_FLOOR, nil, f, nil, nil, nil, 0);
 					sectorthinker(sec, th);
 					found = 1;
 					break;
@@ -2754,7 +2812,7 @@ evdofloor(li, fltype: int): int
 				f.speed = FLOORSPEED;
 				f.floordestheight = findnexthighestfloor(sec, sec.floorheight);
 			}
-			th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
+			th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, nil, 0);
 			n := len thinkers;
 			nt := array[n + 1] of ref Thinker;
 			if (n > 0)
@@ -2914,12 +2972,12 @@ evdodonut(li: int): int
 			# rising slime
 			f := ref Floor(s2, FL_DONUTRAISE, s3.floorheight,
 				FLOORSPEED / 2, 1, 0, s3.floortexture, 0);
-			th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
+			th := ref Thinker(THINK_FLOOR, nil, f, nil, nil, nil, 0);
 			sectorthinker(s2, th);
 			# lowering donut-hole
 			f = ref Floor(s1, FL_LOWERFLOOR, s3.floorheight,
 				FLOORSPEED / 2, -1, 0, "", 0);
-			th = ref Thinker(THINK_FLOOR, nil, f, nil, nil, 0);
+			th = ref Thinker(THINK_FLOOR, nil, f, nil, nil, nil, 0);
 			sectorthinker(s1, th);
 		}
 		secnum = findsectorfromlinetag(li, secnum);
@@ -3038,7 +3096,7 @@ evdoplat(li, pltype, amount: int): int
 				pl.status = PLS_DOWN;
 				sound->startsound(0, 0, sound->SFX_PSTART);
 			}
-			th := ref Thinker(THINK_PLAT, nil, nil, pl, nil, 0);
+			th := ref Thinker(THINK_PLAT, nil, nil, pl, nil, nil, 0);
 			n := len thinkers;
 			nt := array[n + 1] of ref Thinker;
 			if (n > 0)
@@ -3051,6 +3109,198 @@ evdoplat(li, pltype, amount: int): int
 		secnum = findsectorfromlinetag(li, secnum);
 	}
 	amount = amount;	# raiseAndChange only; kept for signature
+	return rtn;
+}
+
+# ---------------------------------------------------------------------------
+# ceilings / crushers (milestone 13).  Reference: doomgeneric
+# p_ceilng.c (GPL-2).  Transcribed line-for-line except: brute-force
+# tag scans (no blockmap), separate thinker list with stable indices
+# (sectors hold indices, so slots stay put), and an unbounded
+# activeceilings list (vanilla I_Errors past MAXCEILINGS=30 — same
+# divergence as activeplats).  No E1 line special drives these (E1
+# has no ceiling types); validated synthetically + by review.
+# ---------------------------------------------------------------------------
+
+# vanilla P_AddActiveCeiling (p_ceilng.c), minus the I_Error
+paddactiveceiling(th: ref Thinker)
+{
+	n := len activeceilings;
+	na := array[n + 1] of ref Thinker;
+	if (n > 0)
+		na[0:] = activeceilings;
+	na[n] = th;
+	activeceilings = na;
+}
+
+# vanilla P_RemoveActiveCeiling (p_ceilng.c), minus the I_Error
+premoveactiveceiling(th: ref Thinker)
+{
+	th.ceiling.sec.specialdata = -1;
+	th.removed = 1;
+	n := len activeceilings;
+	for (i := 0; i < n; i++) {
+		if (activeceilings[i] == th) {
+			if (i != n - 1)
+				activeceilings[i] = activeceilings[n - 1];
+			na := array[n - 1] of ref Thinker;
+			if (n - 1 > 0)
+				na[0:] = activeceilings[0:n - 1];
+			activeceilings = na;
+			return;
+		}
+	}
+}
+
+# vanilla T_MoveCeiling (p_ceilng.c): direction state machine over
+# T_MovePlane results; stnmov tick sound, pstop on silent ends.
+tmoveceiling(th: ref Thinker)
+{
+	c := th.ceiling;
+	sec := c.sec;
+	if (c.direction == 0)		# IN STASIS
+		return;
+	if (c.direction == 1) {		# UP
+		res := tmoveplane(sec, c.speed, c.topheight, 0, 0, c.direction);
+		if ((lvltime & 7) == 0) {
+			if (c.ctype != CEIL_SILENTCRUSHANDRAISE)
+				sound->startsound(0, 0, sound->SFX_STNMOV);
+		}
+		if (res == RES_PASTDEST) {
+			if (c.ctype == CEIL_RAISETOHIGHEST)
+				premoveactiveceiling(th);
+			else if (c.ctype == CEIL_SILENTCRUSHANDRAISE)
+				sound->startsound(0, 0, sound->SFX_PSTOP);
+			if (c.ctype == CEIL_SILENTCRUSHANDRAISE ||
+			    c.ctype == CEIL_FASTCRUSHANDRAISE ||
+			    c.ctype == CEIL_CRUSHANDRAISE)
+				c.direction = -1;
+		}
+		return;
+	}
+	# DOWN
+	res := tmoveplane(sec, c.speed, c.bottomheight, c.crush, 0, c.direction);
+	if ((lvltime & 7) == 0) {
+		if (c.ctype != CEIL_SILENTCRUSHANDRAISE)
+			sound->startsound(0, 0, sound->SFX_STNMOV);
+	}
+	if (res == RES_PASTDEST) {
+		if (c.ctype == CEIL_SILENTCRUSHANDRAISE) {
+			sound->startsound(0, 0, sound->SFX_PSTOP);
+			c.speed = CEILSPEED;
+			c.direction = 1;
+		} else if (c.ctype == CEIL_CRUSHANDRAISE) {
+			c.speed = CEILSPEED;
+			c.direction = 1;
+		} else if (c.ctype == CEIL_FASTCRUSHANDRAISE) {
+			c.direction = 1;
+		} else if (c.ctype == CEIL_LOWERANDCRUSH ||
+		    c.ctype == CEIL_LOWERTOFLOOR) {
+			premoveactiveceiling(th);
+		}
+	} else if (res == RES_CRUSHED) {
+		if (c.ctype == CEIL_SILENTCRUSHANDRAISE ||
+		    c.ctype == CEIL_CRUSHANDRAISE ||
+		    c.ctype == CEIL_LOWERANDCRUSH)
+			c.speed = CEILSPEED / 8;
+	}
+}
+
+# vanilla P_ActivateInStasisCeiling (p_ceilng.c): re-wake in-stasis
+# ceilings of the crush-raise family by tag
+pactivateinstasisceiling(li: int)
+{
+	tag := lev.lines[li].tag;
+	for (i := 0; i < len activeceilings; i++) {
+		th := activeceilings[i];
+		if (th.removed)
+			continue;
+		c := th.ceiling;
+		if (c.tag == tag && c.direction == 0) {
+			c.direction = c.olddirection;
+		}
+	}
+}
+
+# vanilla EV_DoCeiling (p_ceilng.c): tag-loop ceiling spawner.
+# Reactivates in-stasis crush-raise ceilings first (vanilla order).
+evdoceiling(li, ctype: int): int
+{
+	if (ctype == CEIL_FASTCRUSHANDRAISE ||
+	    ctype == CEIL_SILENTCRUSHANDRAISE ||
+	    ctype == CEIL_CRUSHANDRAISE)
+		pactivateinstasisceiling(li);
+	rtn := 0;
+	secnum := findsectorfromlinetag(li, -1);
+	while (secnum >= 0) {
+		sec := lev.sectors[secnum];
+		if (sec.specialdata == -1) {
+			rtn = 1;
+			c := ref Ceiling;
+			c.sec = sec;
+			c.crush = 0;
+			# vanilla fallthrough: silent/crush set crush+top
+			# then join the lower arm (bottom = floor + 8u)
+			if (ctype == CEIL_FASTCRUSHANDRAISE) {
+				c.crush = 1;
+				c.topheight = sec.ceilingheight;
+				c.bottomheight = sec.floorheight + 8 * FRACUNIT;
+				c.direction = -1;
+				c.speed = CEILSPEED * 2;
+			} else if (ctype == CEIL_SILENTCRUSHANDRAISE ||
+			    ctype == CEIL_CRUSHANDRAISE ||
+			    ctype == CEIL_LOWERANDCRUSH ||
+			    ctype == CEIL_LOWERTOFLOOR) {
+				if (ctype == CEIL_SILENTCRUSHANDRAISE ||
+				    ctype == CEIL_CRUSHANDRAISE) {
+					c.crush = 1;
+					c.topheight = sec.ceilingheight;
+				}
+				c.bottomheight = sec.floorheight;
+				if (ctype != CEIL_LOWERTOFLOOR)
+					c.bottomheight = sec.floorheight + 8 * FRACUNIT;
+				c.direction = -1;
+				c.speed = CEILSPEED;
+			} else if (ctype == CEIL_RAISETOHIGHEST) {
+				c.topheight = findhighestceilingsurrounding(sec);
+				c.direction = 1;
+				c.speed = CEILSPEED;
+			}
+			c.tag = lev.lines[li].tag;
+			c.ctype = ctype;
+			c.olddirection = c.direction;
+			th := ref Thinker(THINK_CEILING, nil, nil, nil, nil, c, 0);
+			n := len thinkers;
+			nt := array[n + 1] of ref Thinker;
+			if (n > 0)
+				nt[0:] = thinkers;
+			nt[n] = th;
+			thinkers = nt;
+			sec.specialdata = n;
+			paddactiveceiling(th);
+		}
+		secnum = findsectorfromlinetag(li, secnum);
+	}
+	return rtn;
+}
+
+# vanilla EV_CeilingCrushStop (p_ceilng.c): freeze crushing
+# ceilings by tag (stasis; re-woken by the crush-raise family)
+evceilingcrushstop(li: int): int
+{
+	tag := lev.lines[li].tag;
+	rtn := 0;
+	for (i := 0; i < len activeceilings; i++) {
+		th := activeceilings[i];
+		if (th.removed)
+			continue;
+		c := th.ceiling;
+		if (c.tag == tag && c.direction != 0) {
+			c.olddirection = c.direction;
+			c.direction = 0;	# IN STASIS
+			rtn = 1;
+		}
+	}
 	return rtn;
 }
 
@@ -3147,7 +3397,7 @@ addlightthinker(sec: ref Map->Sector, ltype, count, minlight, maxlight,
 {
 	l := ref Light(sec, ltype, count, minlight, maxlight,
 		darktime, brighttime, direction, maxtime, mintime);
-	th := ref Thinker(THINK_LIGHT, nil, nil, nil, l, 0);
+	th := ref Thinker(THINK_LIGHT, nil, nil, nil, l, nil, 0);
 	n := len thinkers;
 	nt := array[n + 1] of ref Thinker;
 	if (n > 0)
@@ -3210,7 +3460,7 @@ spawndoorclosein30(sec: ref Map->Sector)
 	lc.special = 0;
 	d := ref Door(sec, VLD_NORMAL, sec.ceilingheight, VDOORSPEED,
 		0, VDOORWAIT, 30 * TICRATE);
-	th := ref Thinker(THINK_DOOR, d, nil, nil, nil, 0);
+	th := ref Thinker(THINK_DOOR, d, nil, nil, nil, nil, 0);
 	sectorthinker(sec, th);
 }
 
@@ -3222,7 +3472,7 @@ spawndoorraisein5mins(sec: ref Map->Sector)
 	d := ref Door(sec, VLD_RAISEIN5MINS,
 		findlowestceilingsurrounding(sec) - 4 * FRACUNIT,
 		VDOORSPEED, 2, VDOORWAIT, 5 * 60 * TICRATE);
-	th := ref Thinker(THINK_DOOR, d, nil, nil, nil, 0);
+	th := ref Thinker(THINK_DOOR, d, nil, nil, nil, nil, 0);
 	sectorthinker(sec, th);
 }
 

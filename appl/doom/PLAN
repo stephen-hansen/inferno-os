@@ -79,11 +79,12 @@ Status snapshot (what works today)
       P_Move/TryWalk/NewChaseDir/LookForPlayers, A_Look/Chase/
       FaceTarget/Pos/SPos/CPos/Troop/Sarg/Bruis/Head/Skull +
       floater z-track, monster door-use 1/32/33/34); line/sector
-      specials PARTIAL (M13 slices: doors, exit, walkover switches,
-      floors, plats, teleport, lights, stairs, donut; ceilings/
-      crushers + remaining E1 types still open)
-  [ ] EVERYTHING else: remaining specials, sector specials/
-      secrets, sound bodies, status bar, HUD, automap, menu,
+      specials (M13: doors, exit + walkover switches, floors,
+      plats, stairs, donut, teleport, lights, switches w/ timers,
+      ceilings/crushers + crush damage); E1M1 fully completable
+      (doors open, lift works, exit switch ends the level)
+  [ ] EVERYTHING else: remaining non-E1 line specials, sector
+      specials/secrets, sound bodies, status bar, HUD, automap, menu,
       intermission, level progression, finale, demos, cheats,
       mouse, save/load, music
   Each gap below is a milestone; nothing else is hidden here.
@@ -426,13 +427,25 @@ Part B — combat & simulation completeness
 Part C — specials & progression (make an episode completable)
 ================================================================================
 
-  [ ] 13 Line & sector specials (p_spec.c family) — biggest systems
-          milestone; split into 13a/13b if needed, both before 14.
-          (PARTIAL, slices landed + harness-validated: doors/use,
-          exit + walkover switches, floors, plats, stairs, donut,
-          teleport, lights, switches w/ timers.  OPEN: ceilings/
-          crushers (EV_DoCeiling), remaining E1 line types.)
-         WHY: no doors/lifts/exits — E1M1 cannot be finished.
+  [x] 13 Line & sector specials (p_spec.c family)
+          (CLOSED this session: the E1 line-special histogram (36 use/
+          walk/gun/scroll types across E1M1-E1M9) was already fully
+          covered by prior slices, so the remaining work was ceilings/
+          crushers + crush damage + a floor-UP nofit fix.  Added:
+          THINK_CEILING + Ceiling adt + activeceilings (unbounded,
+          like plats), T_MoveCeiling (stasis/up/down + stnmov/pstop),
+          EV_DoCeiling (all 6 types + in-stasis reactivate),
+          EV_CeilingCrushStop, P_ChangeSector crush flag (10 damage
+          every 4th tic + blood spray), floor-UP nofit revert parity.
+          Validated pre-edit (histogram checklist, ceiling state-model
+          vs p_ceilng.c, crush cadence) + headless SPECTEST15 25/25
+          (TEMP, removed): door 68u open/close, W1 turboLower, WR plat,
+          exit switch, crush kill + cycle, lowerToFloor exact, raise-
+          ToHighest exact (192), fast ~2x (144 vs 288 tics), stasis
+          hold/re-wake.  Detail in PLAN.done.  Residuals by design:
+          non-E1 line specials unwired (E1 needs none), message/sound
+          bodies (17/19), sector specials damage/secrets (14).)
+          WHY: no doors/lifts/exits — E1M1 cannot be finished.
          SOURCES: p_spec.c (special dispatcher: P_UseSpecialLine,
            P_ShootSpecialLine, P_CrossSpecialLine, P_ChangeSwitch-
            Texture, P_SpawnSpecials, P_UpdateSpecials, buttons,

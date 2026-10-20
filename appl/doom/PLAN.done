@@ -1338,3 +1338,38 @@ Milestones (each independently testable)
           floor in Limbo (needs the M24 blockmap for tick-side scale
           and, if more fps wanted, per-column big-op fast paths or
           half-rate rendering).
+          M13 LINE & SECTOR SPECIALS (p_spec.c family, GPL-2) CLOSED:
+          the E1 line-special histogram (36 nonzero types across
+          E1M1-E1M9, parsed from WAD LINEDEFS pre-edit) was already
+          fully covered by prior slices (use 1/26-28/31-34 + S1
+          7/9/11/18/20/23/35/51/103 + SR 62/63/70, walk 2/5/8/16/22/
+          36/76/82/86/88/90/91/97/98 + teleports, gun 46, scroll 48),
+          so the remaining work was ceilings/crushers + crush damage
+          + one T_MovePlane parity fix.  Added: THINK_CEILING +
+          Ceiling adt (ctype/top/bottom/speed/direction/olddirection/
+          crush/tag) + unbounded activeceilings (same divergence as
+          activeplats, vanilla I_Errors past 30), T_MoveCeiling
+          (stasis/up/down + stnmov every 8 tics + pstop on silent
+          ends, transcribed incl. the crushAndRaise fallthrough arms),
+          EV_DoCeiling (all 6 types + in-stasis reactivate for the
+          crush-raise family), EV_CeilingCrushStop, P_ChangeSector
+          crush flag (stuck shootables take 10 every 4th tic +
+          MT_BLOOD spray with (rand-rand)<<12 mom), floor-UP mid-move
+          nofit fix (vanilla: crush stays moved + RES_CRUSHED, else
+          revert + RES_CRUSHED; was ignoring nofit), findhighest-
+          ceilingsurrounding + CEIL_*/CEILSPEED consts.  Validated
+          pre-edit (Python: histogram checklist 36/36, ceiling state
+          table traces vs p_ceilng.c incl. fallthroughs + slowdown to
+          CEILSPEED/8, crush cadence, EV_DoCeiling init rows) +
+          headless SPECTEST15 25/25 (TEMP, removed): door sec4 68u
+          open/close cycle, W1 turboLower f59=-40 + clear, WR plat
+          min<104 + f70==104, exit switch levexit==1, crushAndRaise
+          descends + crush-kills victim (20->0) + cycles back, lower-
+          ToFloor rests exactly at floor, raiseToHighest exact
+          (0->192==max surrounding), fast ~2x normal (144 vs 288
+          tics to bottom), crushstop holds + re-arm returns 0 (no
+          dup) + re-wake resumes.  Boot smoke clean (35tps).
+          Residuals by design: non-E1 line specials unwired (vanilla
+          switch arms for types with no E1 path, e.g. S1 41/43 —
+          E1M1-E1M9 need none), message/sound bodies (17/19),
+          damaging floors + secrets counting (14).

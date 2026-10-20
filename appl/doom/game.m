@@ -126,6 +126,14 @@ Game: module {
 	# plat status (p_spec.h plat_e order)
 	PLS_UP, PLS_DOWN, PLS_WAITING, PLS_STASIS: con iota;
 
+	# ceiling mover types (p_spec.h ceiling_e order)
+	CEIL_LOWERTOFLOOR, CEIL_RAISETOHIGHEST, CEIL_LOWERANDCRUSH,
+	CEIL_CRUSHANDRAISE, CEIL_FASTCRUSHANDRAISE,
+	CEIL_SILENTCRUSHANDRAISE: con iota;
+
+	# ceiling speed (p_spec.h)
+	CEILSPEED:	con FRACUNIT;
+
 	# light thinker types (p_lights.c families)
 	LT_FIRE, LT_FLASH, LT_STROBE, LT_GLOW: con iota;
 
