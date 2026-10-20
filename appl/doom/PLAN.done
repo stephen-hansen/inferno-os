@@ -1432,3 +1432,128 @@ Milestones (each independently testable)
           (35tps, render path untouched).  Limbo note: bounded slice
           assignment is not an lvalue (only [0:] full-slice is) —
           drawblock rows use a byte loop.  Residuals: none.
+          M16 EXIT FLOW + INTERMISSION + PROGRESSION (g_game.c +
+          wi_stuff.c single-player shareware subset, GPL-2) CLOSED:
+          gameaction subset (NOTHING/COMPLETED/VICTORY) + docompleted
+          (G_DoCompleted: G_PlayerFinishLevel strip, E1M8 -> victory
+          freeze with message, E1M9-exit didsecret, secretexit->E1M9 /
+          E1M9->E1M4 / else-next, fills Wistat, clears flags + action)
+          driving a new wi.b module (WI_Start/Ticker/Drawer: WIMAP0
+          background, WILV00-08 names, WINUM/WIPCNT/WICOLON/WIMINUS/
+          WIF/WIENTER/WIOSTK/WIOSTS/WIOSTI/WITIME/WIPAR/WISUCKS,
+          WIURH0/1 splats + pointer, WIA0xx animated back, +2/tic
+          counts with pistol ticks, +3/tic time/par, 35-tic pauses,
+          attack/use accelerate with vanilla latch semantics, entering
+          title + map screen + NoState); doom.b loads the next map and
+          view->setlevel on WI done (+E1M%d naming), E1M8 victory
+          freezes with "episode complete!" (finale lands in M22),
+          death->use sets PST_REBORN and reloads the current map with
+          didsecret cleared (vanilla G_DoReborn order: before sim).
+          Entry/exit validated pre-edit (WAD lump presence, pars[1]
+          row, sequence table E1M1->E1M2/E1M3+S->E1M9/E1M9->E1M4/E1M8
+          ->victory, %/drawNum/drawTime math incl. ":SS" quirk and
+          n==1994 no-draw, carry rules: zero at P_SetupLevel, kept
+          across reborn).  Headless SPECTEST18 43/43 (TEMP, removed):
+          totalsecret 3, kill carried, exit->COMPLETED,
+          docompleted->E1M2 + wistat carry, WI waits for input,
+          pixel-exact stats/entering/map/NoState screens vs an
+          independent Python model (pause/counting/ShowNextLoc incl.
+          splat+flashing pointer+WIA anims), E1M2 totals 6,
+          E1M3-secret->E1M9, E1M9->E1M4, E1M8->victory, death->reborn
+          ->reload at 100hp.  Boot smoke clean (35tps).  Limbo notes:
+          module handle required to call File adt methods (wad load
+          in wi init); init() must run for rndtable; no 'for (i :='
+          twice per function scope.  Residuals: intermission music
+          (17), finale (22), HUD face carry n/a (18), demo/title
+          (21/23).
+          POST-M16 FIXES + FIELD REPORTS (playtesting E1M2):
+          (1) weapons/ammo/armor did not carry between levels:
+          setuplevel discarded players[] (fresh PST_REBORN each map),
+          contradicting vanilla P_SpawnPlayer ("most of the player
+          structure stays unchanged").  Fixed: setuplevel keeps live
+          players and only zeroes per-level counts + frags (vanilla
+          P_SetupLevel/G_DoLoadLevel); spawnplayer resets refire/
+          damagecount/bonuscount/extralight per spawn.  Verified
+          headless (TEMP harness, removed): chaingun/shotgun/shells/
+          bullets/armor/100hp carry E1M1->E1M2, counts reset, LIVE.
+          (2) E1M2 end elevator (tag-13 plat) dead: sector 49 carries
+          light special 8, and addlightthinker wrongly occupied
+          sec.specialdata (vanilla light thinkers never do), so
+          EV_DoPlat refused ("already moving").  Fixed by dropping
+          the assignment; plus a nil-guard in evverticaldoor's active-
+          thinker branch (a non-door thinker there used to crash the
+          deref; now returns 0 instead of double-spawning).  Verified
+          headless: SR62 use and WR88 walkover both move sector 49
+          (-152 down to -232).  Residual: pool fill order is mobj-
+          array order, vanilla walks sectors (M24 blockmap may align
+          this; same 128 cap both sides).
+          (3) default start map is E1M2 now (was E1M1), per tester
+          request; revert by changing the two E1M2 references in
+          doom.b.
+          (4) doomsnap0.log "missing" corpse+barrel investigated and
+          NOT reproduced as an engine bug: both sprites project
+          (VIS x1=115..182 patch 362; x1=220..228 patch 478), a
+          headless replay of the exact camera/geometry draws both
+          with zero clipped columns (no CMISS/POFF), an A/B fb8 diff
+          shows 1102 + 52 changed pixels, and the snapshot's own fb8
+          contains the barrel verbatim (100% match) plus the corpse
+          (0% match against a no-corpse render; residual mismatch is
+          light-flicker phase from tic 6362 vs fresh level).  Pool was
+          full (128/128) but only high-index distant sprites were
+          dropped — vanilla also caps at 128.
+          FIELD REPORTS 2 + FIXES (playtesting E1M2, Oct 19):
+          (1) seg.offset loader bug (snap4 door + snap3 walls): map.b
+          loaded SEGS offset raw (map units) while every other map
+          coordinate is <<16 and the Seg adt documents 16.16, so u1 =
+          seg.offset + textureoffset was short by (offset - offset>>
+          16) texels on every multi-seg wall.  PROVED analytically:
+          fb8 door columns fit BIGDOOR2 with mm=0 unique over 41 rows
+          x 114 cols at k_rendered = k_predicted - segoff exactly
+          (seg13 off=32: x124 32->0 ... x212 0->96; seg18 off=0 exact
+          throughout; same light rows, tmid/iscale perfect).  The
+          visible door "seam" at x~124 is BIGDOOR2's own rib design,
+          not a rendering seam.  snap3's right wall (seg523 off=0,
+          seg522 off=17) shifted by the same cause (-8 texels there).
+          Row/vertical mapping and light were perfect in all fits;
+          only the horizontal base was shifted.  Fixed in map.b
+          (offset <<16 — the sole missing conversion in the loader
+          audit); data-verified headless against WAD ground truth
+          (seg13=32, seg18=0, seg522=17, seg523=0 units, all exact
+          post-fix).  snap3's distant-wall banding is vanilla-faithful
+          minification aliasing (rdrawcolumn steps iscale texels/row
+          exactly like R_DrawColumn; BROWN144 has no border rows to
+          seam) — same on real hardware, not a bug.
+          (2) sprite pool order (pillar vanishing in snap2): pool
+          filled in mobj-creation order, so in crowded frames a nearby
+          sprite lost its slot to 128 farther lower-index ones (green
+          pillar mobj158 in snap0/snap1 VIS, evicted in snap2 while
+          174 units dead ahead; pool sets proven via gx,gy join after
+          finding VIS i= is the pool slot, not the mobj index).  Fixed:
+          pool keeps nearest 128 by scale once full (lazy sort on
+          first overflow, evict farthest; draw layering unchanged,
+          drawmasked sorts far-first independently).  Deviates from
+          vanilla traversal order in overflow frames only; M24
+          thinglists will enable traversal-order fill (PLAN M24
+          note).  The snap1/snap2 "missing corpse" was perception, not
+          engine: fb8 proves the red corpse renders in all three
+          frames (63px -> 50px -> 41px as the player turns away); the
+          pillar's snap2 absence was the real bug above.  NOTE: fixes
+          need a game restart to pick up (rebuilt map.dis/view.dis);
+          live test sessions keep running the old build.
+          POST-MORTEM (boot broke after these fixes, same night): first
+          boot failed with [View] Broken "array bounds error" — my pool
+          edit left BOTH the new conditional nvis++ and the original
+          trailing nvis++, so nvis grew past 128 and the lazy sort read
+          viss[128+].  Fixed by deleting the trailing increment (single
+          conditional increment only).  Confounding factor: two bisect
+          runs were misread (a stubbed `0 &&` cap removed the overflow
+          return, crashing on its own at viss[128]; and mk was run from
+          the repo root, relinking the emu instead of the doom modules
+          — always run mk install from appl/doom).  Rebuilt
+          view.dis/map.dis via direct limbo+cp; boot clean at 35tps.
+          Pool algorithm verified headless (TEMP harness, removed):
+          200 synthetic scales in, pool holds exactly the nearest 128
+          ascending, min matches true 128th-largest (POOL-PASS).  Loader
+          verified headless (TEMP harness, removed): post-fix seg
+          offsets equal WAD ground truth.  Remaining: in-game confirm
+          (pillar survives the snap2 spot; door texture straight).

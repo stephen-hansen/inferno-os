@@ -46,6 +46,9 @@ Game: module {
 	# player states (d_player.h)
 	PST_LIVE, PST_DEAD, PST_REBORN: con iota;
 
+	# gameaction (g_game.h subset: only what single-player E1 uses)
+	GA_NOTHING, GA_COMPLETED, GA_VICTORY: con iota;
+
 	# cheats
 	CF_NOCLIP:	con 1;
 	CF_GODMODE:	con 2;
@@ -218,18 +221,31 @@ Game: module {
 		refire:	int;		# held-trigger refire count
 	};
 
-	# --- world state (one level; set by setuplevel) ---
-	lev:	ref Map->Level;		# current map geometry
-	mobjs:	array of ref Mobj;	# thinker list
-	players:	array of ref Player;
-	lvltime:	int;			# leveltime
-	prndindex:	int;			# P_Random index
-	gameskill:	int;
-	gamemapnum:	int;		# ExMy map number (teleport boss rule)
-	totalkills, totalitems:	int;
-	totalsecret:	int;		# secret sectors (P_SpawnSpecials 9)
-	scrolllines:	array of int;	# scroll-left linedefs (special 48)
-	nscrolllines:	int;
+ 	# --- world state (one level; set by setuplevel) ---
+ 	lev:	ref Map->Level;		# current map geometry
+ 	mobjs:	array of ref Mobj;	# thinker list
+ 	players:	array of ref Player;
+ 	lvltime:	int;			# leveltime
+ 	prndindex:	int;			# P_Random index
+ 	gameskill:	int;
+ 	gamemapnum:	int;		# ExMy map number (teleport boss rule)
+ 	totalkills, totalitems:	int;
+ 	totalsecret:	int;		# secret sectors (P_SpawnSpecials 9)
+ 	action:	int;			# gameaction (GA_* subset)
+ 	secretseen:	int;		# exited map 9 (splat on node 8)
+ 	scrolllines:	array of int;	# scroll-left linedefs (special 48)
+ 	nscrolllines:	int;
+
+	# intermission snapshot (vanilla wbstartstruct_t subset,
+	# single player): filled by docompleted, consumed by WI
+	Wistat: adt {
+		last, next:	int;	# 0-based map indices
+		epsd:	int;		# 0-based episode (shareware: always 0)
+		maxkills, maxitems, maxsecret:	int;
+		kills, items, secrets:	int;
+		stime, partime:	int;	# tics
+		didsecret:	int;
+	};
 
 	# --- view state (updated each frame by the renderer caller) ---
 	viewx, viewy, viewz:	int;	# 16.16 camera position
@@ -262,11 +278,27 @@ Game: module {
 	setview:	fn();
 
 	# level-exit flag (G_ExitLevel): set by the exit switch (S1
-	# special 11); consumed by the intermission milestone (16)
+	# special 11); consumed by docompleted (16)
 	levexit:	fn(): int;
 
 	# secret-exit flag (G_SecretExitLevel, S1 special 51)
 	secretexit:	fn(): int;
+
+	# gameaction machine (g_game.h subset)
+	gameaction:	fn(): int;
+	setaction:	fn(a: int);
+
+	# G_DoCompleted: finish the player (strip cards/powers),
+	# fill the intermission snapshot; returns the next 1-based map
+	# number, or -1 for the E1M8 victory (finale lands in 22)
+	docompleted:	fn(): int;
+
+	# intermission snapshot filled by docompleted
+	getwistat:	fn(): ref Wistat;
+
+	# clear the map-9 exit mark (vanilla clears didsecret in the
+	# G_PlayerReborn memset; called on the death-reload path)
+	setsecretseen:	fn(v: int);
 
 	# introspection for tests
 	nummobjs:	fn(): int;

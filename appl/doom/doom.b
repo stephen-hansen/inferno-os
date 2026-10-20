@@ -23,6 +23,8 @@ include "game.m";
 	game: Game;
 	Player: import game;
 	Mobj: import game;
+include "wi.m";
+	wi: Wi;
 include "view.m";
 	view: View;
 
@@ -244,7 +246,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (err != nil)
 		fail(err);
 
-	(l, merr) := map->open(w, "E1M1");
+	(l, merr) := map->open(w, "E1M2");
 	if (l == nil)
 		fail(merr);
 
@@ -260,6 +262,16 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (verbose)
 		view->dbgprints = 1;
 	view->ringenable = doring;
+
+	# load intermission screens (stats + entering title)
+	wi = load Wi Wi->PATH;
+	if (wi == nil)
+		wi = load Wi "wi.dis";
+	if (wi == nil)
+		fail(sys->sprint("can't load Wi module: %r"));
+	err = wi->init(w);
+	if (err != nil)
+		fail(err);
 
 	err = game->setuplevel(l, game->SK_MEDIUM);
 	if (err != nil)
@@ -299,7 +311,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
 	mo := p.mo;
-	sys->print("play: E1M1 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
+	sys->print("play: E1M2 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
 	if (doring)
 		sys->print(", F2=review");
 	sys->print("\n");
@@ -317,7 +329,9 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	tic := 0;
 	quit := 0;
 	nticks := 0;
-	exitshown := 0;		# level-complete announced once
+	curmap := "E1M2";
+	intermission := 0;	# showing WI stats/entering (sim frozen)
+	victory := 0;		# E1M8 done (finale lands in 22; frozen)
 	for (; !quit;) {
 		# key events only update keystate; tics come SOLELY from the
 		# tick timer (key-driven tics made the game surge at
@@ -405,10 +419,40 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		if (nticks > 4)
 			nticks = 4;
 
+		if (victory != 0) {
+			# E1M8 done, finale lands in 22: frozen last frame,
+			# Esc quits via the handling above.
+			continue;
+		}
+
+		# death -> use-button respawn (vanilla G_DoReborn order:
+		# checked before the sim runs).  Single-player reloads the
+		# current map from scratch.
+		pl := game->consoleplayer();
+		if (pl != nil && pl.playerstate == game->PST_REBORN &&
+		    intermission == 0) {
+			game->setsecretseen(0);	# reborn clears didsecret
+			(l2, merr2) := map->open(w, curmap);
+			if (l2 == nil)
+				fail(merr2);
+			l = l2;
+			view->setlevel(l);
+			err = game->setuplevel(l, game->SK_MEDIUM);
+			if (err != nil)
+				fail(err);
+			p = game->consoleplayer();
+			if (p != nil && p.mo != nil)
+				mo = p.mo;
+			review = -1;
+			continue;
+		}
+
 		# frame-history review (F2): sim frozen, step through the
 		# ring with Left/Right (tap = step, hold = scroll), F1
 		# snapshots the shown frame, F2/Esc resumes live play.
-		if (revreq) {
+		# (not during intermission/victory: the ring holds the old
+		# world's frames; drop the request)
+		if (revreq != 0 && intermission == 0 && victory == 0) {
 			revreq = 0;
 			if (!doring) {
 				sys->print("review: ring disabled (restart with -R)\n");
@@ -423,7 +467,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 				} else
 					sys->print("review: no frames yet\n");
 			}
-		}
+		} else
+			revreq = 0;
 		if (review != -1) {
 			rvn := view->ringlen();
 			if (rvn <= 0) {
@@ -492,6 +537,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		prevleft = keystate[Left];
 		prevright = keystate[Right];
 
+		if (intermission == 0) {
 		# run every owed ticker (ticdup-style catch-up), then render
 		# once: game time tracks wall time at 35 tps even when a
 		# frame overruns.  ticcmd is rebuilt per ticker so the
@@ -581,13 +627,58 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		# are per-load-instance)
 		rend->animtic(rr, game->getleveltime());
 
-		# level-exit flags (S1 exit / secret exit; intermission
-		# is milestone 16, so just announce once for now)
-		if ((game->levexit() != 0 || game->secretexit() != 0) &&
-		    exitshown == 0) {
-			exitshown = 1;
-			sys->print("level complete\n");
+		# level exit -> intermission (G_DoCompleted subset):
+		# finish the level, fill the WI snapshot, and switch the
+		# loop to intermission rendering (or freeze on victory)
+		if (game->gameaction() == game->GA_COMPLETED) {
+			r := game->docompleted();
+			review = -1;	# ring holds the old level's frames
+			if (r < 0) {
+				victory = 1;
+				sys->print("episode complete! (finale lands in M22)\n");
+			} else {
+				wi->start(game->getwistat(), game);
+				intermission = 1;
+			}
 		}
+		}
+		}
+
+		if (victory != 0) {
+			# frozen finale-less victory screen; Esc quits above
+			continue;
+		}
+
+		if (intermission != 0) {
+			# intermission buttons: attack/use accelerate
+			# (like vanilla WI_checkForAccelerate)
+			ibtn := 0;
+			if (keystate[' '])
+				ibtn |= 2;	# BT_USE
+			if (keystate[LCtrl] || keystate[RCtrl])
+				ibtn |= 1;	# BT_ATTACK
+			wi->ticker(ibtn);
+			wi->drawer(rr);
+			rr.convert(v.fb);
+			v.present();
+			if (wi->done() != 0) {
+				n := wi->nextmap();
+				curmap = sys->sprint("E1M%d", n);
+				(l2, merr2) := map->open(w, curmap);
+				if (l2 == nil)
+					fail(merr2);
+				l = l2;
+				view->setlevel(l);
+				err = game->setuplevel(l, game->SK_MEDIUM);
+				if (err != nil)
+					fail(err);
+				p = game->consoleplayer();
+				if (p != nil && p.mo != nil)
+					mo = p.mo;
+				review = -1;
+				intermission = 0;
+			}
+			continue;
 		}
 
 		# render: update view from player, walk BSP, present

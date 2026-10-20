@@ -17,7 +17,7 @@ Build / run
   modes   doom [-v] [doom.wad]; -v enables sprite/masked diagnostics
           on stdout; F1 snapshots a frame log, F2 reviews the last
           ~105 frames frozen (Left/Right step, F1 captures, F2/Esc
-          resumes); no flag = play E1M1 (skill hardcoded MEDIUM)
+          resumes); no flag = play E1M2 (skill hardcoded MEDIUM)
 
 Platform services available in-tree (verified):
   blit      Draw->Image.writepixels(dst, r, data), module/draw.m:190;
@@ -84,10 +84,13 @@ Status snapshot (what works today)
       ceilings/crushers + crush damage); E1M1 fully completable
       (doors open, lift works, exit switch ends the level); player
       special sectors + secrets (M14: nukage/slime damage on the
-      32-tic cadence, count-once secrets + totalsecret, E1M8 exit)
+      32-tic cadence, count-once secrets + totalsecret, E1M8 exit);
+      exit flow + intermission + progression (M16: E1M1->E1M2 with
+      stats/count/par/entering screens, E1M3-secret->E1M9,
+      E1M9->E1M4, E1M8 victory, death->use reload)
   [ ] EVERYTHING else: remaining non-E1 line specials, sound
       bodies, status bar, HUD, automap, menu,
-      intermission, level progression, finale, demos, cheats,
+      finale, demos, cheats,
       mouse, save/load, music
   Each gap below is a milestone; nothing else is hidden here.
 
@@ -602,8 +605,29 @@ Part C — specials & progression (make an episode completable)
 Part D — presentation & game flow
 ================================================================================
 
-  [ ] 16 Level exit flow + intermission + map progression
-         WHY: after 13 the exit flips a flag; this makes the game
+  [x] 16 Level exit flow + intermission + map progression
+          (CLOSED this session: gameaction subset (NOTHING/COMPLETED/
+          VICTORY) + docompleted (G_DoCompleted: finish player,
+          next-map table incl. E1M3-secret→E1M9 and E1M9→E1M4,
+          E1M8→victory freeze) driving a new wi.b module (WI_Start/
+          Ticker/Drawer for shareware single player: WIMAP0 + WILVxx
+          + WINUM/WIPCNT/WICOLON/WIMINUS/WIF/WIENTER/WIOSTK/WIOSTS/
+          WIOSTI/WITIME/WIPAR/WISUCKS + WIURH splats + WIA0xx anims,
+          +2/tic counts, +3/tic time/par, 35-tic pauses, attack/use
+          accelerate, entering + map screen + NoState); doom.b loads
+          next map and view->setlevel on WI done; death→use sets
+          PST_REBORN and reloads the current map (secretseen cleared
+          per vanilla reborn).  Validated pre-edit (par table,
+          sequence table, %/drawNum/drawTime math, carry rules) +
+          headless SPECTEST18 43/43 (TEMP, removed): exit→COMPLETED,
+          docompleted→E1M2 + wistat carry, WI waits for input,
+          pixel-exact stats/entering/map screens vs an independent
+          Python model (pause/counting/ShowNextLoc/NoState), E1M2
+          totals, E1M3-secret→E1M9, E1M9→E1M4, E1M8→victory,
+          death→reborn→reload at 100hp.  Detail in PLAN.done.
+          Residuals: intermission music (17), finale (22), HUD face
+          carry-over n/a (18), demo/title (21/23).
+          WHY: after 13 the exit flips a flag; this makes the game
            CONTINUE to E1M2 and carry scores (and ends E1M9).
          SOURCES: g_game.c (G_ExitLevel, G_SecretExitLevel,
            G_WorldDone, G_DoLoadLevel, G_DoReborn, G_PlayerReborn
@@ -855,9 +879,16 @@ Part E — infrastructure & polish
              (scriptable, numeric — required before switching)
            - same for 10's hitscan/use traverses (they were
              written brute-force — same parity harness)
-           - PIC (things block list) for 9/10/12 perf pass
-         VALIDATE: parity harness above; per-tic timing before/
-           after with a stressed scene (skill 4 full spawn).
+            - PIC (things block list) for 9/10/12 perf pass
+          VALIDATE: parity harness above; per-tic timing before/
+            after with a stressed scene (skill 4 full spawn).
+          NOTE (field fix, Oct 19): sprite pool fill is currently
+            nearest-wins by scale (projectmo keeps nearest 128 when
+            the pool overflows; draw layering unaffected, drawmasked
+            sorts far-first independently).  Vanilla fills in BSP/
+            sector-thinglist traversal order.  Once thinglists exist,
+            switch projection to traversal order (front-to-back) for
+            full parity and drop the approximation.
          DONE WHEN: blockmap path is default, brute force is the
            fallback, parity green, tic time measurably lower.
          DEPS: 10 (uses traversal), do after 13 so the perf win is

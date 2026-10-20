@@ -221,7 +221,8 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 		o := 12 * i;
 		segs[i] = Seg(le16(b, o), le16(b, o+2),
 			le16(b, o+4), le16(b, o+6), le16(b, o+8),
-			le16(b, o+10));
+			le16(b, o+10) << 16);	# offset is 16.16 like every
+						# other map coordinate
 	}
 	l.segs = segs;
 

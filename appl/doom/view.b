@@ -143,6 +143,7 @@ Vissprite: adt {
 };
 viss:	array of Vissprite;
 nvis:	int;
+vissorted:	int;	# pool sorted ascending by scale once full (far = [0])
 ovvis:	Vissprite;		# overflow slot (never drawn, vanilla behavior)
 
 # drawseg pool (r_defs.h drawseg_t): records every drawn wall seg so
@@ -353,9 +354,14 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
 			vps[i].bottom[x] = -1;
 		}
 	}
-	nvp = 0;
-	curfloor = curceil = -1;
-	return nil;
+ 	nvp = 0;
+ 	curfloor = curceil = -1;
+ 	return nil;
+ }
+
+setlevel(l: ref Map->Level)
+{
+	lev = l;
 }
 
 render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
@@ -404,6 +410,7 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 	nsegs = ncolumns = nspans = 0;
 	nds = 0;
 	nvis = 0;
+	vissorted = 0;
 	nsprites = 0;
 	ndrawsegs = 0;
 
@@ -1521,9 +1528,49 @@ projectmo(mo: ref Game->Mobj)
 		return;
 	}
 
+	# sector for lighting (hoisted: no early return may happen
+	# after the pool below is mutated)
+	sec := mo.subsector.sector;
+	if (sec == nil) {
+		pdrop("nosec", 0, 0, mo.sprite);
+		return;
+	}
+	# commit slot: append while uncapped, else nearest-wins
+	slot := nvis;
 	if (nvis >= MAXVISSPRITES) {
-		pdrop("ovf", nvis, 0, 0);
-		return;			# overflow: discarded, vanilla behavior
+		# Pool full: keep the nearest 128.  Vanilla keeps the
+		# first 128 in BSP-traversal order; we project in
+		# mobj-array (creation) order, so a nearby sprite would
+		# otherwise lose to 128 farther ones that happen to
+		# have lower indices (E1M2 green pillar vanishing as
+		# the player turns into a crowd).  Nearest wins is the
+		# faithful approximation until the blockmap milestone
+		# enables traversal-order projection.  Draw layering is
+		# unaffected (drawmasked sorts far-first regardless).
+		if (vissorted == 0) {
+			for (i := 0; i < nvis; i++) {
+				best := i;
+				for (j := i + 1; j < nvis; j++)
+					if (viss[j].scale < viss[best].scale)
+						best = j;
+				if (best != i) {
+					t := viss[i];
+					viss[i] = viss[best];
+					viss[best] = t;
+				}
+			}
+			vissorted = 1;
+		}
+		if (xscale <= viss[0].scale) {
+			pdrop("ovf", nvis, 0, 0);
+			return;		# farther than everything kept
+		}
+		j := 0;
+		while (j+1 < MAXVISSPRITES && viss[j+1].scale < xscale) {
+			viss[j] = viss[j+1];
+			j++;
+		}
+		slot = j;
 	}
 	# build a local value and commit with a whole-struct assign at the
 	# end: `ref viss[nvis]` COPIES the element instead of aliasing
@@ -1560,11 +1607,6 @@ projectmo(mo: ref Game->Mobj)
 	} else if (mo.frame & FF_FULLBRIGHT) {
 		vis.light = 0;
 	} else {
-		sec := mo.subsector.sector;
-		if (sec == nil) {
-			pdrop("nosec", 0, 0, mo.sprite);
-			return;
-		}
 		lnum := (sec.lightlevel >> LIGHTSEGSHIFT) + viewextra;
 		if (lnum < 0)
 			lnum = 0;
@@ -1575,12 +1617,13 @@ projectmo(mo: ref Game->Mobj)
 			idx = MAXLIGHTSCALE - 1;
 		vis.light = scalelight[lnum][idx];
 	}
-	viss[nvis] = vis;
+	viss[slot] = vis;
+	if (slot == nvis)
+		nvis++;
 	if (dbgprints != 0 && (dbgframes % 2) == 0)
 		sys->print("PROJ f=%d spr=%d fr=%d rot=%d flip=%d x1=%d x2=%d sc=%d tz=%d\n",
 			dbgframes, mo.sprite, f, rot, flip, vis.x1, vis.x2,
 			vis.scale, tz);
-	nvis++;
 }
 
 # draw one vissprite through the clip arrays built by drawspscan

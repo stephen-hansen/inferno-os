@@ -21,6 +21,10 @@ View: module {
 				wf: ref Wad->File, g: Game,
 				width, height: int): string;
 
+	# swap the rendered map (level transitions reload geometry;
+	# clip tables are sized by w/h so only the level changes)
+	setlevel:	fn(l: ref Map->Level);
+
 	# render one frame from the given camera state (all 16.16
 	# fixed point; viewangle is BAM).  Clears fb8, walks BSP,
 	# draws walls, then projects mobs (game mobjs) as sprites and

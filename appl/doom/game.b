@@ -158,8 +158,10 @@ Button: adt {			# vanilla button_t (p_switch.c)
 buttonlist: array of ref Button;	# [MAXBUTTONS], timer-ordered use
 spechit: array of int;	# crossed special linedefs (p_map.c)
 nspechit: int;
-exited: int;		# G_ExitLevel flag (consumed by milestone 16)
-sexited: int;		# G_SecretExitLevel flag (S1 special 51)
+exited: int;		# G_ExitLevel flag (consumed by docompleted)
+sexited: int;		# G_SecretExit flag (S1 special 51)
+pars1: array of int;	# E1 par times, seconds (g_game.c pars[1])
+wistat: ref Wistat;	# intermission snapshot filled by docompleted
 
 # switch texture pairs (vanilla p_switch.c alphSwitchList,
 # shareware episode 1 set, as P_InitSwitchList loads it).
@@ -399,6 +401,10 @@ init(): string
 	nspechit = 0;
 	exited = 0;
 	sexited = 0;
+	action = GA_NOTHING;
+	secretseen = 0;
+	# E1 par times, seconds (g_game.c pars[1]; index 0 unused)
+	pars1 = array[] of { 0, 30, 75, 120, 90, 165, 180, 180, 30, 165 };
 	# weapon ammo types (d_items.c weaponinfo order) and clip-load
 	# sizes (p_inter.c clipammo); AM_NOAMMO (4) never granted
 	weaponammo = array[] of {
@@ -640,8 +646,17 @@ setuplevel(l: ref Map->Level, skill: int): string
 	zeroarr(sectrav);
 	secsound = array[len l.sectors] of ref Mobj;
 	soundtarget = nil;
-	for (i := 0; i < MAXPLAYERS; i++)
-		players[i] = nil;
+	# vanilla P_SetupLevel zeroes the per-level tallies but keeps the
+	# player structs (weapons/ammo/health carry to the next map; only
+	# G_PlayerReborn on death resets the loadout)
+	for (i := 0; i < MAXPLAYERS; i++) {
+		if (players[i] != nil) {
+			players[i].killcount = 0;
+			players[i].itemcount = 0;
+			players[i].secretcount = 0;
+			zeroarr(players[i].frags);
+		}
+	}
 
 	for (i = 0; i < len l.things; i++)
 		spawnmapthing(l.things[i]);
@@ -741,6 +756,12 @@ spawnplayer(t: Thing)
 	p.mo = mo;
 	p.playerstate = PST_LIVE;
 	p.viewheight = VIEWHEIGHT;
+	# vanilla P_SpawnPlayer resets these per spawn (carried
+	# loadout/health otherwise survive the transition)
+	p.refire = 0;
+	p.damagecount = 0;
+	p.bonuscount = 0;
+	p.extralight = 0;
 }
 
 playerreborn(p: ref Player)
@@ -1845,6 +1866,11 @@ evverticaldoor(li: int, mo: ref Mobj): int
 		return 0;
 	if (sec.specialdata != -1) {	# active thinker: flip or close
 		d := thinkers[sec.specialdata].door;
+		if (d == nil)
+			return 0;	# floor/plat/ceiling busy here, not a
+					# door: don't touch it (vanilla reads the
+					# foreign thinker as a door; we refuse
+					# rather than crash or double-spawn)
 		if (d.dtype == VLD_NORMAL || d.dtype == VLD_CLOSE30THENOPEN ||
 		    d.dtype == VLD_BLAZERAISE || d.dtype == VLD_BLAZEOPEN ||
 		    d.dtype == VLD_BLAZECLOSE ||
@@ -3394,6 +3420,11 @@ tlightthink(th: ref Thinker)
 }
 
 # append a light thinker (all fields set: dirty heap)
+# vanilla P_AddThinker for lights (p_lights.c): light thinkers do
+# NOT occupy sec->specialdata (only doors/plats/floors/ceilings do),
+# so a glowing/strobing sector can still host movers (E1M2 tag-13
+# plat sits in a sector with special 8: occupying specialdata here
+# blocked its EV_DoPlat forever)
 addlightthinker(sec: ref Map->Sector, ltype, count, minlight, maxlight,
 	darktime, brighttime, direction, maxtime, mintime: int)
 {
@@ -3406,7 +3437,6 @@ addlightthinker(sec: ref Map->Sector, ltype, count, minlight, maxlight,
 		nt[0:] = thinkers;
 	nt[n] = th;
 	thinkers = nt;
-	sec.specialdata = n;
 }
 
 # vanilla P_SpawnFireFlicker (p_lights.c)
@@ -3676,11 +3706,12 @@ changeswitchtexture(li, useAgain: int)
 	}
 }
 
-# vanilla G_ExitLevel (g_game.c), flag only: the intermission
-# (milestone 16) consumes it
+# vanilla G_ExitLevel (g_game.c): flag + completed action; the
+# intermission (doom.b via docompleted) consumes both
 gexitlevel()
 {
 	exited = 1;
+	action = GA_COMPLETED;
 }
 
 levexit(): int
@@ -3689,15 +3720,83 @@ levexit(): int
 }
 
 # vanilla G_SecretExitLevel (g_game.c): shareware has no MAP31 so
-# the commercial-only guard never fires here; flag only like above
+# the commercial-only guard never fires here; flag + action as above
 gsecretexitlevel()
 {
 	sexited = 1;
+	action = GA_COMPLETED;
 }
 
 secretexit(): int
 {
 	return sexited;
+}
+
+# gameaction machine (g_game.h subset)
+gameaction(): int
+{
+	return action;
+}
+
+setaction(a: int)
+{
+	action = a;
+}
+
+getwistat(): ref Wistat
+{
+	return wistat;
+}
+
+setsecretseen(v: int)
+{
+	secretseen = v;
+}
+
+# vanilla G_DoCompleted (g_game.c, shareware subset): finish the
+# player (strip cards/powers), compute the next map and fill the
+# intermission snapshot.  Returns the next 1-based map number, or
+# -1 for the E1M8 victory (finale lands in 22).  Consumes the exit
+# flags; gameaction returns to NOTHING (WI runs, driven by doom.b).
+docompleted(): int
+{
+	action = GA_NOTHING;
+	# G_PlayerFinishLevel: take away cards and stuff
+	p := players[0];
+	if (p != nil) {
+		zeroarr(p.cards);
+		zeroarr(p.powers);
+		if (p.mo != nil)
+			p.mo.flags = p.mo.flags & ~inf->MF_SHADOW;
+		p.extralight = 0;
+		p.damagecount = 0;
+		p.bonuscount = 0;
+	}
+	if (gamemapnum == 8)
+		return -1;			# victory (no intermission)
+	if (gamemapnum == 9)
+		secretseen = 1;
+	next := 0;
+	if (sexited != 0)
+		next = 8;			# secret exit -> E1M9
+	else if (gamemapnum == 9)
+		next = 3;			# E1M9 -> E1M4 (episode table)
+	else
+		next = gamemapnum;		# 0-based next == 1-based map
+	exited = 0;
+	sexited = 0;
+	(kills, items, secrets) := (0, 0, 0);
+	if (p != nil) {
+		kills = p.killcount;
+		items = p.itemcount;
+		secrets = p.secretcount;
+	}
+	wistat = ref Wistat(gamemapnum - 1, next, 0,
+		totalkills, totalitems, totalsecret,
+		kills, items, secrets,
+		lvltime, pars1[gamemapnum] * TICRATE,
+		secretseen);
+	return next + 1;
 }
 
 # ---------------------------------------------------------------------------
@@ -3778,7 +3877,10 @@ deaththink(p: ref Player)
 		p.viewheight = 6 * FRACUNIT;
 	p.deltaviewheight = 0;
 	calcheight(p);
-	# use-button respawn / messaging later
+	# vanilla P_DeathThink: use-button marks reborn; doom.b
+	# reloads the current map on PST_REBORN (G_DoReborn subset)
+	if ((p.cmd.buttons & BT_USE) != 0)
+		p.playerstate = PST_REBORN;
 }
 
 # vanilla P_PlayerInSpecialSector (p_spec.c): runs every tic the
