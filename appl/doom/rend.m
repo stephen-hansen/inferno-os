@@ -76,6 +76,32 @@ Rend: module {
 		# palette-map fb8 into dst as BGRX quadruplets for XRGB32
 		# (len dst >= w*h*4)
 		convert:	fn(r: self ref Renderer, dst: array of byte);
+
+		# vanilla V_DrawPatch: blit a raw patch lump (post columns)
+		# to fb8 at (x, y); x -= leftoffset, y -= topoffset.
+		# Pixels outside fb are skipped (vanilla I_Errors; the
+		# port never aborts — callers always draw on-screen).
+		drawpatch:	fn(r: self ref Renderer, x, y: int,
+					pd: array of byte);
+
+		# drawpatch centered on column cx (x = cx - width/2)
+		drawpatchcentered:	fn(r: self ref Renderer, cx, y: int,
+					pd: array of byte);
+
+		# vanilla V_DrawBlock: blit a w*h linear rect to fb8
+		drawblock:	fn(r: self ref Renderer, x, y, w, h: int,
+					src: array of byte);
+
+		# vanilla V_DrawFilledBox: fill an fb8 rect with a palette
+		# index
+		fillrect:	fn(r: self ref Renderer, x, y, w, h, c: int);
+
+		# vanilla hu_lib HUlib_drawTextLine (no cursor): string in
+		# a patch font (lumps indexed c - sc, sc = HU_FONTSTART
+		# for STCFN); space/out-of-range advances 4, stops at the
+		# right edge.  Returns the end x.
+		drawtext:	fn(r: self ref Renderer, x, y: int, s: string,
+					font: array of array of byte, sc: int): int;
 	};
 
 	# 16.16 fixed-point multiply, exact 64-bit intermediate
@@ -97,4 +123,15 @@ Rend: module {
 				fl: ref Flat, xfrac, yfrac, xstep, ystep: int);
 	rdrawfuzz:	fn(r: ref Renderer, x, yl, yh: int);
 	animtic:	fn(r: ref Renderer, lvltime: int);
+	rpatchwidth:	fn(pd: array of byte): int;
+	rpatchheight:	fn(pd: array of byte): int;
+	rdrawpatch:	fn(r: ref Renderer, x, y: int,
+				pd: array of byte);
+	rdrawpatchcentered:	fn(r: ref Renderer, cx, y: int,
+				pd: array of byte);
+	rdrawblock:	fn(r: ref Renderer, x, y, w, h: int,
+				src: array of byte);
+	rfillrect:	fn(r: ref Renderer, x, y, w, h, c: int);
+	rdrawtext:	fn(r: ref Renderer, x, y: int, s: string,
+				font: array of array of byte, sc: int): int;
 };

@@ -554,8 +554,24 @@ Part C — specials & progression (make an episode completable)
            health at vanilla rate; secrets increment (debug print).
          DEPS: 9 (damage), 13 (sector machinery conceptually).
 
-  [ ] 15 Screen graphics layer (V_DrawPatch/Block/Text port)
-         WHY: shared prerequisite for 16-22 — status bar, HUD,
+  [x] 15 Screen graphics layer (V_DrawPatch/Block/Text port)
+          (CLOSED this session: Renderer.drawpatch (V_DrawPatch
+          exact — origin subtract, per-column post walk, clip instead
+          of I_Error) + drawpatchcentered + drawblock (V_DrawBlock
+          exact) + fillrect (V_DrawFilledBox exact) + drawtext
+          (hu_lib drawTextLine exact, no cursor) + patchwidth/
+          height helpers; module wrappers rdrawpatch/centered/block/
+          fill/text/width/height.  No per-frame allocation (lump
+          views read in place).  Tall-patch note resolved: neither
+          the in-tree v_video.c nor any of 968 patch-like WAD lumps
+          has the 0x80/0xfe quirk — plain walk is exact, same as the
+          existing texture/sprite code.  Validated pre-edit (WAD
+          post-decode model) + headless SPECTEST17 14/14 (TEMP,
+          removed): STBAR/TITLEPIC/HELP1/M_DOOM/font blits, block,
+          fill, text advance + lowercase — all pixel-identical to
+          the model.  Detail in PLAN.done.  Residuals: none — 16+
+          draw on this.)
+          WHY: shared prerequisite for 16-22 — status bar, HUD,
            menu, automap, intermission and finale all blit patches
            onto the 8-bit fb; rend.b only composes textures today.
          SOURCES: v_video.c (V_DrawPatch transparent-column blit,

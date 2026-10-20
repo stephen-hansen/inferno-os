@@ -608,6 +608,161 @@ Renderer.convert(r: self ref Renderer, dst: array of byte)
 	}
 }
 
+# ---- screen graphics layer (milestone 15).  Reference: doomgeneric
+# v_video.c (V_DrawPatch/V_DrawBlock/V_DrawFilledBox) + hu_lib.c
+# HUlib_drawTextLine (GPL-2).  Transcribed exactly except out-of-
+# bounds pixels/lines are skipped instead of I_Error (the port never
+# aborts; callers always draw on-screen so this is unobservable).
+# Post encoding has no tall-patch quirk in this tree: every post walk
+# in v_video.c, r_draw.c's masked columns, f_finale.c, and the port's
+# own texture/sprite code is the plain (topdelta != 0xff) chain, and
+# a scan of all 968 patch-like lumps in doom1.wad finds no 0xfe
+# continuation posts — so the plain walk below is exact.
+patchwidth(pd: array of byte): int
+{
+	if (len pd < 2)
+		return 0;
+	return le16(pd, 0);
+}
+
+patchheight(pd: array of byte): int
+{
+	if (len pd < 4)
+		return 0;
+	return le16(pd, 2);
+}
+
+# vanilla V_DrawPatch: blit post columns to fb8 at (x, y) with the
+# header origin subtracted (x -= leftoffset, y -= topoffset)
+Renderer.drawpatch(r: self ref Renderer, x, y: int,
+		pd: array of byte)
+{
+	if (len pd < 8)
+		return;
+	x -= le16(pd, 4);
+	y -= le16(pd, 6);
+	w := le16(pd, 0);
+	for (col := 0; col < w; col++) {
+		if (8 + 4 * col + 4 > len pd)
+			return;
+		pofs := le32(pd, 8 + 4 * col);
+		if (pofs < 0 || pofs >= len pd)
+			continue;
+		dx := x + col;
+		# step through the posts in the column
+		while (pofs + 1 < len pd && int pd[pofs] != 16rff) {
+			td := int pd[pofs];
+			length := int pd[pofs + 1];
+			src := pofs + 3;
+			for (k := 0; k < length; k++) {
+				dy := y + td + k;
+				if (dx >= 0 && dx < r.w && dy >= 0 && dy < r.h &&
+				    src + k < len pd)
+					r.fb8[dy * r.w + dx] = pd[src + k];
+			}
+			pofs += length + 4;
+		}
+	}
+}
+
+# centered patch blit (x = cx - width/2, vanilla title/menu idiom)
+Renderer.drawpatchcentered(r: self ref Renderer, cx, y: int,
+		pd: array of byte)
+{
+	r.drawpatch(cx - patchwidth(pd) / 2, y, pd);
+}
+
+# vanilla V_DrawBlock: blit a w*h linear rect to fb8
+Renderer.drawblock(r: self ref Renderer, x, y, w, h: int,
+		src: array of byte)
+{
+	if (w <= 0 || h <= 0)
+		return;
+	origw := w;
+	sox := 0;
+	soy := 0;
+	# clip to the framebuffer (vanilla I_Errors out-of-range)
+	if (x < 0) {
+		sox = -x;
+		w += x;
+		x = 0;
+	}
+	if (y < 0) {
+		soy = -y;
+		h += y;
+		y = 0;
+	}
+	if (x + w > r.w)
+		w = r.w - x;
+	if (y + h > r.h)
+		h = r.h - y;
+	if (w <= 0 || h <= 0)
+		return;
+	if ((soy + h - 1) * origw + sox + w > len src)
+		return;		# short source: skip rather than abort
+	for (row := 0; row < h; row++) {
+		# rows are fully inside both arrays by construction
+		d := (y + row) * r.w + x;
+		s := (soy + row) * origw + sox;
+		for (k := 0; k < w; k++)
+			r.fb8[d + k] = src[s + k];
+	}
+}
+
+# vanilla V_DrawFilledBox: fill an fb8 rect with a palette index
+Renderer.fillrect(r: self ref Renderer, x, y, w, h, c: int)
+{
+	if (w <= 0 || h <= 0)
+		return;
+	if (x < 0) {
+		w += x;
+		x = 0;
+	}
+	if (y < 0) {
+		h += y;
+		y = 0;
+	}
+	if (x + w > r.w)
+		w = r.w - x;
+	if (y + h > r.h)
+		h = r.h - y;
+	if (w <= 0 || h <= 0)
+		return;
+	v := byte c;
+	for (row := 0; row < h; row++) {
+		base := (y + row) * r.w + x;
+		for (k := 0; k < w; k++)
+			r.fb8[base + k] = v;
+	}
+}
+
+# vanilla hu_lib HUlib_drawTextLine (no cursor): string through a
+# patch font (lumps indexed c - sc); space and out-of-range chars
+# advance 4, stop at the right edge.  Returns the end x.
+Renderer.drawtext(r: self ref Renderer, x, y: int, s: string,
+		font: array of array of byte, sc: int): int
+{
+	for (i := 0; i < len s; i++) {
+		c := int s[i];
+		if (c >= 'a' && c <= 'z')
+			c -= 32;		# vanilla toupper()
+		if (c != ' ' && font != nil && c >= sc && c <= '_' &&
+		    c - sc < len font && font[c - sc] != nil) {
+			pd := font[c - sc];
+			w := patchwidth(pd);
+			if (x + w > r.w)
+				break;
+			r.drawpatch(x, y, pd);
+			x += w;
+		} else {
+			x += 4;
+			if (x >= r.w)
+				break;
+		}
+	}
+	return x;
+}
+
 # module-level wrappers for callers that don't import Renderer
 rclear(r: ref Renderer, color: int)
 {
@@ -644,4 +799,40 @@ rdrawspan(r: ref Renderer, y, x1, x2, light: int,
 rdrawfuzz(r: ref Renderer, x, yl, yh: int)
 {
 	r.drawfuzz(x, yl, yh);
+}
+
+rpatchwidth(pd: array of byte): int
+{
+	return patchwidth(pd);
+}
+
+rpatchheight(pd: array of byte): int
+{
+	return patchheight(pd);
+}
+
+rdrawpatch(r: ref Renderer, x, y: int, pd: array of byte)
+{
+	r.drawpatch(x, y, pd);
+}
+
+rdrawpatchcentered(r: ref Renderer, cx, y: int, pd: array of byte)
+{
+	r.drawpatchcentered(cx, y, pd);
+}
+
+rdrawblock(r: ref Renderer, x, y, w, h: int, src: array of byte)
+{
+	r.drawblock(x, y, w, h, src);
+}
+
+rfillrect(r: ref Renderer, x, y, w, h, c: int)
+{
+	r.fillrect(x, y, w, h, c);
+}
+
+rdrawtext(r: ref Renderer, x, y: int, s: string,
+		font: array of array of byte, sc: int): int
+{
+	return r.drawtext(x, y, s, font, sc);
 }

@@ -1400,3 +1400,35 @@ Milestones (each independently testable)
           already fires the sector.  Boot smoke clean (35tps).
           Residuals by design: message bodies (19), intermission
           totals carry (16).
+          M15 SCREEN GRAPHICS LAYER (v_video.c + hu_lib.c, GPL-2)
+          CLOSED: Renderer.drawpatch (V_DrawPatch exact: leftoffset/
+          topoffset subtract, per-column (topdelta != 0xff) post walk
+          copying length bytes at (x+col, y+topdelta), clipped to fb
+          instead of vanilla's RANGECHECK I_Error — callers always
+          draw on-screen so this is unobservable) + drawpatchcentered
+          (cx - width/2) + drawblock (V_DrawBlock exact, row copies)
+          + fillrect (V_DrawFilledBox exact) + drawtext (hu_lib
+          HUlib_drawTextLine exact incl. toupper, space/+4,
+          out-of-range +4, right-edge break, end-x return; font =
+          array of raw lumps indexed c - sc, nil-safe) +
+          patchwidth/patchheight le16 helpers; module wrappers for
+          all entry points.  No per-frame allocation (raw lump views
+          read in place).  Tall-patch quirk note in PLAN resolved
+          against the in-tree source: this doomgeneric's v_video.c
+          has NO 0x80 handling (nor does r_draw.c/f_finale.c), and a
+          scan of all 968 patch-like lumps in doom1.wad finds no 0xfe
+          continuation posts (TITLEPIC's 0x80 topdeltas are literal
+          row 128 of a 200-tall patch: (0,128)+(128,72)) — so the
+          plain walk is exact and matches the port's existing
+          texture/sprite post code.  Validated pre-edit (Python:
+          manual post-decode of STBAR/STCFN065/TITLEPIC/M_DOOM/HELP1
+          + text-advance model) + headless SPECTEST17 14/14 (TEMP,
+          removed): T0 lumps + 320x32 / 320x200 dims, T1 STBAR@(0,168)
+          sum 928663, T2 font A@(10,10) sum 9693, T3 TITLEPIC sum
+          8941591 (640 posts), T4 centered M_DOOM sum 789725, T5 HELP1
+          sum 12243564, T6 NUKAGE1 64x64 block sum 507581, T7 fill sum
+          1400, T8 'A B' sum 19571 endx 20, T9 lowercase 'a' == 'A' —
+          all checksums equal the independent model.  Boot smoke clean
+          (35tps, render path untouched).  Limbo note: bounded slice
+          assignment is not an lvalue (only [0:] full-slice is) —
+          drawblock rows use a byte loop.  Residuals: none.
