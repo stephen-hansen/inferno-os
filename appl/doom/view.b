@@ -1274,6 +1274,24 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 		for (x = lx1; x <= lx2; x++)
 			ds.bot[x] = solid[2*x+1];
 	}
+	# Sealed back sector (closed door/panel: zero/negative volume):
+	# occlude sprites fully like a solid wall.  Vanilla only clips
+	# via SIL_BOTTOM/_TOP when their height gates engage, so a sealed
+	# door with a raised floor (backfloor just under the eye, no
+	# SIL_BOTTOM) leaks sprites through its lower slab — E1M3's start
+	# door showed the whole room behind it.  A sealed wall has no
+	# opening by definition, so fully closing it for sprites is exact;
+	# walls/planes/masked (solid[] and flushes) are untouched, and
+	# non-sealed segs (openings, steps, windows) are unaffected.
+	if (bceilz <= bfloorz) {
+		ds.sil = SIL_BOTTOM | SIL_TOP;
+		ds.bsilh = INT_MAX;
+		ds.tsilh = INT_MIN;
+		for (x = lx1; x <= lx2; x++) {
+			ds.top[x] = h;
+			ds.bot[x] = -1;
+		}
+	}
 	# sync scalar/array-field state back into the pool: ds is a value
 	# copy (array contents shared, scalar fields not)
 	dssegs[dsidx].midxex = ds.midxex;

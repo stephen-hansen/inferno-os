@@ -17,7 +17,8 @@ Build / run
   modes   doom [-v] [doom.wad]; -v enables sprite/masked diagnostics
           on stdout; F1 snapshots a frame log, F2 reviews the last
           ~105 frames frozen (Left/Right step, F1 captures, F2/Esc
-          resumes); no flag = play E1M2 (skill hardcoded MEDIUM)
+           resumes); no flag = play E1M3 (skill hardcoded MEDIUM);
+           -w = IDKFA test loadout, -g = god mode (pre-M25 hooks)
 
 Platform services available in-tree (verified):
   blit      Draw->Image.writepixels(dst, r, data), module/draw.m:190;

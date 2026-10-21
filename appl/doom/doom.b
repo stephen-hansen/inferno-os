@@ -51,6 +51,8 @@ init(ctxt: ref Draw->Context, args: list of string)
 
 	args = tl args;
 	ringflag := 0;
+	doweapons = 0;
+	dogod = 0;
 	for (;;) {
 		if (args == nil)
 			break;
@@ -59,6 +61,12 @@ init(ctxt: ref Draw->Context, args: list of string)
 			args = tl args;
 		} else if (hd args == "-R") {
 			ringflag = 1;
+			args = tl args;
+		} else if (hd args == "-w") {
+			doweapons = 1;	# TEST HOOK (pre-M25): IDKFA loadout
+			args = tl args;
+		} else if (hd args == "-g") {
+			dogod = 1;	# TEST HOOK (pre-M25): god mode
 			args = tl args;
 		} else
 			break;
@@ -127,10 +135,12 @@ vid_h := 200;
 
 usage()
 {
-	sys->fprint(sys->fildes(2), "usage: doom [-v] [-R] [doom.wad]\n");
+	sys->fprint(sys->fildes(2), "usage: doom [-v] [-R] [-w] [-g] [doom.wad]\n");
 	sys->fprint(sys->fildes(2), "  -v  sprite/masked diagnostics on stdout\n");
 	sys->fprint(sys->fildes(2), "  -R  enable F2 frame-history review ring\n");
 	sys->fprint(sys->fildes(2), "      (off by default: the per-frame copy costs real play)\n");
+	sys->fprint(sys->fildes(2), "  -w  TEST HOOK: start with IDKFA loadout\n");
+	sys->fprint(sys->fildes(2), "  -g  TEST HOOK: god mode on\n");
 	raise "fail:usage";
 }
 
@@ -201,6 +211,8 @@ prevleft, prevright:	int;	# nav edge state in review
 navhold:	int;		# held-nav repeat counter in review
 turnheld:	int;		# vanilla accelerative-turn counter (tics)
 verbose:	int;		# TEMP: -v enables view sprite diagnostics
+doweapons:	int;	# TEST HOOK (pre-M25): -w grants IDKFA loadout at boot
+dogod:		int;	# TEST HOOK (pre-M25): -g sets CF_GODMODE at boot
 
 play(path: string, wmctxt: ref Draw->Context, doring: int)
 {
@@ -246,7 +258,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (err != nil)
 		fail(err);
 
-	(l, merr) := map->open(w, "E1M2");
+	(l, merr) := map->open(w, "E1M3");
 	if (l == nil)
 		fail(merr);
 
@@ -311,12 +323,35 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
 	mo := p.mo;
-	sys->print("play: E1M2 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
+	sys->print("play: E1M3 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
 	if (doring)
 		sys->print(", F2=review");
 	sys->print("\n");
 	sys->print("  player at %d,%d angle %d deg\n",
 		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
+
+	# TEST HOOKS (pre-M25; real typed cheats land in milestone 25).
+	# Applied once at boot after the initial setuplevel: death reload
+	# (PST_REBORN) and later maps behave vanilla from here (carry what
+	# you hold; god mode persists except E1M8's exit sector clears it).
+	if (doweapons != 0) {
+		# vanilla IDKFA (st_stuff.c): all weapons, full ammo, all
+		# keys, 200% class-2 armor.  Ready weapon untouched (switch
+		# with 1-8 like the real cheat).
+		for (wi := 0; wi < game->NUMWEAPONS; wi++)
+			p.weaponowned[wi] = 1;
+		for (am := 0; am < game->NUMAMMO; am++)
+			p.ammo[am] = p.maxammo[am];
+		for (ca := 0; ca < game->NUMCARDS; ca++)
+			p.cards[ca] = 1;
+		p.armortype = 2;
+		p.armorpoints = 200;
+		sys->print("  test loadout -w: all weapons, max ammo, keys, 200%% armor\n");
+	}
+	if (dogod != 0) {
+		p.cheats = p.cheats | game->CF_GODMODE;
+		sys->print("  test god mode -g: on (telefrag still kills)\n");
+	}
 
 	TICMS := 1000 / 35;
 	# buffered: the tick sender blocks only when 8 ticks (~228ms)
@@ -329,7 +364,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	tic := 0;
 	quit := 0;
 	nticks := 0;
-	curmap := "E1M2";
+	curmap := "E1M3";
 	intermission := 0;	# showing WI stats/entering (sim frozen)
 	victory := 0;		# E1M8 done (finale lands in 22; frozen)
 	for (; !quit;) {

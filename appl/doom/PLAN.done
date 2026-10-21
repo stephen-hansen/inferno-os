@@ -1557,3 +1557,43 @@ Milestones (each independently testable)
           verified headless (TEMP harness, removed): post-fix seg
           offsets equal WAD ground truth.  Remaining: in-game confirm
           (pillar survives the snap2 spot; door texture straight).
+          TEST HOOKS (pre-M25, per tester request): doom.b boot flags
+          -w (IDKFA-equivalent starting loadout: all 9 weapons, max
+          ammo 200/50/300/50, all 6 keys, 200% class-2 armor — ready
+          weapon untouched, switch with 1-8) and -g (CF_GODMODE;
+          telefrag <1000dmg rule still kills, E1M8 exit still clears).
+          Applied once after the initial setuplevel; death reload and
+          later maps behave vanilla from there.  Verified headless
+          (TEMP read-back, removed): owned=111111111 ammo=200/50/300/50
+          cards=111111 armor=2/200.  Default map is E1M3 now (was
+          E1M2); revert/change via the three E1M3 references in
+          doom.b.  Real typed cheats (IDKFA/IDDQD/IDCLIP/...) remain
+          milestone 25 work; these flags are the testing stand-in.
+          FIELD REPORT 3 (E1M3 start secret door, sprites through the
+          closed lower slab — FIXED as a scoped deviation): enemies
+          behind E1M3's closed S1 start door (ld145) drew over its
+          lower half, spoiling the secret.  Pixel-level proof from fb8:
+          pillar rows 60-102 show wall only (top clip sptop=103 from
+          the upper slab works), rows 103+ show sprite pixels (bottom
+          fully open, spbot=200).  Mechanism: door floor raised to 136,
+          1 unit under the 137 eye, so no SIL_BOTTOM forms (needs
+          backfloor > viewz or frontfloor > backfloor); sil=2 TOP-only,
+          and the lower wall (104..136) never contributes a bottom
+          clip.  Textual vanilla comparison says vanilla computes the
+          identical window, but the tester is certain vanilla hides
+          these and the secret's value is destroyed regardless — and a
+          sealed wall has no opening by definition, so fully closing
+          it for sprites is exact, not approximate.  FIXED in
+          drawtwosided's clip snapshot: sealed back sectors (bceilz <=
+          bfloorz) get sil=BOTH + terminal top=h/bot=-1 (solid-wall
+          treatment for sprite clipping only); walls/planes/masked
+          (solid[] and flushes) untouched.  Scope proof on doomsnap0:
+          39 behind-door sprites (all live enemies, barrel, decor)
+          move to fully-hidden; the 1 front sprite (mob84 pillar, seg
+          behind it) and around-edge columns are untouched; normal
+          2-sided segs (openings/steps/windows) never meet the
+          condition, and typical closed doors were already hidden via
+          full-height top clip (same pixels either way).  Intentional
+          deviation, narrow by construction; revert by deleting the
+          bceilz<=bfloorz block.  Restart to pick up the fixed
+          view.dis and re-check the door with F1.
