@@ -388,6 +388,15 @@ audio_open(int omode)
 		error("cannot set blocking mode");
 	}
 
+	/* Small DMA fragments: keeps the PulseAudio shim's stream
+	 * buffer at fragment*nfrag bytes (~93ms at 11025Hz) instead of
+	 * its ~1.1s default (12x1024), cutting sound latency.  Non-fatal:
+	 * real OSS drivers round the request their own way. */
+	{
+		int farg = (4 << 16) | 8;	/* 4 fragments of 256 bytes */
+		ioctl(fd, SNDCTL_DSP_SETFRAGMENT, &farg);
+	}
+
 	if(!audio_pause(fd, A_Pause)){
 		close(fd);
 		error(Eio);

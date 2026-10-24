@@ -1681,3 +1681,15 @@ Milestones (each independently testable)
           Runtime quiet: audio driver DPRINT off (per-tic
           audio_file_write spam gone); the 70-tic status heartbeat
           in doom.b now prints only with -v.
+          SOUND LATENCY (Oct 24): "slight delay" on effects traced
+          to the libpulsedsp shim: apps that never set OSS fragment
+          size get its default stream buffer of 12 x 1024 bytes =
+          ~1.1s of PulseAudio-side buffering (padsp.c fix_metrics +
+          create_playback_stream tlength=frag*nfrag).  Fixed in
+          audio-oss.c audio_open: SNDCTL_DSP_SETFRAGMENT with 4
+          fragments of 256 bytes (non-fatal; real OSS drivers round
+          it).  VERIFIED at the server: pactl Buffer Latency 86ms
+          (was ~1.1s); Sink Latency 49ms is WSLg transport, fixed.
+          Total onset latency now ~90+50+tic(~29)ms.  If heavy
+          scenes ever underrun (crackle), raise n_fragments 4->8
+          (~186ms margin) at the same call site.
