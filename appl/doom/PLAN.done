@@ -1693,3 +1693,60 @@ Milestones (each independently testable)
           Total onset latency now ~90+50+tic(~29)ms.  If heavy
           scenes ever underrun (crackle), raise n_fragments 4->8
           (~186ms margin) at the same call site.
+          PERF ROUND 2 (Oct 24, choppy frames on E1M4): two hitch
+          sources fixed.  (1) The per-tic 315-byte audio write
+          BLOCKED the tic loop: the shim sizes its socket receive
+          buffer to fragment_size (256B), so every write's last ~59
+          bytes waited ~23ms for the next PulseAudio drain -- a
+          guaranteed stall per tic.  Fragment changed to 512 bytes x
+          2 fragments: the write fits the buffer (no block) and
+          tlength stays ~93ms; verified Buffer Latency ~126ms.
+          (2) drawmasked allocated its sprite sort array every frame
+          (heap churn); now a preallocated MAXVISSPRITES array is
+          reused (slice view, same backing store).  view.dis + emu
+          rebuilt, boot smoke clean.  Pending: user smoothness test.
+          Next perf candidates if needed: M24 blockmap (brute-force
+          collision scans dominate E1M4 tic cost), per-frame alloc
+          audit of view.b ring/snapshot paths (off by default).
+          PERF ROUND 3 (Oct 24, after "still choppy"): added -p
+          frame profiling (doom.b: tic/render/convert/present avg+max
+          per 70 tics; view.b setperf(): bsp/mob/planes/sprites).
+          Measured on E1M4 start: tic 0ms, render 19 (bsp 9, planes 8,
+          sprites 1), convert 11, present ~1 -> frame ~31ms > 28.6ms
+          tick period = constant 1-2 tic catch-up alternation (the
+          judder), not low framerate.  Fixes: (1) convert 8x unroll
+          with hoisted palette slice refs (11->9ms; still byte-store
+          bound, ~64k px x 4 stores); (2) wall-column texture coord:
+          col = floor(u/65536) == floor(ud/id) for ud>=0 -> plain
+          32-bit division instead of big(); negative texture offsets
+          keep the big path; frac int path when x-ox1<=32767;
+          (3) row math fixedmul fast path per seg when |dz|<2^25 and
+          max scale<2^22 (|dz*scale|<2^47 keeps fixedmul exact; walls
+          closer than ~1.25u keep big).  CRITICAL BUG during this
+          round: first fast-path omitted the final >>16 (fixedmul
+          yields 16.16 rows; (dz*scale)>>32 is integer) -> walls
+          rendered garbage; fixed and proven bit-exact with a TEMP
+          Limbo oracle over 247 dz/scale cases incl. negatives,
+          extremes and the guard boundary (ROWCHECK-PASS; harness
+          removed).  (4) rdrawcolumn/drawspan hoist fb8/colormap/
+          tex.data/flat.data slice refs out of the per-pixel loop and
+          drawspan uses ((fy>>16)&63)<<6 instead of *64: planes
+          8->3ms, render 19->15, frame 31->25-26ms avg, n=70 frames
+          per 70 tics = exactly 1 tick/frame (judder gone).  Remaining
+          headroom: convert ~9ms is the Limbo per-byte-store floor;
+          max frames 31-37 still 2-tic when spikes hit; next big lever
+          is M24 blockmap for tic cost (E1M4 brute-force AI scans).
+          SWITCH BUG (Oct 24, E1M4 start switch): user reported the
+          switch stays in its initial (down) state forever.  Root
+          cause: changeswitchtexture matched only the FIRST member of
+          each pair (a == texture, swap to b).  Vanilla
+          P_ChangeSwitchTexture scans BOTH members (switchlist[i],
+          i in 0..2*numswitches) and swaps to the partner, and the
+          repeatable-switch button restores the CURRENT texture.  The
+          E1M4 line (ld614, special 18, tag 6) starts on SW2BROWN -
+          the second name - so it never matched and never swapped (the
+          floor action itself fired; special cleared).  Fixed: match
+          either member on top/mid/bottom, swap to the partner, and
+          P_StartButton stores the matched texture.  Verified headless
+          (TEMP harness, removed): press swaps SW2BROWN -> SW1BROWN,
+          special cleared (permanent), SWTEST-PASS.

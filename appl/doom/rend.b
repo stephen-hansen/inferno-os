@@ -529,14 +529,20 @@ Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 	fracstep := iscale;
 	frac := texturemid + (yl - r.centery) * fracstep;
 	th := tex.height;
+	# hoisted framebuffer/colormap/texture refs: field dispatch per
+	# pixel is a measurable share of the inner loop.
+	fb := r.fb8;
+	cmap := r.colormap;
+	td := tex.data;
+	wd := r.w;
 	# fast path: power-of-two heights (100/125 TEXTURE1 entries are
 	# 128 tall) wrap with & instead of a per-pixel modulo division
 	if (th > 0 && (th & (th - 1)) == 0) {
 		m := th - 1;
 		for (i := 0; i <= count; i++) {
 			row := (frac >> 16) & m;
-			r.fb8[dest] = r.colormap[cm + int tex.data[src + row]];
-			dest += r.w;
+			fb[dest] = cmap[cm + int td[src + row]];
+			dest += wd;
 			frac += fracstep;
 		}
 		return;
@@ -545,8 +551,8 @@ Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 		row := (frac >> 16) % th;
 		if (row < 0)
 			row += th;
-		r.fb8[dest] = r.colormap[cm + int tex.data[src + row]];
-		dest += r.w;
+		fb[dest] = cmap[cm + int td[src + row]];
+		dest += wd;
 		frac += fracstep;
 	}
 }
@@ -561,9 +567,12 @@ Renderer.drawspan(r: self ref Renderer, y, x1, x2, light: int,
 	dest := y * r.w + x1;
 	fx := xfrac;
 	fy := yfrac;
+	fb := r.fb8;
+	cmap := r.colormap;
+	fd := fl.data;
 	for (i := 0; i <= count; i++) {
-		spot := ((fy >> 16) & 63) * 64 + ((fx >> 16) & 63);
-		r.fb8[dest] = r.colormap[cm + int fl.data[spot]];
+		spot := ((fy >> 16) & 63) << 6 | ((fx >> 16) & 63);
+		fb[dest] = cmap[cm + int fd[spot]];
 		dest++;
 		fx += xstep;
 		fy += ystep;
@@ -617,12 +626,39 @@ Renderer.drawfuzz(r: self ref Renderer, x, yl, yh: int)
 # palette-map fb8 to BGRX quadruplets for the XRGB32 screen format
 Renderer.convert(r: self ref Renderer, dst: array of byte)
 {
+	# hot loop (64k pixels/frame): 8 pixels per iteration, local
+	# slice refs instead of per-pixel adt field dispatch.
+	fb := r.fb8;
+	pb := r.palb;
+	pg := r.palg;
+	pr := r.palr;
+	i := 0;
 	j := 0;
-	for (i := 0; i < len r.fb8; i++) {
-		c := int r.fb8[i];
-		dst[j] = r.palb[c];
-		dst[j+1] = r.palg[c];
-		dst[j+2] = r.palr[c];
+	n := len fb;
+	for (; i + 7 < n; i += 8) {
+		c := int fb[i];
+		dst[j] = pb[c]; dst[j+1] = pg[c]; dst[j+2] = pr[c]; dst[j+3] = byte 0;
+		c = int fb[i+1];
+		dst[j+4] = pb[c]; dst[j+5] = pg[c]; dst[j+6] = pr[c]; dst[j+7] = byte 0;
+		c = int fb[i+2];
+		dst[j+8] = pb[c]; dst[j+9] = pg[c]; dst[j+10] = pr[c]; dst[j+11] = byte 0;
+		c = int fb[i+3];
+		dst[j+12] = pb[c]; dst[j+13] = pg[c]; dst[j+14] = pr[c]; dst[j+15] = byte 0;
+		c = int fb[i+4];
+		dst[j+16] = pb[c]; dst[j+17] = pg[c]; dst[j+18] = pr[c]; dst[j+19] = byte 0;
+		c = int fb[i+5];
+		dst[j+20] = pb[c]; dst[j+21] = pg[c]; dst[j+22] = pr[c]; dst[j+23] = byte 0;
+		c = int fb[i+6];
+		dst[j+24] = pb[c]; dst[j+25] = pg[c]; dst[j+26] = pr[c]; dst[j+27] = byte 0;
+		c = int fb[i+7];
+		dst[j+28] = pb[c]; dst[j+29] = pg[c]; dst[j+30] = pr[c]; dst[j+31] = byte 0;
+		j += 32;
+	}
+	for (; i < n; i++) {
+		c := int fb[i];
+		dst[j] = pb[c];
+		dst[j+1] = pg[c];
+		dst[j+2] = pr[c];
 		dst[j+3] = byte 0;
 		j += 4;
 	}

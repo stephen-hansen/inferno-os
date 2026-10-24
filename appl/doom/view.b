@@ -144,7 +144,18 @@ Vissprite: adt {
 };
 viss:	array of Vissprite;
 nvis:	int;
+sortord:	array of int;	# preallocated drawmasked sort order
 vissorted:	int;	# pool sorted ascending by scale once full (far = [0])
+perfdebug:	int;	# -p: per-phase render timing
+perfacc:	array of int;	# [4] bsp/mob/planes/sprites ms accumulators
+perfcnt:	int;
+
+setperf(v: int)
+{
+	perfdebug = v;
+	perfacc = array[4] of int;
+	perfcnt = 0;
+}
 ovvis:	Vissprite;		# overflow slot (never drawn, vanilla behavior)
 
 # drawseg pool (r_defs.h drawseg_t): records every drawn wall seg so
@@ -368,8 +379,12 @@ setlevel(l: ref Map->Level)
 render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 		mobs: array of ref Game->Mobj)
 {
-	if (r == nil || lev == nil)
-		return;
+ 	if (r == nil || lev == nil)
+ 		return;
+	pt0 := 0;
+	pt1 := 0;
+	if (perfdebug)
+		pt0 = sys->millisec();
 	# TEMP: clip-attribution arrays for drawspscan instrumentation
 	if (cltopfrom == nil) {
 		cltopfrom = array[w] of int;
@@ -430,11 +445,16 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 	nvp = 0;
 	curfloor = curceil = -1;
 
-	# walk BSP front-to-back from the root
-	if (len lev.nodes > 0)
-		renderbsp(len lev.nodes - 1);
-	else if (len lev.subsectors > 0)
-		rendersubsector(0);
+ 	# walk BSP front-to-back from the root
+ 	if (len lev.nodes > 0)
+ 		renderbsp(len lev.nodes - 1);
+ 	else if (len lev.subsectors > 0)
+ 		rendersubsector(0);
+	if (perfdebug) {
+		pt1 = sys->millisec();
+		perfacc[0] = perfacc[0] + pt1 - pt0;
+		pt0 = pt1;
+	}
 
 	# project thing sprites (vanilla does this per sector during the
 	# walk via R_AddSprites; projecting everything here is equivalent
@@ -458,14 +478,39 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 			projectmo(mobs[i]);
 		}
 	}
-	nsprites = nvis;
-	nmasked = 0;
+ 	nsprites = nvis;
+ 	nmasked = 0;
+	if (perfdebug) {
+		pt1 = sys->millisec();
+		perfacc[1] = perfacc[1] + pt1 - pt0;
+		pt0 = pt1;
+	}
 
-	# flush accumulated floor/ceiling spans to screen
-	drawplanes();
+ 	# flush accumulated floor/ceiling spans to screen
+ 	drawplanes();
+	if (perfdebug) {
+		pt1 = sys->millisec();
+		perfacc[2] = perfacc[2] + pt1 - pt0;
+		pt0 = pt1;
+	}
 
-	# sprites back-to-front, then remaining masked midtextures
-	drawmasked();
+ 	# sprites back-to-front, then remaining masked midtextures
+ 	drawmasked();
+	if (perfdebug) {
+		pt1 = sys->millisec();
+		perfacc[3] = perfacc[3] + pt1 - pt0;
+		perfcnt++;
+		if (perfcnt >= 70) {
+			sys->print("V bsp %d mob %d pl %d sp %d ms\n",
+				perfacc[0] / perfcnt, perfacc[1] / perfcnt,
+				perfacc[2] / perfcnt, perfacc[3] / perfcnt);
+			perfacc[0] = 0;
+			perfacc[1] = 0;
+			perfacc[2] = 0;
+			perfacc[3] = 0;
+			perfcnt = 0;
+		}
+	}
 
 	# record this frame in the history ring (F2 review) — only
 	# when enabled (doom -R).  the per-frame fb+clip copy is pure
@@ -870,19 +915,40 @@ addline(segnum: int)
 
 	# draw columns lx1..lx2; frac spans the ORIGINAL x span
 	nsegs++;
+	# row-math fast path bound: fixedmul(dz, scale) is exact iff
+	# |dz*scale| < 2^47.  dz < 2^25 (512 units) and max scale < 2^22
+	# (64px/unit) keeps it exact; closer walls take the big path.
+	dzmax := z1t - vz;
+	if (z1b - vz > dzmax)
+		dzmax = z1b - vz;
+	if (vz - z1t > dzmax)
+		dzmax = vz - z1t;
+	if (vz - z1b > dzmax)
+		dzmax = vz - z1b;
+	if (z2t - vz > dzmax)
+		dzmax = z2t - vz;
+	if (z2b - vz > dzmax)
+		dzmax = z2b - vz;
+	if (vz - z2t > dzmax)
+		dzmax = vz - z2t;
+	if (vz - z2b > dzmax)
+		dzmax = vz - z2b;
+	smax := s1;
+	if (s2 > smax)
+		smax = s2;
+	fastrows := 0;
+	if (dzmax < (1 << 25) && smax < (1 << 22))
+		fastrows = 1;
 	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
-		if (tspan > 0)
-			# ox1 is the ORIGINAL projected endpoint (kept unclamped as
-			# the interpolation basis) and can sit far off-screen: a
-			# near-plane-clipped endpoint projects to |x| ~ 100k px, so
-			# (x-ox1)<<16 overflows int32 for left-extending segs ->
-			# garbage/negative frac -> scale/id extrapolated to garbage:
-			# zoomed or missing wall columns along the screen's left edge.
-			# (Right-extending segs never overflow: ox1 stays on-screen
-			# so x-ox1 <= 320.)  big required; result stays <= 65536
-			# since x <= ox2.
-			frac = int(((big(x) - big(ox1)) << 16) / big(tspan));
+		if (tspan > 0) {
+			if (x - ox1 <= 32767)
+				frac = ((x - ox1) << 16) / tspan;
+			else
+				# ox1 far off-screen (near-clipped endpoint):
+				# (x-ox1)<<16 overflows int32 -> big.
+				frac = int(((big(x) - big(ox1)) << 16) / big(tspan));
+		}
 		scale := s1 + rend->fixedmul(s2 - s1, frac);
 		if (scale <= 0)
 			continue;
@@ -891,10 +957,28 @@ addline(segnum: int)
 		id := id1 + rend->fixedmul(id2 - id1, frac);
 		if (id <= 0)
 			continue;
-		u := int((big(ud) << 16) / big(id));
+		# texture column = floor(u/65536), u = (ud<<16)/id.
+		# ud>=0: exactly ud/id (integer div, no big).  negative
+		# texture offsets keep the big path (floor differs there).
+		col: int;
+		if (ud >= 0)
+			col = ud / id;
+		else {
+			u := int((big(ud) << 16) / big(id));
+			col = u >> 16;
+		}
 
-		yt := r.centery - int(big(z1t + rend->fixedmul(z2t - z1t, frac) - vz) * big(scale) >> 32);
-		yb := r.centery - int(big(z1b + rend->fixedmul(z2b - z1b, frac) - vz) * big(scale) >> 32);
+		dzt := z1t + rend->fixedmul(z2t - z1t, frac) - vz;
+		dzb := z1b + rend->fixedmul(z2b - z1b, frac) - vz;
+		yt: int;
+		yb: int;
+		if (fastrows) {
+			yt = r.centery - (rend->fixedmul(dzt, scale) >> 16);
+			yb = r.centery - (rend->fixedmul(dzb, scale) >> 16);
+		} else {
+			yt = r.centery - int(big(dzt) * big(scale) >> 32);
+			yb = r.centery - int(big(dzb) * big(scale) >> 32);
+		}
 
 		# clip to occlusion
 		cclip := solid[2*x];
@@ -917,8 +1001,7 @@ addline(segnum: int)
 		markplane(curfloor, x, yb + 1, fclip);
 
 			if (yt <= yb && tex != nil) {
-				# texture mapping
-				col := u >> 16;
+				# texture mapping (col computed above)
 				# iscale: 16.16 texture units per screen pixel = 2^32/scale.
 				# int-safe when scale>=2^16 (result<=2^16); else big (rare: very close walls).
 				iscale: int;
@@ -1097,11 +1180,37 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 		toptex = rend->rtexture(r, sd.toptexture);
 	if (bfloorz > ffloorz && sd.bottomtexture != "" && sd.bottomtexture != "-")
 		bottex = rend->rtexture(r, sd.bottomtexture);
+	# row-math fast path bound (same rule as addline): fixedmul is
+	# exact iff |dz*scale| < 2^47; dz<2^25 && max scale<2^22.
+	dzmax := fceilz - vz;
+	if (vz - fceilz > dzmax)
+		dzmax = vz - fceilz;
+	if (bceilz - vz > dzmax)
+		dzmax = bceilz - vz;
+	if (vz - bceilz > dzmax)
+		dzmax = vz - bceilz;
+	if (ffloorz - vz > dzmax)
+		dzmax = ffloorz - vz;
+	if (vz - ffloorz > dzmax)
+		dzmax = vz - ffloorz;
+	if (bfloorz - vz > dzmax)
+		dzmax = bfloorz - vz;
+	if (vz - bfloorz > dzmax)
+		dzmax = vz - bfloorz;
+	smax := s1;
+	if (s2 > smax)
+		smax = s2;
+	fastrows := 0;
+	if (dzmax < (1 << 25) && smax < (1 << 22))
+		fastrows = 1;
 	for (x := lx1; x <= lx2; x++) {
 		frac := 0;
-		if (tspan > 0)
-			# big: same left-edge ox1 overflow as in addline's loop
-			frac = int(((big(x) - big(ox1)) << 16) / big(tspan));	# int-safe
+		if (tspan > 0) {
+			if (x - ox1 <= 32767)
+				frac = ((x - ox1) << 16) / tspan;
+			else
+				frac = int(((big(x) - big(ox1)) << 16) / big(tspan));
+		}
 		scale := s1 + rend->fixedmul(s2 - s1, frac);
 		if (scale <= 0)
 			continue;
@@ -1109,8 +1218,13 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 		id := id1 + rend->fixedmul(id2 - id1, frac);
 		if (id <= 0)
 			continue;
-		u := int((big(ud) << 16) / big(id));
-		col := u >> 16;
+		col: int;
+		if (ud >= 0)
+			col = ud / id;
+		else {
+			u := int((big(ud) << 16) / big(id));
+			col = u >> 16;
+		}
 
 		# record the masked texture column for the later flush
 		if (midtex != nil) {
@@ -1144,8 +1258,15 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 		# (cclip = max(cclip, fctop)) already matches vanilla's
 		# markceiling branch (ceilingclip = yl-1) for undrawn uppers.
 		if (toptex != nil) {
-			yt := r.centery - int(big(fceilz - vz) * big(scale) >> 32);
-			yb := r.centery - int(big(bceilz - vz) * big(scale) >> 32);
+			yt: int;
+			yb: int;
+			if (fastrows) {
+				yt = r.centery - (rend->fixedmul(fceilz - vz, scale) >> 16);
+				yb = r.centery - (rend->fixedmul(bceilz - vz, scale) >> 16);
+			} else {
+				yt = r.centery - int(big(fceilz - vz) * big(scale) >> 32);
+				yb = r.centery - int(big(bceilz - vz) * big(scale) >> 32);
+			}
 			if (yt < cclip) yt = cclip;
 			if (yt < 0) yt = 0;
 			if (yb >= fclip) yb = fclip - 1;
@@ -1169,10 +1290,15 @@ drawtwosided(dsidx: int, sd: ref Map->Side, ldflags: int,
 
 		# lower texture: from front floor to back floor
 		if (bottex != nil) {
-			# big: fixedmul(dz, scale)>>16 overflows for
-			# close walls (dz ~200 units * scale 640px/u)
-			yt := r.centery - int(big(bfloorz - vz) * big(scale) >> 32);
-			yb := r.centery - int(big(ffloorz - vz) * big(scale) >> 32);
+			yt: int;
+			yb: int;
+			if (fastrows) {
+				yt = r.centery - (rend->fixedmul(bfloorz - vz, scale) >> 16);
+				yb = r.centery - (rend->fixedmul(ffloorz - vz, scale) >> 16);
+			} else {
+				yt = r.centery - int(big(bfloorz - vz) * big(scale) >> 32);
+				yb = r.centery - int(big(ffloorz - vz) * big(scale) >> 32);
+			}
 			if (yt < cclip) yt = cclip;
 			if (yt < 0) yt = 0;
 			if (yb >= fclip) yb = fclip - 1;
@@ -1994,7 +2120,10 @@ flushmask(dsidx, x1, x2: int)
 drawmasked()
 {
 	if (nvis > 1) {
-		ord := array[nvis] of int;
+		# preallocated sort order (no per-frame heap churn)
+		if (sortord == nil)
+			sortord = array[MAXVISSPRITES] of int;
+		ord := sortord[0:nvis];
 		for (i := 0; i < nvis; i++)
 			ord[i] = i;
 		for (i = 0; i < nvis; i++) {

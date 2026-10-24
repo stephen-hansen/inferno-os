@@ -14,12 +14,13 @@ Build / run
           PATH=/home/steve/inferno-os/Linux/386/bin:$PATH mk install
   run     cd /home/steve/inferno-os && DISPLAY=:0 \
           ./Linux/386/bin/emu /dis/doom/doom.dis doom1.wad
-  modes   doom [-v] [-R] [-w] [-g] [doom.wad]; -v enables sprite/
-          masked diagnostics on stdout; F1 snapshots a frame log, F2
-          reviews the last ~105 frames frozen (Left/Right step, F1
-          captures, F2/Esc resumes); no flag = play E1M4 (skill
-          hardcoded MEDIUM); -w = IDKFA test loadout, -g = god mode
-          (pre-M25 hooks)
+  modes   doom [-v] [-R] [-w] [-g] [-p] [doom.wad]; -v enables sprite/
+          masked diagnostics on stdout; -p prints frame timing
+          (tic/render/convert/present avg+max) every 70 tics; F1
+          snapshots a frame log, F2 reviews the last ~105 frames
+          frozen (Left/Right step, F1 captures, F2/Esc resumes);
+          no flag = play E1M4 (skill hardcoded MEDIUM);
+          -w = IDKFA test loadout, -g = god mode (pre-M25 hooks)
 
 Platform services available in-tree (verified):
   blit      Draw->Image.writepixels(dst, r, data), module/draw.m:190;

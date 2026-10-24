@@ -390,10 +390,13 @@ audio_open(int omode)
 
 	/* Small DMA fragments: keeps the PulseAudio shim's stream
 	 * buffer at fragment*nfrag bytes (~93ms at 11025Hz) instead of
-	 * its ~1.1s default (12x1024), cutting sound latency.  Non-fatal:
-	 * real OSS drivers round the request their own way. */
+	 * its ~1.1s default (12x1024), cutting sound latency.  Fragment
+	 * size must exceed the game's 315-byte per-tic writes, or every
+	 * write blocks in the shim's fragment-sized socket buffer and
+	 * stalls the tic loop.  Non-fatal: real OSS drivers round the
+	 * request their own way. */
 	{
-		int farg = (4 << 16) | 8;	/* 4 fragments of 256 bytes */
+		int farg = (2 << 16) | 9;	/* 2 fragments of 512 bytes */
 		ioctl(fd, SNDCTL_DSP_SETFRAGMENT, &farg);
 	}
 

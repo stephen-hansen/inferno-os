@@ -3677,27 +3677,50 @@ changeswitchtexture(li, useAgain: int)
 	soundnum := sound->SFX_SWTCHN;
 	if (ld.special == 11)
 		soundnum = sound->SFX_SWTCHX;
+	# vanilla P_ChangeSwitchTexture scans BOTH members of every pair
+	# (switchlist[i], i over 2*numswitches) and swaps to the partner:
+	# a sidedef may hold either the SW1 or the SW2 texture (E1M4's
+	# start switch is SW2BROWN).  Match either, restore the matched
+	# one on the repeatable-switch timer.
 	for (i := 0; i < len switchpairs; i++) {
 		(a, b) := switchpairs[i];
-		if (a == ld.sides[0].toptexture) {
+		if (a == ld.sides[0].toptexture || b == ld.sides[0].toptexture) {
+			old := a;
+			newn := b;
+			if (b == ld.sides[0].toptexture) {
+				old = b;
+				newn = a;
+			}
 			sound->startsound(0, 0, soundnum);
-			ld.sides[0].toptexture = b;
+			ld.sides[0].toptexture = newn;
 			if (useAgain != 0)
-				pstartbutton(li, BW_TOP, a, BUTTONTIME);
+				pstartbutton(li, BW_TOP, old, BUTTONTIME);
 			return;
 		}
-		if (a == ld.sides[0].midtexture) {
+		if (a == ld.sides[0].midtexture || b == ld.sides[0].midtexture) {
+			old := a;
+			newn := b;
+			if (b == ld.sides[0].midtexture) {
+				old = b;
+				newn = a;
+			}
 			sound->startsound(0, 0, soundnum);
-			ld.sides[0].midtexture = b;
+			ld.sides[0].midtexture = newn;
 			if (useAgain != 0)
-				pstartbutton(li, BW_MIDDLE, a, BUTTONTIME);
+				pstartbutton(li, BW_MIDDLE, old, BUTTONTIME);
 			return;
 		}
-		if (a == ld.sides[0].bottomtexture) {
+		if (a == ld.sides[0].bottomtexture || b == ld.sides[0].bottomtexture) {
+			old := a;
+			newn := b;
+			if (b == ld.sides[0].bottomtexture) {
+				old = b;
+				newn = a;
+			}
 			sound->startsound(0, 0, soundnum);
-			ld.sides[0].bottomtexture = b;
+			ld.sides[0].bottomtexture = newn;
 			if (useAgain != 0)
-				pstartbutton(li, BW_BOTTOM, a, BUTTONTIME);
+				pstartbutton(li, BW_BOTTOM, old, BUTTONTIME);
 			return;
 		}
 	}

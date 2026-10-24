@@ -70,6 +70,9 @@ init(ctxt: ref Draw->Context, args: list of string)
 		} else if (hd args == "-g") {
 			dogod = 1;	# TEST HOOK (pre-M25): god mode
 			args = tl args;
+		} else if (hd args == "-p") {
+			doperf = 1;	# frame timing on stdout
+			args = tl args;
 		} else
 			break;
 	}
@@ -215,6 +218,8 @@ turnheld:	int;		# vanilla accelerative-turn counter (tics)
 verbose:	int;		# TEMP: -v enables view sprite diagnostics
 doweapons:	int;	# TEST HOOK (pre-M25): -w grants IDKFA loadout at boot
 dogod:		int;	# TEST HOOK (pre-M25): -g sets CF_GODMODE at boot
+doperf:		int;	# -p: print tick/render frame timing every 70 tics
+perfticksum, perfrendsum, perfconvsum, perfpressum, perfmaxtick, perfmaxrend, perfmaxconv, perfmaxpres, perfframes: int;
 
 play(path: string, wmctxt: ref Draw->Context, doring: int)
 {
@@ -283,9 +288,11 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	err = view->init(rr, l, w, game, vid_w, vid_h);
 	if (err != nil)
 		fail(err);
-	if (verbose)
-		view->dbgprints = 1;
-	view->ringenable = doring;
+ 	if (verbose)
+ 		view->dbgprints = 1;
+ 	view->ringenable = doring;
+	if (doperf)
+		view->setperf(1);
 
 	# load intermission screens (stats + entering title)
 	wi = load Wi Wi->PATH;
@@ -465,6 +472,9 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		# for the next frame.  sustained 20fps needs 2/frame.
 		if (nticks > 4)
 			nticks = 4;
+		perf0 := 0;
+		perft1 := 0;
+		perfdt := 0;
 
 		if (victory != 0) {
 			# E1M8 done, finale lands in 22: frozen last frame,
@@ -577,8 +587,16 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 						sys->print("review %d/%d frame tic %d\n",
 							rvni, rvn, view->ringtic(rvni));
 					}
-				}
-			}
+		}
+		}
+		if (doperf && intermission == 0) {
+			perft1 = sys->millisec();
+			perfdt = perft1 - perf0;
+			perfticksum = perfticksum + perfdt;
+			if (perfdt > perfmaxtick)
+				perfmaxtick = perfdt;
+			perf0 = perft1;
+		}
 			continue;
 		}
 		prevleft = keystate[Left];
@@ -590,6 +608,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		# frame overruns.  ticcmd is rebuilt per ticker so the
 		# accelerative-turn ramp advances in bursts exactly as if
 		# the tics had run on time (vanilla duplicates the cmd).
+		if (doperf)
+			perf0 = sys->millisec();
 		for (ti := 0; ti < nticks; ti++) {
 		tic++;
 
@@ -734,11 +754,37 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 
 		# render: update view from player, walk BSP, present
 		game->setview();
+		if (doperf)
+			perf0 = sys->millisec();
 		view->render(game->viewx, game->viewy, game->viewz,
 			game->viewangle, game->viewcos, game->viewsin,
 			game->mobjs);
+		if (doperf) {
+			perft1 = sys->millisec();
+			perfdt = perft1 - perf0;
+			perfrendsum = perfrendsum + perfdt;
+			if (perfdt > perfmaxrend)
+				perfmaxrend = perfdt;
+			perf0 = perft1;
+		}
 		rr.convert(v.fb);
+		if (doperf) {
+			perft1 = sys->millisec();
+			perfdt = perft1 - perf0;
+			perfconvsum = perfconvsum + perfdt;
+			if (perfdt > perfmaxconv)
+				perfmaxconv = perfdt;
+			perf0 = perft1;
+		}
 		v.present();
+		if (doperf) {
+			perft1 = sys->millisec();
+			perfdt = perft1 - perf0;
+			perfpressum = perfpressum + perfdt;
+			if (perfdt > perfmaxpres)
+				perfmaxpres = perfdt;
+			perfframes = perfframes + 1;
+		}
 
 		# user snapshot (F1): dump the frame just presented for
 		# offline replay; game continues normally.
@@ -755,6 +801,24 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 					bamdegrees(mo.angle));
 		}
 
+		if (doperf && tic % 70 == 0 && perfframes > 0) {
+			sys->print("P tic %d/%d render %d/%d conv %d/%d pres %d/%d frame %d/%d n=%d\n",
+				perfticksum / perfframes, perfmaxtick,
+				perfrendsum / perfframes, perfmaxrend,
+				perfconvsum / perfframes, perfmaxconv,
+				perfpressum / perfframes, perfmaxpres,
+				(perfticksum + perfrendsum + perfconvsum + perfpressum) / perfframes,
+				perfmaxtick + perfmaxrend + perfmaxconv + perfmaxpres, perfframes);
+			perfticksum = 0;
+			perfrendsum = 0;
+			perfconvsum = 0;
+			perfpressum = 0;
+			perfmaxtick = 0;
+			perfmaxrend = 0;
+			perfmaxconv = 0;
+			perfmaxpres = 0;
+			perfframes = 0;
+		}
 		if (tic % 70 == 0) {
 			p = game->consoleplayer();
 			if (p != nil && p.mo != nil)

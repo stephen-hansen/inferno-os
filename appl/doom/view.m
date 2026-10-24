@@ -38,6 +38,7 @@ View: module {
 	nmasked:			int;	# masked mid segs flushed last frame
 	dbgprints:			int;	# TEMP: 1 enables sprite diagnostics
 	ringenable:			int;	# 1 = capture F2 review ring
+	setperf:			fn(v: int);	# 1 = per-phase render timing (stdout)
 						# (per-frame fb+clip copy; off = real
 						# play pays nothing, F1 snapshot still
 						# works — it reads the live frame)
