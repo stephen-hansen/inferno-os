@@ -1750,3 +1750,47 @@ Milestones (each independently testable)
           P_StartButton stores the matched texture.  Verified headless
           (TEMP harness, removed): press swaps SW2BROWN -> SW1BROWN,
           special cleared (permanent), SWTEST-PASS.
+          PERF ROUND 4 - JIT (Oct 24, "choppy when enemies attack"):
+          measured tick cost with 4 monster clusters awake/attacking
+          (TEMP harness): 0.35-0.44 ms/tic - sim was NOT the cost.
+          Full-frame probe: render 17-25ms (bsp 8-10, planes 5-9,
+          sprites 1-2), convert 9ms -> 27-34ms/frame vs 28.6ms tick =
+          judder in heavy views; span/column counts showed the room
+          has 1896 spans / 988 wall cols (interpreter-bound).
+          ROOT FIX: the emu has a Limbo->x86 JIT (`emu -c 1`), but
+          segflush() in emu/Linux/segflush-386.c was a no-op, so
+          modern NX kernels faulted on the first jump into compiled
+          code ("sys: segmentation violation").  Implemented it
+          properly (page-aligned mprotect PROT_READ|WRITE|EXEC).
+          RESULT with -c 1: render 18-25ms -> 1-2ms, convert 9 ->
+          0-1ms, whole frame ~31ms -> 2-3ms (10-15x), still exactly
+          1 tick/frame.  CORRECTNESS: framebuffer hashes over 4
+          viewpoints identical between interpreter and JIT
+          (bit-exact render) and audio/switch/boot all verified under
+          the JIT.  ~/bin/emu-audio now always passes -c 1 (comment
+          documents the segflush dependency).  The earlier
+          interpreter-path micro-optimisations from this round
+          (convert unroll, wall col integer division, fixedmul row
+          math, span/column field hoisting, sortord prealloc) are
+          kept - all validated (ROWCHECK-PASS) and harmless.  -p
+          output now also reports spans/cols/vp/vis/bbox/span-pixels
+          per frame.
+          PERF ROUND 5 - AUDIO DECOUPLING (Oct 24, "choppy only with
+          audio on"): the game's per-tic 315-byte write to #A/audio
+          went straight to the OSS device; the pulse OSS shim accepts
+          data only in fragment bursts and its socket buffer is
+          exactly one fragment, so writes blocked periodically and
+          stalled the tic loop (judder with audio, none without).
+          Fixed in emu/Linux/audio-oss.c with vanilla-style
+          decoupling: audio_file_write copies into a 32KB ring
+          (3s at 11025Hz) and a writer kproc drains the ring into
+          the device, absorbing all blocking.  Ring overflow drops
+          (cannot occur in practice); audio_file_close stops the
+          writer (drop aq.lk around Sleep - Inferno Sleep does not
+          release caller locks, first attempt deadlocked the tic
+          loop) and the writer owns/closes the fd so a later open
+          cannot race.  VERIFIED: game under emu-audio reports
+          tick max 0ms, frame 3ms avg / 5-6ms max, exactly 1 tick
+          per frame (n=70/70), pulse stream live at u8 1ch 11025Hz;
+          a write probe showed 100/100 writes completing without
+          stall and audio still plays.

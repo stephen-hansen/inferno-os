@@ -46,6 +46,115 @@ static int audio_open(int);
 static int audio_pause(int, int);
 static int audio_set_info(int, Audio_d*, int);
 
+/*
+ * Output decoupling.  The OSS shim (and OSS hardware) accepts data
+ * in fragment-sized bursts and its socket buffer is exactly one
+ * fragment, so the game's 315-byte-per-tic writes periodically block
+ * the tic loop and produce frame judder.  Vanilla Doom decouples
+ * with a sound thread; do the same: writes are copied into a ring
+ * and a kproc drains it into the device, absorbing any blocking.
+ * Steady state keeps the ring near empty (no added latency beyond
+ * the device buffer).
+ */
+enum {
+	AQSHIFT	= 15,
+	AQSIZE	= 1 << AQSHIFT,	/* 32KB ~= 3s of 11025Hz u8 */
+	AQMASK	= AQSIZE - 1,
+};
+
+static struct {
+	Lock	lk;
+	Rendez	r;
+	uchar	*b;
+	int	rp;		/* read index in b */
+	int	n;		/* bytes queued */
+	int	fd;		/* device fd drained by the writer */
+	int	running;
+	int	stop;
+} aq;
+
+static int
+aqready(void *a)
+{
+	USED(a);
+	return aq.n > 0 || aq.stop;
+}
+
+static void
+aqwriter(void *a)
+{
+	uchar tmp[4096];
+	int fd, n, k;
+
+	USED(a);
+	for(;;){
+		lock(&aq.lk);
+/* Sleep does not release caller locks: drop aq.lk while
+		 * blocked; Sleep re-checks aqready so a Wakeup racing the
+		 * unlock is not lost. */
+		while(aq.n == 0 && !aq.stop){
+			unlock(&aq.lk);
+			Sleep(&aq.r, aqready, nil);
+			lock(&aq.lk);
+		}
+if(aq.n == 0){
+			/* stop requested and everything played out */
+			fd = aq.fd;
+			aq.fd = -1;
+			aq.running = 0;
+			unlock(&aq.lk);
+			if(fd >= 0)
+				close(fd);
+			return;
+		}
+		n = aq.n;
+		if(n > sizeof tmp)
+			n = sizeof tmp;
+		k = AQSIZE - aq.rp;
+		if(k > n)
+			k = n;
+		memmove(tmp, aq.b + aq.rp, k);
+		if(n > k)
+			memmove(tmp + k, aq.b, n - k);
+		aq.rp = (aq.rp + n) & AQMASK;
+		aq.n -= n;
+		fd = aq.fd;
+		unlock(&aq.lk);
+		/* only this thread ever blocks on the device */
+if(fd >= 0)
+			write(fd, tmp, n);
+	}
+}
+
+static void
+aqenqueue(uchar *p, long n)
+{
+	int k, w;
+
+lock(&aq.lk);
+if(aq.b == nil && (aq.b = malloc(AQSIZE)) == nil){
+		unlock(&aq.lk);
+		return;			/* drop: no memory */
+	}
+	if(!aq.running && aq.fd >= 0){
+		aq.running = 1;
+		aq.stop = 0;
+kproc("audiowrite", aqwriter, nil, 0);
+}
+	if(n > AQSIZE - aq.n)
+		n = AQSIZE - aq.n;	/* overflow: drop (3s buffer) */
+	w = (aq.rp + aq.n) & AQMASK;
+	k = AQSIZE - w;
+	if(k > n)
+		k = n;
+	memmove(aq.b + w, p, k);
+	if(n > k)
+		memmove(aq.b, p + k, n - k);
+	aq.n += n;
+	Wakeup(&aq.r);
+	unlock(&aq.lk);
+}
+
 Audio_t*
 getaudiodev(void)
 {
@@ -92,7 +201,22 @@ audio_file_close(Chan *c)
 		qunlock(&afd.lk);
 		nexterror();
 	}
-	close(afd.data);
+	/* stop the writer (it owns the fd and closes it after the
+	 * ring has played out) and wait for it to finish, so a later
+	 * open never races the old fd */
+	lock(&aq.lk);
+	aq.stop = 1;
+	Wakeup(&aq.r);
+	unlock(&aq.lk);
+	for(;;){
+		lock(&aq.lk);
+		if(!aq.running){
+			unlock(&aq.lk);
+			break;
+		}
+		unlock(&aq.lk);
+		osmillisleep(1);
+	}
 	afd.data = -1;
 	qunlock(&afd.lk);
 	poperror();
@@ -142,12 +266,11 @@ audio_file_read(Chan *c, void *va, long count, vlong offset)
 	return count;
 }
 
-long                                            
+long
 audio_file_write(Chan *c, void *va, long count, vlong offset)
 {
-	long status = -1;
-	long ba, total, chunk, bufsz;
-	
+	long ba, bufsz;
+
 	USED(c);
 	USED(offset);
 	DPRINT("audio_file_write %d %d\n", afd.data, afd.ctl);
@@ -166,24 +289,17 @@ audio_file_write(Chan *c, void *va, long count, vlong offset)
 	if(count % ba)
 		error(Ebadarg);
 
-	total = 0;
 	bufsz = av.out.buf * Audio_Max_Buf / Audio_Max_Val;
-
 	if(bufsz == 0)
 		error(Ebadarg);
 
-	while(total < count){
-		chunk = min(bufsz, count - total);
-		status = write(afd.data, va, chunk);
-		if(status <= 0)
-			error(Eio);
-		total += status;
-	}
+	/* decoupled: the writer kproc absorbs device blocking */
+	aqenqueue(va, count);
 
 	poperror();
 	qunlock(&outlock);
 
-	return count;	
+	return count;
 }
 
 long
@@ -415,6 +531,12 @@ audio_open(int omode)
 	}
 
 	av.in.flags = 0;
+
+	/* hand the device to the writer kproc (it drains and, on
+	 * close, owns the fd) */
+	lock(&aq.lk);
+	aq.fd = fd;
+	unlock(&aq.lk);
 
 	/* tada, we're open, blocking, paused and flushed */
 	return fd;

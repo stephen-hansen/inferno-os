@@ -149,6 +149,8 @@ vissorted:	int;	# pool sorted ascending by scale once full (far = [0])
 perfdebug:	int;	# -p: per-phase render timing
 perfacc:	array of int;	# [4] bsp/mob/planes/sprites ms accumulators
 perfcnt:	int;
+perfspans, perfcols, perfvp, perfvis: int;
+perfbbox, perfspanpix: int;
 
 setperf(v: int)
 {
@@ -499,15 +501,28 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 	if (perfdebug) {
 		pt1 = sys->millisec();
 		perfacc[3] = perfacc[3] + pt1 - pt0;
+		perfspans = perfspans + nspans;
+		perfcols = perfcols + ncolumns;
+		perfvp = perfvp + nvp;
+		perfvis = perfvis + nvis;
 		perfcnt++;
 		if (perfcnt >= 70) {
-			sys->print("V bsp %d mob %d pl %d sp %d ms\n",
+			sys->print("V bsp %d mob %d pl %d sp %d ms (spans %d cols %d vp %d vis %d bbox %d spix %d)\n",
 				perfacc[0] / perfcnt, perfacc[1] / perfcnt,
-				perfacc[2] / perfcnt, perfacc[3] / perfcnt);
+				perfacc[2] / perfcnt, perfacc[3] / perfcnt,
+				perfspans / perfcnt, perfcols / perfcnt,
+				perfvp / perfcnt, perfvis / perfcnt,
+				perfbbox / perfcnt, perfspanpix / perfcnt);
 			perfacc[0] = 0;
 			perfacc[1] = 0;
 			perfacc[2] = 0;
 			perfacc[3] = 0;
+			perfspans = 0;
+			perfbbox = 0;
+			perfspanpix = 0;
+			perfcols = 0;
+			perfvp = 0;
+			perfvis = 0;
 			perfcnt = 0;
 		}
 	}
@@ -2921,6 +2936,10 @@ drawplanes()
 			ymin = 0;
 		if (ymax >= h)
 			ymax = h - 1;
+		if (perfdebug) {
+			perfbbox = perfbbox + (ymax - ymin + 1)
+				* (vp.maxx - vp.minx + 1);
+		}
 		for (ry := ymin; ry <= ymax; ry++) {
 			run := -1;
 			for (rx := vp.minx; rx <= vp.maxx; rx++) {
@@ -3009,6 +3028,8 @@ drawplanes()
 	xstep := rend->fixedmul(distance, basexscale);
 	ystep := rend->fixedmul(distance, baseyscale);
 
+	if (perfdebug)
+		perfspanpix = perfspanpix + (x2 - x1 + 1);
 	rend->rdrawspan(r, y, x1, x2, row, fl, xfrac, yfrac, xstep, ystep);
 	nspans++;
 }
