@@ -631,6 +631,8 @@ SKYFLAT:	con "F_SKY1";	# map flat marking a sky ceiling (r_sky.h SKYFLATNAME)
 SKYTEX:		con "SKY1";	# sky texture: episode 1 (g_game.c maps episodes to
 			# SKY1/SKY2/SKY3; shareware has SKY1 only)
 SKYMID:		con 6553600;	# 100*FRACUNIT, vanilla skytexturemid (r_sky.c)
+BASEYCENTER:	con 100;	# doomdef.h: psprites anchor at screen 100
+				# regardless of viewheight (r_things.c:687)
 
 # draw one seg as wall columns
 addline(segnum: int)
@@ -1962,7 +1964,12 @@ drawpsprite(p: ref Game->Player, psi: int)
 				light = -1;
 		}
 	}
-	tmid := (r.centery << 16) + (FRACUNIT >> 1) -
+	# vanilla R_DrawPSprite: texturemid is built from BASEYCENTER
+	# (screen 100), NOT viewheight/2, while the draw anchor uses
+	# centeryfrac.  Using centery for both made the gun sit
+	# (100 - viewheight/2) px too low with the 168-row status-bar
+	# view: 16px more of the weapon hidden behind the bar.
+	tmid := (BASEYCENTER << 16) + (FRACUNIT >> 1) -
 		(ps.sy - sp.yoff);
 	sprtop := (r.centery << 16) - tmid;
 	frac := 0;
@@ -2586,9 +2593,11 @@ snapshotfrom(path: string, htic: int, rec: ref RingRec): string
 
 	# framebuffer as hex rows
 	if (len rec.fb >= w * h) {
-		emit(sys->sprint("FB8BEGIN w=%d h=%d\n", w, h));
+		# dump the whole framebuffer (200 rows: world + status bar)
+		rows := len rec.fb / w;
+		emit(sys->sprint("FB8BEGIN w=%d h=%d\n", w, rows));
 		hex := "0123456789abcdef";
-		for (y := 0; y < h; y++) {
+		for (y := 0; y < rows; y++) {
 			row := "";
 			base := y * w;
 			for (x := 0; x < w; x++) {

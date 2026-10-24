@@ -60,6 +60,13 @@ enum {
 	AQSHIFT	= 15,
 	AQSIZE	= 1 << AQSHIFT,	/* 32KB ~= 3s of 11025Hz u8 */
 	AQMASK	= AQSIZE - 1,
+	/* Latency bound: tic catch-up bursts (or a stalled X11 frame)
+	 * enqueue audio faster than the device plays it; without a cap
+	 * that backlog never drains (production == consumption in
+	 * steady state) and the sound lags further behind forever.
+	 * Keep at most ~4 game tics queued; overflow drops the OLDEST
+	 * audio so latency stays bounded. */
+	AQCAP	= 4 * 315,
 };
 
 static struct {
@@ -129,20 +136,27 @@ if(fd >= 0)
 static void
 aqenqueue(uchar *p, long n)
 {
-	int k, w;
+	int k, w, drop;
 
-lock(&aq.lk);
-if(aq.b == nil && (aq.b = malloc(AQSIZE)) == nil){
+	lock(&aq.lk);
+	if(aq.b == nil && (aq.b = malloc(AQSIZE)) == nil){
 		unlock(&aq.lk);
 		return;			/* drop: no memory */
 	}
 	if(!aq.running && aq.fd >= 0){
 		aq.running = 1;
 		aq.stop = 0;
-kproc("audiowrite", aqwriter, nil, 0);
-}
+		kproc("audiowrite", aqwriter, nil, 0);
+	}
 	if(n > AQSIZE - aq.n)
-		n = AQSIZE - aq.n;	/* overflow: drop (3s buffer) */
+		n = AQSIZE - aq.n;	/* absolute overflow: drop */
+	/* bound latency: discard the oldest queued audio beyond the cap
+	 * (tic catch-up bursts must not build permanent lag) */
+	if(aq.n + n > AQCAP){
+		drop = aq.n + n - AQCAP;
+		aq.rp = (aq.rp + drop) & AQMASK;
+		aq.n -= drop;
+	}
 	w = (aq.rp + aq.n) & AQMASK;
 	k = AQSIZE - w;
 	if(k > n)

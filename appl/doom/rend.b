@@ -428,6 +428,13 @@ Renderer.init(r: self ref Renderer, w: ref Wad->File, width, height: int): strin
 		return err;
 	if (len b < 768)
 		return "PLAYPAL too short";
+	# keep the whole PLAYPAL: the status bar's damage/pickup/
+	# radiation shifts (ST_doPaletteStuff) re-index it.  Lives on
+	# the Renderer, not the module: callers hold their own Rend
+	# instance and only the object state is shared.
+	r.paldata = array[len b] of byte;
+	for (j = 0; j < len b; j++)
+		r.paldata[j] = b[j];
 	r.palr = array[256] of byte;
 	r.palg = array[256] of byte;
 	r.palb = array[256] of byte;
@@ -865,6 +872,22 @@ rpatchwidth(pd: array of byte): int
 rpatchheight(pd: array of byte): int
 {
 	return patchheight(pd);
+}
+
+# ST_doPaletteStuff: repoint the output palette (convert() reads
+# palr/palg/palb, so a shift tints the whole frame, bar included).
+rpalette(r: ref Renderer, idx: int)
+{
+	if (r.paldata == nil)
+		return;
+	base := idx * 768;
+	if (base < 0 || base + 768 > len r.paldata)
+		return;
+	for (j := 0; j < 256; j++) {
+		r.palr[j] = r.paldata[base + j*3];
+		r.palg[j] = r.paldata[base + j*3 + 1];
+		r.palb[j] = r.paldata[base + j*3 + 2];
+	}
 }
 
 rdrawpatch(r: ref Renderer, x, y: int, pd: array of byte)

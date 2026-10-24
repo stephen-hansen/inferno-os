@@ -10,6 +10,7 @@ TARG=\
 	view.dis\
 	sound.dis\
 	wi.dis\
+	st.dis\
 	doom.dis\
 
 MODULES=\
@@ -22,6 +23,7 @@ MODULES=\
 	view.m\
 	sound.m\
 	wi.m\
+	st.m\
 
 SYSMODULES=\
 	sys.m\

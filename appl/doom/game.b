@@ -3957,6 +3957,14 @@ playerthink(p: ref Player)
 		return;
 	}
 
+	# HUD flash timers (vanilla P_PlayerThink, p_user.c:349-352):
+	# damage/bonus counts tick down every tic so the red (damage)
+	# and gold (pickup) palette shifts fade out
+	if (p.damagecount != 0)
+		p.damagecount--;
+	if (p.bonuscount != 0)
+		p.bonuscount--;
+
 	# power durations (vanilla P_PlayerThink: strength counts up to
 	# diminish fade; invisibility drops its shadow flag at zero)
 	if (p.powers[PW_STRENGTH] != 0)

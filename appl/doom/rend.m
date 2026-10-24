@@ -31,6 +31,7 @@ Rend: module {
 		w, h:	int;
 		centery:	int;
 		fb8:	array of byte;		# w*h palette indices
+		paldata: array of byte;		# full PLAYPAL (palette shifts)
 		zerofb:	array of byte;		# w*h pre-zeroed; clear(0)
 						# memmoves it (C speed) instead of
 						# a 64k interpreted loop
@@ -123,6 +124,7 @@ Rend: module {
 				fl: ref Flat, xfrac, yfrac, xstep, ystep: int);
 	rdrawfuzz:	fn(r: ref Renderer, x, yl, yh: int);
 	animtic:	fn(r: ref Renderer, lvltime: int);
+	rpalette:	fn(r: ref Renderer, idx: int);
 	rpatchwidth:	fn(pd: array of byte): int;
 	rpatchheight:	fn(pd: array of byte): int;
 	rdrawpatch:	fn(r: ref Renderer, x, y: int,

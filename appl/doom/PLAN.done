@@ -1794,3 +1794,96 @@ Milestones (each independently testable)
           per frame (n=70/70), pulse stream live at u8 1ch 11025Hz;
           a write probe showed 100/100 writes completing without
           stall and audio still plays.
+
+          M18 STATUS BAR + VIEW SIZING (Oct 24): implemented to
+          completion.  st.m/st.b (single-player path): full-bar
+          redraw per frame instead of vanilla backing-screen diff
+          blits (identical pixels; JIT makes redraw cheaper than
+          diff tracking).  Widgets exactly per st_stuff.c/st_lib.c:
+          ready-weapon tall ammo (1994 = no-ammo weapon draws
+          nothing), health/% and armor/% tall widgets, STARMS
+          background + six STGNUM/STYSNUM slots (gray = not owned,
+          yellow = owned, vanilla 12x10 grid), face (STFB0 backdrop
+          + vanilla ST_updateFaceWidget priority machine with
+          M_Random's own rndtable index, pain offsets, turn
+          left/right unsigned-angle compare, ouch/evilgrin/rampage,
+          god/dead faces), three key boxes (cards 0-2 replaceable by
+          skulls 3-5), four small ammo counts + maxima (y order
+          173/179/191/185), and ST_doPaletteStuff (damage red 1-8,
+          pickup gold 9-12, radiation 13, berserk fade; palette data
+          moved into the Renderer adt because each module load is a
+          separate instance - the first version read a never-
+          initialised paldata and failed the palette tests).
+          View sizing: viewheight = 200-32 = 168, Renderer keeps the
+          320x200 fb8 (bar drawn over rows 168..199 after the world,
+          before convert), centery = viewheight/2 = 84 exactly like
+          R_ExecuteSetViewSize; projection unchanged (160).  F1
+          snapshot still dumps all 200 fb rows (FB8 h = len/w).
+          VALIDATION (all TEMP harnesses removed):
+          (1) bar pixel oracle: deterministic state (pistol,
+          200/50/300/50 ammo, all weapons+keys, 200 armor, 100 hp,
+          face STFST00) vs a Python reconstruction of st_stuff/
+          st_lib from the raw ST* patches: 0/10240 pixels differ.
+          (2) face truth table via dumped-bar face identification
+          (unique patch match): straight -> STFST02, attacker
+          head-on -> STFKILL0 (painoffset+7), 60hp head-on ->
+          STFKILL1 (+15), god mode -> STFGOD0, dead -> STFDEAD0:
+          5/5.
+          (3) palette shifts: idle/damage40(->6)/damage200(->8
+          clamp)/bonus20(->12)/ironfeet(->13)/back-to-idle vs
+          PLAYPAL rows read from the WAD: 6/6 PASS.
+          (4) view sizing: 168-row render is byte-identical to the
+          200-row render's rows 16..183 (same projection, horizon
+          moved): VIEWTEST-PASS.
+          Bug found during wiring: st.b originally loaded its own
+          Game module instance (per-load-instance globals) whose
+          tables were never init()ed; the damage-face path's
+          pointtoangle2 would nil-deref in real play.  st->init now
+          takes doom.b's live Game handle (same for the Renderer's
+          palette data).  Boot smoke clean with audio at 3ms frames.
+          Residuals: frags widget is deathmatch-only (not drawn);
+          chat/message counter and automap palette branches are
+          absent (automap is M20); the ~10MB F2 ring is preallocated
+          even with -R off (found while instantiating two Views:
+          heap limit) - lazy-allocate later if memory matters.
+          M18 FOLLOW-UP FIXES (user reports):
+          (1) Green backdrop behind the face: vanilla draws the STFB
+          face background ONLY for netgames (player-color backdrop;
+          st_stuff.c refreshes it under `if (netgame)`); single
+          player shows the bar art.  The drawer had drawn it
+          unconditionally.  Removed (STFB0 still loaded for a future
+          netgame path).  NOTE: the earlier bar pixel oracle included
+          the backdrop, so it validated the implementation against
+          itself there - the oracle encoded the bug; flagged so
+          future oracle work reads the vanilla guards, not just the
+          widget math.
+          (2) Permanent yellow (and red) screen tint after pickups/
+          damage: vanilla P_PlayerThink decrements damagecount and
+          bonuscount every tic (p_user.c:349-352) which drives the
+          ST_doPaletteStuff shift down; the port never decremented
+          them, so bonuscount stayed at BONUSADD(6) forever after any
+          pickup -> the gold palette 10 never faded.  Added the two
+          decrements in vanilla order (before the power-duration
+          block).  Verified headless (TEMP harness removed): pickup
+          flash 6 -> palette 10 -> fades to 0 in 6 tics; damage 40 ->
+          palette 6 -> fades to 0; counts end at 0 - FLASHTEST-PASS.
+          (3) "less of the gun sprite": the bar IS a separate 32-row
+          band (world renders 0..167, bar 168..199 - vanilla
+          screenblocks 10), but the psprite vertical anchor was
+          wrong: vanilla builds texturemid from BASEYCENTER (screen
+          100, r_things.c:41/687) while the draw offset uses
+          centeryfrac (viewheight/2).  The port used centery for both,
+          so at the 168 view the weapon sat (100-84)=16px too low -
+          exactly 16 extra rows hidden behind the bar.  Fixed with a
+          BASEYCENTER constant.  Verified (TEMP harness removed):
+          with the weapon raised, the 168-row render equals the
+          200-row render rows 16..183 byte-for-byte including the gun
+          (PSPRITETEST-PASS; 13600 gun-area pixels both).
+          (4) Audio delay returned after the decoupling ring: a
+          catch-up burst (or a stalled frame) queues audio faster
+          than the device drains, and since production == consumption
+          in steady state the backlog never shrinks (the old blocking
+          writes used to self-correct).  audio-oss.c aqenqueue now
+          caps the queue at AQCAP = 4 game tics (~114ms) and drops the
+          OLDEST audio on overflow, so latency stays bounded; boot
+          verified with the pulse stream live at u8 1ch 11025Hz.

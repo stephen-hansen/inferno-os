@@ -707,7 +707,24 @@ Part D — presentation & game flow
            distance falloff; no clicks/dropouts.
          DEPS: 9 (interface exists), gameplay sites from 10-14.
 
-  [ ] 18 Status bar + view sizing (st_stuff.c + st_lib.c)
+  [x] 18 Status bar + view sizing (st_stuff.c + st_lib.c)
+         STATUS Oct 24: DONE.  st.b/st.m single-player status bar
+         (rows 168..199) drawn as a full redraw each frame; view
+         shrunk to 168 rows with centery 84 (R_SetViewSize 10).
+         Widgets: ready ammo (tall), health+%, armor+%, ARMS
+         background + 6 owned/not-owned slots, animated face
+         (vanilla ST_updateFaceWidget priority machine, M_Random
+         table), 3 key boxes (cards/skulls), 4 ammo counts + maxima,
+         and ST_doPaletteStuff shifts (damage red / pickup gold /
+         radiation green, berserk fade).  VALIDATED pixel-exact:
+         bar oracle 0/10240 diffs against a Python reconstruction of
+         st_stuff/st_lib layout; face truth table 5/5
+         (straight/head-on/60hp/god/dead); palette shifts 6/6
+         (incl. clamps); 168-row view == 200-row view rows 16..183
+         byte-identical (centery math).  Snapshot FB8 dumps stay 200
+         rows.  NOTE: view.b preallocates the F2 ring (~105 frames)
+         even when -R is off (~10MB); lazy-allocate later if memory
+         matters.
          WHY: no health/ammo/armor/keys on screen; view is fixed
            full-screen 320x200.
          SOURCES: st_stuff.c (ST_Start/Ticker/Drawer/Responder,

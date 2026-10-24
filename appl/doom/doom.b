@@ -29,6 +29,8 @@ include "wi.m";
 	wi: Wi;
 include "view.m";
 	view: View;
+include "st.m";
+	st: St;
 
 Doom: module
 {
@@ -134,6 +136,7 @@ checkread(w: ref Wad->File, name: string, expect: int)
 
 vid_w := 320;
 vid_h := 200;
+SBARHEIGHT: con 32;
 
 
 
@@ -274,6 +277,11 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	err = rr.init(w, vid_w, vid_h);
 	if (err != nil)
 		fail(err);
+	# R_SetViewSize screenblocks 10: world view 200-32=168 rows above
+	# the status bar; projection center at viewheight/2 (vanilla
+	# R_ExecuteSetViewSize centery = viewheight/2 = 84).
+	viewh := vid_h - SBARHEIGHT;
+	rr.centery = viewh / 2;
 
 	(l, merr) := map->open(w, "E1M4");
 	if (l == nil)
@@ -285,7 +293,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		view = load View "view.dis";
 	if (view == nil)
 		fail(sys->sprint("can't load View module: %r"));
-	err = view->init(rr, l, w, game, vid_w, vid_h);
+	err = view->init(rr, l, w, game, vid_w, viewh);
 	if (err != nil)
 		fail(err);
  	if (verbose)
@@ -301,6 +309,16 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (wi == nil)
 		fail(sys->sprint("can't load Wi module: %r"));
 	err = wi->init(w, sound);
+	if (err != nil)
+		fail(err);
+
+	# status bar (st_stuff.c)
+	st = load St St->PATH;
+	if (st == nil)
+		st = load St "st.dis";
+	if (st == nil)
+		fail(sys->sprint("can't load St module: %r"));
+	err = st->init(w, game);
 	if (err != nil)
 		fail(err);
 
@@ -341,6 +359,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	p := game->consoleplayer();
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
+	st->start(p);
 	mo := p.mo;
 	sys->print("play: E1M4 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
 	if (doring)
@@ -500,6 +519,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 			p = game->consoleplayer();
 			if (p != nil && p.mo != nil)
 				mo = p.mo;
+			if (st != nil && p != nil)
+				st->start(p);
 			review = -1;
 			continue;
 		}
@@ -687,6 +708,9 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 
 		game->setcmd(fm, sm, at, btn);
 		game->ticker();
+		sp := game->consoleplayer();
+		if (st != nil && sp != nil)
+			st->ticker(sp);
 
 		# vanilla P_UpdateSpecials animate block: advance flat/
 		# texture animation on the shared Renderer (game->ticker
@@ -746,6 +770,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 				p = game->consoleplayer();
 				if (p != nil && p.mo != nil)
 					mo = p.mo;
+				if (st != nil && p != nil)
+					st->start(p);
 				review = -1;
 				intermission = 0;
 			}
@@ -759,6 +785,9 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		view->render(game->viewx, game->viewy, game->viewz,
 			game->viewangle, game->viewcos, game->viewsin,
 			game->mobjs);
+		spd := game->consoleplayer();
+		if (st != nil && spd != nil)
+			st->drawer(rr, spd);
 		if (doperf) {
 			perft1 = sys->millisec();
 			perfdt = perft1 - perf0;
