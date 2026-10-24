@@ -1662,3 +1662,22 @@ Milestones (each independently testable)
           Junk cleanup: removed all TEMP probe harnesses (audiotest*,
           opendev*, opmd, readdrv, stest, littest*) from appl/doom,
           dis/doom, and the repo root.
+          FIELD REPORT (Oct 24): E1M4 black wall fixed.  The wall
+          ahead of the start area (SUPPORT2) rendered pure black
+          because the IWAD's E1M4 sidedefs reference textures in
+          lowercase ("support2", "compspan", "plat1", "stone",
+          "sladwall", "doortrak", "Bigdoor2", "Compute2", "ExitDoor",
+          "doorstop"; also E1M2 "compute1"/"shawn2", E1M7 "step4",
+          E1M8 "doorstop"/"doortrak"/"shawn2") while TEXTURE1 stores
+          them UPPERCASE.  Vanilla W_CheckNumForName is case-
+          insensitive; the port's Renderer.texture/flat compared with
+          ==, so the lookup returned nil and the wall column loop
+          drew nothing (black).  Fixed: added nameeq() (ASCII case
+          fold) and switched Renderer.texture/flat + the ANIMATED
+          anim-init compares to it.  Verified headless (TEMP harness,
+          removed): all 14 lowercase/uppercase variant lookups
+          resolve, TXTEST-PASS; boot smoke clean.  Visual confirm
+          pending: restart, re-check the wall, snap if needed.
+          Runtime quiet: audio driver DPRINT off (per-tic
+          audio_file_write spam gone); the 70-tic status heartbeat
+          in doom.b now prints only with -v.

@@ -354,21 +354,21 @@ animinit(r: ref Renderer)
 		picnum := -1;
 		if (d.istex) {
 			for (j = 0; j < len r.textures; j++)
-				if (r.textures[j].name == d.startname)
+				if (nameeq(r.textures[j].name, d.startname))
 					base = j;
 			if (base < 0)
 				continue;
 			for (j = 0; j < len r.textures; j++)
-				if (r.textures[j].name == d.endname)
+				if (nameeq(r.textures[j].name, d.endname))
 					picnum = j;
 		} else {
 			for (j = 0; j < len r.flats; j++)
-				if (r.flats[j].name == d.startname)
+				if (nameeq(r.flats[j].name, d.startname))
 					base = j;
 			if (base < 0)
 				continue;
 			for (j = 0; j < len r.flats; j++)
-				if (r.flats[j].name == d.endname)
+				if (nameeq(r.flats[j].name, d.endname))
 					picnum = j;
 		}
 		if (picnum < 0)
@@ -458,10 +458,30 @@ Renderer.init(r: self ref Renderer, w: ref Wad->File, width, height: int): strin
 	return nil;
 }
 
+# vanilla W_CheckNumForName is case-insensitive; the IWAD mixes case
+# (E1M4 sidedefs: "support2", "compspan", "plat1", ... vs TEXTURE1
+# "SUPPORT2" etc.), so all name lookups fold ASCII case.
+nameeq(a, b: string): int
+{
+	if (len a != len b)
+		return 0;
+	for (i := 0; i < len a; i++) {
+		ca := a[i];
+		cb := b[i];
+		if (ca >= 'A' && ca <= 'Z')
+			ca = ca + ('a' - 'A');
+		if (cb >= 'A' && cb <= 'Z')
+			cb = cb + ('a' - 'A');
+		if (ca != cb)
+			return 0;
+	}
+	return 1;
+}
+
 Renderer.flat(r: self ref Renderer, name: string): ref Flat
 {
 	for (i := 0; i < len r.flats; i++)
-		if (r.flats[i].name == name) {
+		if (nameeq(r.flats[i].name, name)) {
 			if (r.flatanim != nil && i < len r.flatanim)
 				return r.flats[r.flatanim[i]];
 			return r.flats[i];
@@ -472,7 +492,7 @@ Renderer.flat(r: self ref Renderer, name: string): ref Flat
 Renderer.texture(r: self ref Renderer, name: string): ref Texture
 {
 	for (i := 0; i < len r.textures; i++)
-		if (r.textures[i].name == name) {
+		if (nameeq(r.textures[i].name, name)) {
 			if (r.texanim != nil && i < len r.texanim)
 				return r.textures[r.texanim[i]];
 			return r.textures[i];
