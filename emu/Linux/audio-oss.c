@@ -22,7 +22,7 @@
 #define DEVAUDIO	"/dev/dsp"
 #define DEVMIXER	"/dev/mixer"
 
-#define DPRINT if(1)print
+#define DPRINT if(0)print
 
 enum {
 	A_Pause,
@@ -329,14 +329,16 @@ audio_set_info(int fd, Audio_d *i, int d)
 		if(newfmt < 0)
 			return 0;
 		if(newfmt != oldfmt){
-			status = ioctl(fd, SNDCTL_DSP_SETFMT, &arg);
+			status = ioctl(fd, SNDCTL_DSP_SETFMT, &newfmt);
 			DPRINT ("enc oldfmt newfmt %x status %d\n", oldfmt, newfmt, status);
 		}
 	}
 
-	/* dev volume */ 
+	/* dev volume */
+	/* Non-fatal: shim mixers (padsp/PA) report partial devmasks, and
+	 * a failed volume-set must not abort the device open. */
 	if(i->flags & (AUDIO_LEFT_FLAG|AUDIO_VOL_FLAG))
-		return setvolume(afd.ctl, i->dev, i->left, i->right);
+		setvolume(afd.ctl, i->dev, i->left, i->right);
 
 	return 1;
 }

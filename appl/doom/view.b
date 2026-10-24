@@ -13,6 +13,7 @@ include "map.m";
 include "info.m";
 	inf: Info;
 	MobjInfo: import inf;
+include "sound.m";
 include "game.m";
 include "view.m";
 

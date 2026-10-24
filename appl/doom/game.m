@@ -13,9 +13,8 @@ Game: module {
 
 	PATH:	con "/dis/doom/game.dis";
 
-	# timing / fixed point
-	TICRATE:	con 35;
-	FRACUNIT:	con 16r10000;
+		# timing / fixed point
+	TICRATE:	con 35;	FRACUNIT:	con 16r10000;
 	FRACBITS:	con 16;
 	ANGLETOFINESHIFT:	con 19;
 	FINEANGLES:	con 8192;
@@ -256,8 +255,9 @@ Game: module {
 	projection:	int;	# 16.16 focal length (= centerx for 90deg)
 	solid:	array of int;	# occlusion: top/bottom clip per column [w*2]
 
-	# build Info tables and reset world state; call once at startup
-	init:	fn(): string;
+	# build Info tables and reset world state; call once at startup.
+	# snd is doom.b's shared SFX instance (single mixer/output).
+	init:	fn(snd: Sound): string;
 
 	# load geometry into the world: spawn things matching skill's
 	# MTF_ bit (netgame off) and the player 1 start

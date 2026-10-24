@@ -22,8 +22,8 @@ include "map.m";
 include "info.m";
 	inf: Info;
 	MobjInfo: import inf;
-include "game.m";
 include "sound.m";
+include "game.m";
 	sound: Sound;
 
 # collision temporaries (vanilla module globals in p_map.c)
@@ -173,7 +173,7 @@ switchpairs: array of (string, string);
 weaponammo: array of int;
 clipammo: array of int;
 
-init(): string
+init(snd: Sound): string
 {
 	if (sys == nil) {
 		sys = load Sys Sys->PATH;
@@ -205,14 +205,9 @@ init(): string
 			return "can't load Map module";
 	}
 	if (sound == nil) {
-		sound = load Sound Sound->PATH;
+		sound = snd;	# shared instance from doom.b (single mixer)
 		if (sound == nil)
-			sound = load Sound "sound.dis";
-		if (sound == nil)
-			return "can't load Sound module";
-		err := sound->init();
-		if (err != nil)
-			return err;
+			return "no Sound module";
 	}
 	if (tmbbox == nil)
 		tmbbox = array[4] of int;
@@ -646,6 +641,8 @@ setuplevel(l: ref Map->Level, skill: int): string
 	zeroarr(sectrav);
 	secsound = array[len l.sectors] of ref Mobj;
 	soundtarget = nil;
+	if (sound != nil)
+		sound->start();	# M17 S_Start: kill sounds at level start
 	# vanilla P_SetupLevel zeroes the per-level tallies but keeps the
 	# player structs (weapons/ammo/health carry to the next map; only
 	# G_PlayerReborn on death resets the loadout)
@@ -5983,6 +5980,15 @@ ticker()
 				}
 			}
 		}
+	}
+	# M17 S_UpdateSounds: listener-tracked channel updates + mix
+	# one tic of audio (315 samples) into /dev/audio or doom.pcm.
+	# Listener is the console player (players[0]); nil-safe before
+	# the first spawn.
+	if (sound != nil) {
+		lp := players[0];
+		if (lp != nil && lp.mo != nil)
+			sound->updatesounds(lp.mo.x, lp.mo.y, lp.mo.angle);
 	}
 }
 

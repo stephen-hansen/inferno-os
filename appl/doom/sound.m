@@ -1,8 +1,15 @@
-# Sound stub: SFX interface with no audio output yet.  game.b
-# calls startsound for doors/use feedback; real audio (and the
-# full s_sound.c SFX table) comes with a later milestone.
+# SFX engine (milestone 17): Doom mixer, 8 x 8-bit unsigned
+# channels at 11025 Hz mono.  Reference: doomgeneric s_sound.c,
+# sounds.c (GPL-2), chocolate-doom i_sdlsound.c DMX lump handling.
 #
-# Reference: doomgeneric s_sound.c (GPL-2).
+# Vanilla-faithful channel rules (S_GetChannel priority + cutoff,
+# same-origin reuse, S_AdjustSoundParams distance/pan, link pitch)
+# with mono output (pan averages out exactly, so separation is
+# computed for API fidelity/future stereo but not mixed).
+# No audio hardware in the test env: output goes to /dev/audio when
+# present (enc pcm, bits 8, chans 1, rate 11025), else to doom.pcm
+# (raw unsigned-8 mono 11025) for audit/playback elsewhere.  Music
+# (MUS + synth) is out of scope for 17 (needs audio hardware anyway).
 
 Sound: module {
 
@@ -10,7 +17,7 @@ Sound: module {
 
 # SFX ids match doomgeneric sounds.h order exactly, so mobjinfo
 # seesound/deathsound ids (transcribed vanilla numbers) can be
-# passed straight through.  Bodies are still stubs (milestone 17).
+# passed straight through.
 	SFX_NONE,
 	SFX_PISTOL, SFX_SHOTGN, SFX_SGCOCK, SFX_DSHTGN,
 	SFX_DBOPN, SFX_DBCLS, SFX_DBLOAD, SFX_PLASMA,
@@ -40,8 +47,23 @@ Sound: module {
 	SFX_SSSIT, SFX_SSDTH, SFX_KEENPN, SFX_KEENDT,
 	SFX_SKEACT, SFX_SKESIT, SFX_SKEATK, SFX_RADIO: con iota;
 
-	init:	fn(): string;
+	NUMSFX:	con 109;
 
-	# play an effect; srcx/srcy are 16.16 origin or 0 for global
+	init:	fn(path: string): string;
+
+	# vanilla S_Start (level start): kill all playing channels.
+	start:	fn();
+
+	# play an effect; srcx/srcy are 16.16 origin, (0,0) = global
+	# (vanilla nil origin).  positional sounds attenuate/pan by
+	# listener; global sounds play full/center.
 	startsound:	fn(srcx, srcy, sfx: int);
+
+	# per-tic: S_UpdateSounds listener tracking (vol/sep recompute,
+	# stop inaudible/finished), then mix+emit one tic (315 samples).
+	# lx/ly 16.16 listener pos, angle BAM listener heading.
+	updatesounds:	fn(lx, ly, angle: int);
+
+	# test/diagnostic: number of busy channels (0..8).
+	nchan:	fn(): int;
 };

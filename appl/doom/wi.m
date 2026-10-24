@@ -12,8 +12,9 @@ Wi: module
 	PATH:	con "/dis/doom/wi.dis";
 
 	# load shared graphics (WIMAP0, WILV*, WINUM*, WIA*, ...) once;
-	# w stays open for the run (lump views are read in place)
-	init:	fn(w: ref Wad->File): string;
+	# w stays open for the run (lump views are read in place).
+	# snd is doom.b's shared SFX instance (single mixer/output).
+	init:	fn(w: ref Wad->File, snd: Sound): string;
 
 	# capture the finished level (wbs subset) and reset the count
 	# state machine; g supplies the player button latches

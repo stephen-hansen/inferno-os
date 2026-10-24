@@ -1597,3 +1597,68 @@ Milestones (each independently testable)
           deviation, narrow by construction; revert by deleting the
           bceilz<=bfloorz block.  Restart to pick up the fixed
           view.dis and re-check the door with F1.
+          M17 IMPLEMENTATION (Oct 24, E1M4): full SFX engine per the
+          PLAN spec.  sound.b rewritten: 55 shareware DS* lumps loaded
+          once and DMX-decoded (8-byte header validated, 16+8 head pad
+          skipped, 16 tail pad dropped, <=48-sample lumps discarded,
+          the one 22050Hz lump decimated 2:1), 135KB flat pool, zero
+          per-tic allocation.  Channel rules bit-faithful to
+          s_sound.c: free-sameorigin-lowest-priority S_GetChannel
+          (including the >= quirk), same-origin S_StopSound, approx-
+          distance attenuation with 1200/200 clipping, link pitch
+          (chgun->pistol @150), per-tic S_UpdateSounds retrack.  Mono
+          mix is SDL_mixer-equivalent (sum (s-128)*vol, /128, clamp);
+          separation computed (Math atan2/sin, best-effort) but unused
+          in mono (pan averages out exactly), ready for stereo.  No
+          /dev/audio on this box (emu lacks it, host has no DSP), so
+          output falls back to doom.pcm (raw u8 11025 mono, noted on
+          stdout); audioctl sequence (enc pcm, bits 8, chans 1, rate
+          11025) ready for audio-capable hosts.  Single shared instance
+          owned by doom.b and passed to game (ticker pump) + wi
+          (intermission tally pump) — verified separate load()
+          instances otherwise (a=b test: a=42 b=0), which would have
+          double-mixed and truncated each other's doom.pcm.  game.b
+          setuplevel calls S_Start (kill all on level load).  Missing-
+          lump ids (54 Doom2-only) are silent no-ops like chocolate-
+          doom.  Music (MUS + synth) stays out: needs audio hardware.
+          VALIDATION: compiles clean; SFX id order verified 1:1 vs
+          sounds.h (109/109); DMX rules verified against WAD bytes
+          (DSPISTOL 5629 samples etc.); mixer math hand-verified
+          (fixed-point ranges, /128 truncation, clamp).  Dynamic
+          suite deferred (no emu runs during live testing):
+          appl/doom/stest.b drives 7 scenarios through the real
+          sound.dis (global/attenuated/same-origin/priority-kick/link/
+          retrack-to-silence) into per-test doom.pcm, and
+          /tmp/opencode/snd_oracle.py compares against an independent
+          Python implementation of the vanilla formulas.  Audible
+          check needs a machine with audio (or aplay the doom.pcm:
+          aplay -r 11025 -f U8 doom.pcm).  stest.b kept uninstalled
+          (TEMP harness); remove after the suite passes.  NOT YET DONE:
+          boot smoke of the final tree (shared-instance wiring landed
+          after the last successful boot), stest+oracle numeric suite,
+          audible check.  Restart picks up E1M4 default + -w/-g + the
+          whole M17 stack; report any boot failure immediately (most
+          likely a link-typecheck from the game.m/wi.m signature
+          changes, fixable fast).
+          M17 CLOSEOUT (Oct 24): boot smoke clean (E1M4, -w/-g,
+          shared-instance wiring all good).  Real audio engaged on
+          the emu side: emu/Linux/emu had `audio audio-oss` commented
+          out — enabled it, rebuilt; device attaches as #A.  Two
+          driver robustness fixes in audio-oss.c: (1) SNDCTL_DSP_SETFMT
+          was passed a stale `arg` instead of the chosen format;
+          (2) audio_set_info's volume branch `return setvolume(...)`
+          aborted the device open when the mixer reported a partial
+          devmask (padsp emulates only PCM/RECLEV while the driver
+          defaults dev=mic=7) — now non-fatal.  Host has no kernel
+          OSS (/dev/dsp absent under WSL2; only WSLg PulseAudio), so
+          /dev/dsp is provided by the 32-bit libpulsedsp shim,
+          scoped to the emu via ~/bin/emu-audio wrapper (preload set
+          inside the script; no env vars, no 64-bit noise; sudo
+          `apt-get install libpulsedsp:i386` supplies it once).
+          VERIFIED: boot prints "sound: /dev/audio open (11025Hz mono
+          u8)", no doom.pcm written, and pactl sink-inputs shows the
+          live game stream at u8 1ch 11025Hz.  Fallback: without the
+          wrapper the game still writes doom.pcm (silent no-op).
+          Junk cleanup: removed all TEMP probe harnesses (audiotest*,
+          opendev*, opmd, readdrv, stest, littest*) from appl/doom,
+          dis/doom, and the repo root.

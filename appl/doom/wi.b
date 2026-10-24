@@ -12,9 +12,9 @@ include "map.m";
 include "info.m";
 	inf: Info;
 	MobjInfo: import inf;
-include "game.m";
 include "sound.m";
 	sound: Sound;
+include "game.m";
 include "wi.m";
 
 # single-player states (wi_stuff.c StatCount/ShowNextLoc/NoState)
@@ -87,7 +87,7 @@ mrandom(): int
 	return inf->rndtable[mindex];
 }
 
-init(w: ref Wad->File): string
+init(w: ref Wad->File, snd: Sound): string
 {
 	if (sys == nil) {
 		sys = load Sys Sys->PATH;
@@ -107,14 +107,9 @@ init(w: ref Wad->File): string
 			return "can't load Rend module";
 	}
 	if (sound == nil) {
-		sound = load Sound Sound->PATH;
+		sound = snd;	# shared instance from doom.b (single mixer)
 		if (sound == nil)
-			sound = load Sound "sound.dis";
-		if (sound == nil)
-			return "can't load Sound module";
-		err := sound->init();
-		if (err != nil)
-			return err;
+			return "no Sound module";
 	}
 	if (inf == nil) {
 		inf = load Info Info->PATH;

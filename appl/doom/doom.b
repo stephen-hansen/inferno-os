@@ -19,6 +19,8 @@ include "map.m";
 include "info.m";
 	inf: Info;
 	MobjInfo: import inf;
+include "sound.m";
+	sound: Sound;
 include "game.m";
 	game: Game;
 	Player: import game;
@@ -221,7 +223,17 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		game = load Game "game.dis";
 	if (game == nil)
 		fail(sys->sprint("can't load Game module: %r"));
-	err := game->init();
+	# single shared SFX instance (vanilla globals): game + wi mix
+	# through this one mixer/output, never their own.
+	sound = load Sound Sound->PATH;
+	if (sound == nil)
+		sound = load Sound "sound.dis";
+	if (sound == nil)
+		fail(sys->sprint("can't load Sound module: %r"));
+	err := sound->init(path);
+	if (err != nil)
+		fail(err);
+	err = game->init(sound);
 	if (err != nil)
 		fail(err);
 
@@ -258,7 +270,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (err != nil)
 		fail(err);
 
-	(l, merr) := map->open(w, "E1M3");
+	(l, merr) := map->open(w, "E1M4");
 	if (l == nil)
 		fail(merr);
 
@@ -281,7 +293,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		wi = load Wi "wi.dis";
 	if (wi == nil)
 		fail(sys->sprint("can't load Wi module: %r"));
-	err = wi->init(w);
+	err = wi->init(w, sound);
 	if (err != nil)
 		fail(err);
 
@@ -323,7 +335,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
 	mo := p.mo;
-	sys->print("play: E1M3 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
+	sys->print("play: E1M4 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
 	if (doring)
 		sys->print(", F2=review");
 	sys->print("\n");
@@ -364,7 +376,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	tic := 0;
 	quit := 0;
 	nticks := 0;
-	curmap := "E1M3";
+	curmap := "E1M4";
 	intermission := 0;	# showing WI stats/entering (sim frozen)
 	victory := 0;		# E1M8 done (finale lands in 22; frozen)
 	for (; !quit;) {
@@ -696,6 +708,10 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 			wi->drawer(rr);
 			rr.convert(v.fb);
 			v.present();
+			# tally-tick sounds: pump one frame's mix through the
+			# shared SFX instance (game ticker is frozen here).
+			if (sound != nil && mo != nil)
+				sound->updatesounds(mo.x, mo.y, mo.angle);
 			if (wi->done() != 0) {
 				n := wi->nextmap();
 				curmap = sys->sprint("E1M%d", n);
@@ -743,10 +759,12 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 			p = game->consoleplayer();
 			if (p != nil && p.mo != nil)
 				mo = p.mo;
-			sys->print("t=%d pos %d,%d,%d angle %d deg health %d spr %d ds %d mid %d\n",
-				tic, mo.x >> 16, mo.y >> 16, mo.z >> 16,
-				bamdegrees(mo.angle), mo.health,
-				view->nsprites, view->ndrawsegs, view->nmasked);
+			# status heartbeat: verbose only (default play is quiet)
+			if (verbose != 0)
+				sys->print("t=%d pos %d,%d,%d angle %d deg health %d spr %d ds %d mid %d\n",
+					tic, mo.x >> 16, mo.y >> 16, mo.z >> 16,
+					bamdegrees(mo.angle), mo.health,
+					view->nsprites, view->ndrawsegs, view->nmasked);
 		}
 	}
 	v.close();
