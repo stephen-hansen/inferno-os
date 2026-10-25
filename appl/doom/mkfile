@@ -14,6 +14,8 @@ TARG=\
 	hu.dis\
 	am.dis\
 	menu.dis\
+	wipe.dis\
+	finale.dis\
 	doom.dis\
 
 MODULES=\
@@ -30,6 +32,8 @@ MODULES=\
 	hu.m\
 	am.m\
 	menu.m\
+	wipe.m\
+	finale.m\
 
 SYSMODULES=\
 	sys.m\

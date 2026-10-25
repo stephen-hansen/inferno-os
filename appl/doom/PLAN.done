@@ -2176,4 +2176,53 @@ Milestones (each independently testable)
           centered (pair-duplication match 87.7%); a 3->9/1 size
           change now matches a fresh 9/1 render exactly in rows 0..167
           (only the bar rows differ).  Temp harnesses removed.
+          M22 FINALE + WIPE (Oct 25): implemented f_finale.c (shareware)
+          and the f_wipe.c melt.  finale.m/finale.b: E1M8 completion
+          sets the finale directly (vanilla G_DoCompleted returns
+          ga_victory for gamemap 8 before the intermission code), draws
+          FLOOR4_8 tiled over 320x200 and types the exact E1TEXT with
+          HU-font widths/4px gaps, 11px newlines, the (finalecount-10)/3
+          cadence and the right-edge stop; after len*3+250 tics it
+          switches to the E1 art screen (HELP2; cast is commercial
+          only).  doom.b: new finale state (per-tic ticker, full-screen
+          drawer, no bar/HUD, menu still usable and F_Ticker keeps
+          running), New Game/End Game/Quit from the menu, and the old
+          frozen 'victory' placeholder removed.  Wipe: wipe.m/wipe.b
+          implement wipe_Melt exactly - start/end screen capture, the
+          M_Random-derived initial column offsets, 16-bit pixel-pair
+          melting (the vanilla column-major transform cancels for the
+          pixels actually moved), one step per tic.  doom.b captures the
+          displayed screen at every vanilla wipe point (title->game,
+          level->intermission, intermission->next map, level->finale,
+          finale text->art, End Game->title, New Game forced wipe;
+          death reload stays a hard cut as in vanilla) and showframe()
+          runs the melt inline at ~35 steps/s, presenting each step and
+          then discarding ticks queued during the ~1s block.
+          VALIDATION (TEMP harnesses removed): a unit harness ran the
+          melt against synthetic screens; every one of the 37 steps
+          matched a from-source Python implementation byte-for-byte
+          (including the M_Random y[] sequence) and ended on the end
+          screen.  A finale harness matched the Python reconstruction
+          pixel-exact at t=0,13,40,100,300,700,1570 (typed text) and
+          1571/1600 (HELP2 art), with the stage flag firing exactly at
+          len(E1TEXT)*3+251.  Scripted e2e: title -> New Game produced
+          'wipe: start' + 37 steps before E1M1; a finale started at
+          finalecount 1565 reached the art stage and wipereq'd (37
+          steps).  The finale-at-boot test exposed one real bug: the
+          Options screen-size apply ran before any view existed
+          (viewready=0); it is now guarded.  PLAN's 'E1M9 ending' note
+          corrected: E1M8 ends the episode.
+          M22 PALETTE RESET FIX (Oct 25, live report): the damage red
+          (or pickup gold) palette shift stuck on the finale because
+          ST_doPaletteStuff is only refreshed by the status bar, which
+          is not drawn outside GS_LEVEL; vanilla D_Display instead
+          calls I_SetPalette(PLAYPAL) whenever gamestate changes away
+          from GS_LEVEL.  st gained resetpalette(r), which restores
+          PLAYPAL row 0 and re-arms the lastpal cache; doom.b calls it
+          on GA_COMPLETED (before the intermission or finale and its
+          wipe) and on End Game -> title.  Verified with a unit test:
+          base palette equals PLAYPAL row 0, a damage shift changes
+          palr, resetpalette restores the base exactly, and a second
+          shift applies again (test harness removed).  Intermission
+          screens get the same reset.
 

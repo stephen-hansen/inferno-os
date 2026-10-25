@@ -27,4 +27,8 @@ St: module {
 	# palette shifts only (ST_doPaletteStuff) when the bar is hidden
 	# (full-screen view without the automap)
 	palette:	fn(r: ref Rend->Renderer, p: ref Game->Player);
+
+	# back to the base palette for non-level screens (vanilla
+	# I_SetPalette(PLAYPAL) on gamestate changes)
+	resetpalette:	fn(r: ref Rend->Renderer);
 };

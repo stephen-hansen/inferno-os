@@ -37,6 +37,10 @@ include "am.m";
 	am: Am;
 include "menu.m";
 	menu: Menu;
+include "wipe.m";
+	wipe: Wipe;
+include "finale.m";
+	fin: Finale;
 
 Doom: module
 {
@@ -277,7 +281,7 @@ doweapons:	int;	# TEST HOOK (pre-M25): -w grants IDKFA loadout at boot
 dogod:		int;	# TEST HOOK (pre-M25): -g sets CF_GODMODE at boot
 doperf:		int;	# -p: print tick/render frame timing every 70 tics
 perfticksum, perfrendsum, perfconvsum, perfpressum, perfmaxtick, perfmaxrend, perfmaxconv, perfmaxpres, perfframes: int;
-gslevel: int;	# in the level state (not intermission/victory): automap keys live here
+gslevel: int;	# in the level state (not intermission/finale): automap keys live here
 winscale := 2;	# -s N: wm window opens at 320N x 200N (still resizable)
 startmap := "E1M4";	# -m ExMy: boot map; also implies direct start
 directstart:	int;	# -m given: skip the title and start the game
@@ -294,9 +298,9 @@ applieddetail := -1;
 pagetimes := array[] of { 170, 200, 200 };
 gtitle, gcredit, ghelp2: array of byte;
 
-# victory freeze frame (menu draws over a saved copy)
-victoryfb:	array of byte;
-vmenushown:	int;
+# finale + screen-wipe state
+finale:		int;	# E1 finale is showing (text or art screen)
+wipepending:	int;	# start screen captured; wipe on next present
 
 play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 {
@@ -325,6 +329,9 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		inf = load Info "info.dis";
 	if (inf == nil)
 		fail(sys->sprint("can't load Info module: %r"));
+	err = inf->init();
+	if (err != nil)
+		fail(err);
 
 	rend = load Rend Rend->PATH;
 	if (rend == nil)
@@ -418,6 +425,26 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	if (err != nil)
 		fail(err);
 
+	# screen wipe (f_wipe.c melt)
+	wipe = load Wipe Wipe->PATH;
+	if (wipe == nil)
+		wipe = load Wipe "wipe.dis";
+	if (wipe == nil)
+		fail(sys->sprint("can't load Wipe module: %r"));
+	err = wipe->init(vid_w, vid_h, inf->rndtable);
+	if (err != nil)
+		fail(err);
+
+	# episode finale (f_finale.c)
+	fin = load Finale Finale->PATH;
+	if (fin == nil)
+		fin = load Finale "finale.dis";
+	if (fin == nil)
+		fail(sys->sprint("can't load Finale module: %r"));
+	err = fin->init(w);
+	if (err != nil)
+		fail(err);
+
 	# title pages: shareware sequence without demos (M23 adds the
 	# demos): TITLEPIC -> CREDIT -> HELP2 -> TITLEPIC
 	gtitle = wadpatch(w, "TITLEPIC");
@@ -499,11 +526,11 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	quit := 0;
 	nticks := 0;
 	intermission := 0;	# showing WI stats/entering (sim frozen)
-	victory := 0;		# E1M8 done (finale lands in 22; frozen)
+	finale = 0;		# E1 finale (text / art screen)
 	for (; !quit;) {
 		# vanilla only routes AM_Responder in GS_LEVEL: TAB (and
 		# the map keys) do nothing on intermission/victory screens
-		gslevel = intitle == 0 && intermission == 0 && victory == 0;
+		gslevel = intitle == 0 && intermission == 0 && finale == 0;
 		# key events only update keystate; tics come SOLELY from the
 		# tick timer (key-driven tics made the game surge at
 		# auto-repeat rate and stutter between repeats).
@@ -598,6 +625,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		(ak, ae, ask) := menu->take();
 		if (ak != Menu->None) {
 			if (ak == Menu->NewGame) {
+				wipereq(rr);
 				nm := "E1M1";
 				if (ae > 1)
 					nm = sys->sprint("E%dM1", ae);
@@ -611,22 +639,23 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 				curmap = nm;
 				intitle = 0;
 				intermission = 0;
-				victory = 0;
+				finale = 0;
 				review = -1;
-				vmenushown = 0;
 				page = 0;
 				pagetic = 0;
 				announce(nm, gameskill);
 			} else if (ak == Menu->EndGame) {
+				wipereq(rr);
+				if (st != nil)
+					st->resetpalette(rr);
 				if (am != nil)
 					am->stop();
 				intitle = 1;
 				page = 0;
 				pagetic = pagetimes[0];
 				intermission = 0;
-				victory = 0;
+				finale = 0;
 				review = -1;
-				vmenushown = 0;
 				menu->setusergame(0);
 				sys->print("ending game: title\n");
 			} else if (ak == Menu->Quit) {
@@ -638,7 +667,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		# Options screen size/detail (R_SetViewSize applies on the
 		# next refresh in vanilla; we recompute before this frame's
 		# render)
-		if (intitle == 0) {
+		if (intitle == 0 && viewready != 0) {
 			(vsb2, vdet2) := menu->viewsize();
 			if (vsb2 != appliedblocks || vdet2 != applieddetail) {
 				if (view->setsize(vsb2, vdet2) == nil) {
@@ -647,30 +676,6 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 					review = -1;
 				}
 			}
-		}
-
-		if (victory != 0) {
-			# E1M8 done (finale lands in M22): frozen frame.  The
-			# menu can still be opened; draw it over a saved copy
-			# and restore the frozen frame when it closes.
-			menu->ticker();
-			if (sound != nil)
-				sound->updatesounds(0, 0, 0);
-			if (menu->active() != 0) {
-				for (vi := 0; vi < len victoryfb; vi++)
-					rr.fb8[vi] = victoryfb[vi];
-				menu->drawer(rr);
-				rr.convert(v.fb);
-				v.present();
-				vmenushown = 1;
-			} else if (vmenushown != 0) {
-				for (vi := 0; vi < len victoryfb; vi++)
-					rr.fb8[vi] = victoryfb[vi];
-				rr.convert(v.fb);
-				v.present();
-				vmenushown = 0;
-			}
-			continue;
 		}
 
 		# death -> use-button respawn (vanilla G_DoReborn order:
@@ -707,7 +712,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		# (not during intermission/victory: the ring holds the old
 		# world's frames; drop the request)
 		if (revreq != 0 && intitle == 0 && intermission == 0 &&
-		    victory == 0 && menu->active() == 0) {
+		    finale == 0 && menu->active() == 0) {
 			revreq = 0;
 			if (!doring) {
 				sys->print("review: ring disabled (restart with -R)\n");
@@ -821,6 +826,14 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 				page = (page + 1) % len pagetimes;
 				pagetic = pagetimes[page];
 			}
+			continue;
+		}
+		if (finale != 0) {
+			fin->ticker();
+			if (fin->stagechanged() != 0)
+				wipereq(rr);
+			if (sound != nil)
+				sound->updatesounds(0, 0, 0);
 			continue;
 		}
 		if (menu->active() != 0) {
@@ -956,15 +969,21 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		if (game->gameaction() == game->GA_COMPLETED) {
 			if (am != nil)
 				am->stop();
+			# vanilla D_Display resets the palette when leaving
+			# GS_LEVEL (intermission/finale must not inherit a
+			# damage/pickup shift)
+			if (st != nil)
+				st->resetpalette(rr);
+			wipereq(rr);
 			r := game->docompleted();
 			review = -1;	# ring holds the old level's frames
 			if (r < 0) {
-				victory = 1;
-				victoryfb = array[len rr.fb8] of byte;
-				for (vi := 0; vi < len victoryfb; vi++)
-					victoryfb[vi] = rr.fb8[vi];
-				vmenushown = 0;
-				sys->print("episode complete! (finale lands in M22)\n");
+				# E1M8: no intermission, straight to the finale
+				if (fin->start(1, 8) != nil)
+					fail("finale start failed");
+				finale = 1;
+				intermission = 0;
+				sys->print("episode complete: finale\n");
 			} else {
 				wi->start(game->getwistat(), game);
 				intermission = 1;
@@ -973,18 +992,21 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		}
 		}
 
-		if (victory != 0) {
-			# frozen finale-less victory screen; Esc quits above
-			continue;
-		}
-
 		if (intitle != 0) {
 			# GS_DEMOSCREEN: title page (+ menu on top)
 			drawtitlepage(rr, page);
 			if (menu->active() != 0)
 				menu->drawer(rr);
-			rr.convert(v.fb);
-			v.present();
+			showframe(rr, v, tick);
+			continue;
+		}
+
+		if (finale != 0) {
+			# GS_FINALE: text screen or art screen (+ menu)
+			fin->drawer(rr);
+			if (menu->active() != 0)
+				menu->drawer(rr);
+			showframe(rr, v, tick);
 			continue;
 		}
 
@@ -1001,13 +1023,13 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			wi->drawer(rr);
 			if (menu->active() != 0)
 				menu->drawer(rr);
-			rr.convert(v.fb);
-			v.present();
+			showframe(rr, v, tick);
 			# tally-tick sounds: pump one frame's mix through the
 			# shared SFX instance (game ticker is frozen here).
 			if (sound != nil && mo != nil)
 				sound->updatesounds(mo.x, mo.y, mo.angle);
 			if (wi->done() != 0) {
+				wipereq(rr);
 				n := wi->nextmap();
 				curmap = sys->sprint("E1M%d", n);
 				(l2, merr2) := map->open(w, curmap);
@@ -1076,7 +1098,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 				perfmaxconv = perfdt;
 			perf0 = perft1;
 		}
-		v.present();
+		presentwipe(rr, v, tick);
 		if (doperf) {
 			perft1 = sys->millisec();
 			perfdt = perft1 - perf0;
@@ -1134,6 +1156,55 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	v.close();
 	w.close();
 	sys->print("play: quit at t=%d\n", tic);
+}
+
+# capture the displayed screen for the next state's wipe
+wipereq(r: ref Renderer)
+{
+	if (wipe != nil && r != nil)
+		wipe->start(r.fb8);
+	wipepending = 1;
+}
+
+# present the already-converted frame; if a transition wipe is
+# pending, run the melt instead (one step per tic, presenting each).
+# The game loop is blocked meanwhile (vanilla's wipe loop); ticks
+# queued during it are discarded so the sim does not burst afterwards.
+presentwipe(r: ref Renderer, v: ref Context, tick: chan of int)
+{
+	if (wipepending != 0 && wipe != nil) {
+		wipepending = 0;
+		wipe->begin(r.fb8);
+		done := 0;
+		while (done == 0) {
+			done = wipe->step(r.fb8);
+			r.convert(v.fb);
+			v.present();
+			if (done == 0)
+				sys->sleep(1000 / Game->TICRATE);
+		}
+
+		for (;;) {
+			more := 0;
+			alt {
+			<-tick =>
+				more = 1;
+			* =>
+				more = 0;
+			}
+			if (!more)
+				break;
+		}
+		return;
+	}
+	v.present();
+}
+
+# convert + present a state frame (title/intermission/finale)
+showframe(r: ref Renderer, v: ref Context, tick: chan of int)
+{
+	r.convert(v.fb);
+	presentwipe(r, v, tick);
 }
 
 # load a patch lump by name (title pages)

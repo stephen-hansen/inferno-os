@@ -465,6 +465,12 @@ palette(r: ref Rend->Renderer, p: ref Game->Player)
 		dopalette(r, p);
 }
 
+resetpalette(r: ref Rend->Renderer)
+{
+	lastpal = 0;
+	rend->rpalette(r, 0);
+}
+
 drawer(r: ref Rend->Renderer, p: ref Game->Player)
 {
 	if (p == nil || sbar == nil)

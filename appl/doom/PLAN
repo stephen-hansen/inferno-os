@@ -910,27 +910,47 @@ Part D — presentation & game flow
          DEPS: 15, 18 (screen size state only), 17, 25 (mouse sens is
          state only until mouse input).
 
-  [ ] 22 Finale + screen wipe (f_finale.c + f_wipe.c)
-         WHY: E1M9 completion must show the ending text; state
-           changes are hard cuts.
-         SOURCES: f_finale.c (text screen, F_Ticker typing cadence,
-           background FLOOR4_8 + title patch, E1 end text from
-           dstrings/"ENDTEXT"? verify), f_wipe.c (melt columns
-           algorithm), d_main state hooks (gameaction -> wipe ->
-           drawer).
-         WORK:
-           - wipe: two-buffer melt (preallocate second fb; per-
-             column y offsets table) driven per tic between any
-             two drawers
-           - finale text typing (chars/line, 4 tic cadence? derive),
-             background draw, cast callout NOT in shareware? (vanilla
-             Doom1 shareware end = text only? Ultimate has cast —
-             derive from source and WAD lumps present)
-           - wire into 16's gameaction on E1 completion
-         DONE WHEN: finishing E1 shows the text scroll; level
-           changes melt.
-         DEPS: 15 (patches/fill), 16 (gameaction), wipe optional
-           dependency for 21 title.
+  [x] 22 Finale + screen wipe (f_finale.c + f_wipe.c)
+         STATUS Oct 25: DONE (shareware path).
+         finale.b/finale.m: E1M8 completion now goes straight to the
+         finale - vanilla non-commercial G_DoCompleted sets ga_victory
+         and skips the intermission.  It draws the FLOOR4_8 tiled
+         background and types E1TEXT with the exact F_TextWrite
+         cadence (count = (finalecount-10)/TEXTSPEED, x=10/y=10,
+         11px newlines, 4px gaps for spaces/out-of-font, stop at the
+         right edge), then after len(E1TEXT)*3+TEXTWAIT tics shows the
+         E1 art screen (HELP2 for shareware; the cast sequence is Doom
+         2 only).  doom.b gained a finale state: per-tic F_Ticker, a
+         full-screen drawer with no status bar/HUD, and the menu still
+         works over it (F_Ticker continues behind the menu, like
+         vanilla GS_FINALE); New Game, End Game and Quit work from the
+         finale menu.
+         wipe.b/wipe.m: the exact f_wipe.c melt (the only wipe Doom
+         uses): both screens are captured, columns melt down with the
+         M_Random-derived offsets (16-bit pixel pairs, vanilla's
+         column-major transform equivalence), one step per tic.  Every
+         vanilla wipe point is wired: title -> game, level ->
+         intermission, intermission -> next level, level -> finale,
+         finale text -> art screen, End Game -> title, and New Game
+         from the menu/game/finale (G_InitNew's forced wipe); death
+         reload does not wipe (gamestate stays GS_LEVEL).  The wipe
+         blocks the loop like vanilla, presenting each step, then
+         discards ticks queued during the ~1s melt.
+         Note: the PLAN's "E1M9 completion" line is a misstatement:
+         E1M8 ends the episode; E1M9 returns to the intermission via
+         the episode table (unchanged from M16).
+         VALIDATED (TEMP harnesses removed): the melt is byte-exact
+         against a from-source Python implementation for all 37 steps
+         including the M_Random column offsets (final frame equals the
+         end screen); finale frames are pixel-exact at t=0/13/40/100/
+         300/700/1570 (typed text) and 1571/1600 (HELP2 art screen),
+         with the stage change exactly at len(E1TEXT)*3+251; scripted
+         title -> New Game runs the wipe (37 steps) before E1M1; a
+         forced near-end finale shows the text -> art transition
+         wiping (37 steps).  The E1M8 -> finale trigger shares these
+         validated paths; its intermission-skip branch is derived from
+         G_DoCompleted.
+         DEPS: 15, 16, 21.
 
   [ ] 23 Demo playback (d_main.c / demo lump format)
          WHY: DEMO1-3 ship with the wad; also title-loop content.
