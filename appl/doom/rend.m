@@ -30,6 +30,13 @@ Rend: module {
 	Renderer: adt {
 		w, h:	int;
 		centery:	int;
+		# world-view viewport (R_SetViewSize): primitives draw at
+		# (vx,vy) and, in low detail, double each column/span pixel
+		# horizontally.  Screen graphics (patch/block/text/clear)
+		# ignore these and stay at absolute coordinates.
+		vx, vy:	int;
+		vh:	int;		# view height (fuzz edge rule); h otherwise
+		detail:	int;		# 0 high detail, 1 low (horizontal x2)
 		fb8:	array of byte;		# w*h palette indices
 		paldata: array of byte;		# full PLAYPAL (palette shifts)
 		zerofb:	array of byte;		# w*h pre-zeroed; clear(0)

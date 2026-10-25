@@ -287,6 +287,8 @@ curmap:		string;	# current map lump name
 page, pagetic:	int;	# title page index and remaining tics
 userring:	int;	# -R: view frame ring requested
 viewready:	int;	# view.init done (first level loaded)
+appliedblocks := -1;	# R_SetViewSize currently applied to the view
+applieddetail := -1;
 
 # title page patches (TITLEPIC / CREDIT / HELP2) and durations
 pagetimes := array[] of { 170, 200, 200 };
@@ -632,6 +634,19 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			}
 			if (quit)
 				break;
+		}
+		# Options screen size/detail (R_SetViewSize applies on the
+		# next refresh in vanilla; we recompute before this frame's
+		# render)
+		if (intitle == 0) {
+			(vsb2, vdet2) := menu->viewsize();
+			if (vsb2 != appliedblocks || vdet2 != applieddetail) {
+				if (view->setsize(vsb2, vdet2) == nil) {
+					appliedblocks = vsb2;
+					applieddetail = vdet2;
+					review = -1;
+				}
+			}
 		}
 
 		if (victory != 0) {
@@ -1029,8 +1044,15 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 				game->viewangle, game->viewcos, game->viewsin,
 				game->mobjs);
 		spd := game->consoleplayer();
-		if (st != nil && spd != nil)
-			st->drawer(rr, spd);
+		if (st != nil && spd != nil) {
+			# vanilla ST_Drawer: st_statusbaron = !fullscreen ||
+			# automapactive
+			if (appliedblocks != 11 ||
+			    (am != nil && am->active() != 0))
+				st->drawer(rr, spd);
+			else
+				st->palette(rr, spd);
+		}
 		if (hu != nil) {
 			hu->setautomap(am != nil && am->active() != 0);
 			hu->drawer(rr);
@@ -1161,8 +1183,9 @@ startgame(w: ref File, rr: ref Renderer, skill: int, mapname: string):
 	(l, merr) := map->open(w, mapname);
 	if (l == nil)
 		return (nil, nil, merr);
+	(vsb, vdet) := menu->viewsize();
 	if (viewready == 0) {
-		verr := view->init(rr, l, w, game, vid_w, vid_h - SBARHEIGHT);
+		verr := view->init(rr, l, w, game, vsb, vdet);
 		if (verr != nil)
 			return (nil, nil, verr);
 		viewready = 1;
@@ -1171,8 +1194,16 @@ startgame(w: ref File, rr: ref Renderer, skill: int, mapname: string):
 		view->ringenable = userring;
 		if (doperf != 0)
 			view->setperf(1);
-	} else
+	} else {
 		view->setlevel(l);
+		if (vsb != appliedblocks || vdet != applieddetail) {
+			verr := view->setsize(vsb, vdet);
+			if (verr != nil)
+				return (nil, nil, verr);
+		}
+	}
+	appliedblocks = vsb;
+	applieddetail = vdet;
 	if (am != nil) {
 		am->setlevel(l);
 		am->stop();

@@ -23,4 +23,8 @@ St: module {
 
 	# draw the bar into r.fb8 rows 168..199
 	drawer:	fn(r: ref Rend->Renderer, p: ref Game->Player);
+
+	# palette shifts only (ST_doPaletteStuff) when the bar is hidden
+	# (full-screen view without the automap)
+	palette:	fn(r: ref Rend->Renderer, p: ref Game->Player);
 };

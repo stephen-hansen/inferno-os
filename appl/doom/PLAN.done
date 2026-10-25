@@ -2112,4 +2112,68 @@ Milestones (each independently testable)
           produced 21 non-silent tics starting exactly at tic 36 in
           both the title and the paused in-game menu (peak 36/127 at
           the default SFX volume 8); temp injection hook removed.
+          M21 VIEW SIZE + LOW DETAIL (Oct 25, follow-up): the Options
+          screen-size and detail sliders now change the rendering.
+          rend.b: Renderer gained vx/vy (world-view viewport origin),
+          vh (fuzz edge rule) and detail; drawcolumn/drawspan/drawfuzz
+          draw at the offset and, in low detail, duplicate each
+          column/span sample horizontally exactly like
+          R_DrawColumnLow/R_DrawSpanLow/R_DrawFuzzColumnLow (span
+          texture advances once per doubled pair; fuzz samples each
+          duplicated column separately).
+          view.b: init(blocks,detail) plus setsize() implement
+          R_SetViewSize/R_ExecuteSetViewSize - screenblocks 3..11
+          (10 = classic 320x168 + bar; 11 = 320x200 full screen;
+          3..9 = blocks*32 wide, (blocks*168/10)&~7 tall), viewwindow
+          centring, walls/planes/sprites/psprites/sky scaled from
+          scaledviewwidth with detailshift (rw_scale << detail,
+          yslope = scaledwidth/2, pspritescale/scales, sky
+          dc_iscale = 320/scaledwidth), scalelight 320/scaledwidth
+          (zlight stays SCREENWIDTH/2), and the vanilla FLOOR7_2
+          tiled border + BRDR_* bezel cached in bgfb and blitted to
+          the border area each world frame (menu pixels there are
+          wiped like vanilla's border redraw).  The drawseg pool is
+          dropped on size changes so clip arrays reallocate at the
+          new viewwidth; ring records now store the full 320x200
+          framebuffer, and the F1 snapshot dumps at stride 320 (its
+          header still records the view geometry).  doom.b polls
+          menu.viewsize() and re-applies view.setsize on change,
+          passes the sizes to view.init at game start, and hides the
+          status bar in full-screen mode unless the automap is up
+          (vanilla ST_Drawer st_statusbaron rule) while still running
+          ST_doPaletteStuff via a new st.palette().
+          VALIDATION: default 320x168/detail0 frames for E1M1 and
+          E1M4 are byte-identical to the pre-change baselines (md5),
+          so normal play is untouched.  Low detail (10/1) matches the
+          high-detail image with every even column duplicated for
+          87.6% of pixel pairs; the rest are fixed-point rounding of
+          the same formulas (vanilla's own low-detail path is
+          approximate) and the images match visually.  Screen sizes
+          9, 11 and 3 render correctly with the centred viewport and
+          the tiled border/bezel (images inspected).  Switching 3 ->
+          11 after a frame produces a frame byte-identical to a fresh
+          11/0 render; after 3 -> 9/1 only rows 168..199 differ,
+          which the status bar redraws.  Scripted Options navigation
+          in-game applied blocks 8/detail 1 and then blocks 11/detail
+          0.  Boot smokes with audio pass; default frame timing is
+          unchanged (~6ms).  Temp harnesses/hooks removed.
+          M21 SPRITE/PSPRITE VIEWPORT FIX (Oct 25, live report): after
+          the view-size work, sprites and the weapon were still drawn
+          at view-local coordinates (top/left of the screen) and low
+          detail halved their x scale without doubling.  Cause:
+          maskpost (used by things, psprites and masked midtextures)
+          wrote to fb8 directly and bypassed the new viewport origin /
+          detail doubling used by the column/span drawers.  maskpost
+          now maps x through r.vx + (x<<detail) and rows through
+          r.vy, duplicating each pixel in low detail; fuzz posts go
+          through drawfuzz which already had the mapping.  Verified:
+          default 320x168/detail0 frames remain byte-identical (md5);
+          the E1M1 health-bonus sprite at screen size 9 lands at
+          x 105.5/y 104.7 and at fullscreen x=99.5/y=123, exactly the
+          vanilla centerx/centery/scale mapping, and the weapon sits
+          centered in the viewport; E1M2's corpse sprite scales with
+          the view; low-detail sprites/weapon are blocky-doubled and
+          centered (pair-duplication match 87.7%); a 3->9/1 size
+          change now matches a fresh 9/1 render exactly in rows 0..167
+          (only the bar rows differ).  Temp harnesses removed.
 

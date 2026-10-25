@@ -52,6 +52,12 @@ viewextra:	int;	# console player's muzzle-flash light boost
 r:	ref Rend->Renderer;
 lev:	ref Map->Level;
 w, h:	int;
+sw:	int;		# scaledviewwidth (framebuffer view width)
+detail:	int;		# detailshift (0/1): low detail doubles columns
+vwx, vwy: int;		# viewwindowx/y (viewport origin)
+projv:	int;		# scaledviewwidth/2 (walls/planes vertical scale)
+skyiscale: int;		# pspriteiscale>>detail for sky columns
+bgfb:	array of byte;	# 320x168 border background (nil = no border)
 proj:	int;		# 16.16 focal length (= centerx for 90deg FOV)
 solid:	array of int;	# per-column occlusion: solid[2*x]=first open row, solid[2*x+1]=one past last open row (vanilla ceilingclip+1 / floorclip)
 
@@ -182,11 +188,10 @@ nds:	int;
 sptop, spbot:	array of int;
 
 init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
-		g: Game, width, height: int): string
+	g: Game, blocks, detail0: int): string
 {
 	if (sys == nil)
 		sys = load Sys Sys->PATH;
-	sys->print("view.init: start\n");
 	if (rr == nil)
 		return "view.init: nil renderer";
 	if (l == nil)
@@ -195,6 +200,8 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
 		return "view.init: nil wad";
 	if (g == nil)
 		return "view.init: nil game module";
+	# File/adt method dispatch needs these modules loaded in this
+	# module's namespace
 	if (wad == nil)
 		wad = load Wad Wad->PATH;
 	if (mapm == nil)
@@ -209,46 +216,101 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
 	lev = l;
 	wfile = wf;
 	gmod = g;
-	w = width;
-	h = height;
-	proj = width / 2;		# 90-degree horizontal FOV (raw pixels)
-	centerx = width / 2;
-	solid = array[w * 2] of int;
 
-	# sprite + drawseg pools, sprite clip arrays
+	# sprite + drawseg pools (view-size independent)
 	viss = array[MAXVISSPRITES] of Vissprite;
 	dssegs = array[MAXDRAWSEGS] of Drawseg;
-	sptop = array[w] of int;
-	spbot = array[w] of int;
-
-	# frame-history ring (F2 review) + live snapshot scratch record
-	ring = array[RINGSZ] of ref RingRec;
-	for (rk := 0; rk < RINGSZ; rk++)
-		ring[rk] = allocrec();
-	scratch = allocrec();
-	ringhead = 0;
-	ringcount = 0;
+	sortord = nil;
 
 	# sprite defs from the WAD (Info tables were built by game.init)
 	err := loadsprdefs();
 	if (err != nil)
 		return err;
 
-	# plane texture-mapping table.  yslope[y] = proj/|dy| (16.16) scales
-	# the eye-to-plane vertical distance into a per-row depth; vanilla
-	# r_main.c uses abs(dy).  distscale[x] = 1/cos(ray through x), the
-	# lateral (cosine) correction so edges don't stretch (built below,
-	# after xtofine, from the same quantized column angle as vanilla).
+	# R_SetViewSize geometry, tables, ring and border
+	err = setsize(blocks, detail0);
+	if (err != nil)
+		return err;
+
+	# visplane slots (clip arrays are the fixed MAXVISW size; the
+	# per-frame minx/maxx are reset when a plane is interned)
+	vps = array[MAXVISPLANES] of Visplane;
+	for (i := 0; i < MAXVISPLANES; i++) {
+		vps[i] = Visplane(z := 0, light := 0, flatname := "",
+			minx := 0, maxx := -1,
+			top := array[MAXVISW] of int,
+			bottom := array[MAXVISW] of int);
+		for (x := 0; x < MAXVISW; x++) {
+			vps[i].top[x] = -1;
+			vps[i].bottom[x] = -1;
+		}
+	}
+	nvp = 0;
+	curfloor = curceil = -1;
+	return nil;
+}
+
+# R_SetViewSize / R_ExecuteSetViewSize: screenblocks 3..11, detail
+# 0/1.  screenblocks 10 is the classic 320x168 view + status bar,
+# 11 is a full-screen 320x200 view (bar hidden unless the automap is
+# up), 3..9 shrink both dimensions with a tiled border and bezel.
+# Low detail renders half the columns and doubles each horizontally
+# (vanilla detailshift).
+setsize(blocks, det: int): string
+{
+	if (blocks < 3)
+		blocks = 3;
+	if (blocks > 11)
+		blocks = 11;
+	if (det < 0)
+		det = 0;
+	if (det > 1)
+		det = 1;
+	if (blocks == 11) {
+		sw = 320;
+		h = 200;
+	} else {
+		sw = blocks * 32;
+		h = (blocks * 168 / 10) & ~7;
+	}
+	detail = det;
+	w = sw >> detail;
+	proj = w / 2;		# 90-degree horizontal FOV (low-res columns)
+	projv = sw / 2;		# vertical/plane scale (vanilla <<detail)
+	centerx = w / 2;
+	vwx = (320 - sw) / 2;
+	vwy = 0;
+	if (sw != 320)
+		vwy = (168 - h) / 2;
+	r.vx = vwx;
+	r.vy = vwy;
+	r.vh = h;
+	r.detail = detail;
+	r.centery = h / 2;
+	# sky columns use pspriteiscale>>detailshift = SCREENWIDTH/scaledwidth
+	skyiscale = (320 << 16) / sw;
+
+	# drawseg slot clip arrays are sized by viewwidth: drop the pool
+	# so slots reallocate at the new width (a later size increase must
+	# not write past arrays allocated for a smaller view)
+	dssegs = array[MAXDRAWSEGS] of Drawseg;
+	nds = 0;
+	ndrawsegs = 0;
+
+	solid = array[w * 2] of int;
+	sptop = array[w] of int;
+	spbot = array[w] of int;
+	cltopfrom = array[w] of int;
+	clbotfrom = array[w] of int;
+
+	# plane texture-mapping table.  yslope uses
+	# (viewwidth<<detailshift)/2 = scaledviewwidth/2 (vanilla).
 	yslope = array[h] of int;
 	for (y := 0; y < h; y++) {
-		# vanilla r_main.c: dy = abs(((i-viewheight/2)<<FRACBITS)+FRACUNIT/2);
-		# yslope = FixedDiv((viewwidth/2)*FRACUNIT, dy) = (proj<<32)/dy.
-		# the +FRACUNIT/2 half-pixel bias was dropped before, skewing every
-		# row's depth slightly.
 		dyp := ((y - h / 2) << 16) + 32768;
 		if (dyp < 0)
 			dyp = -dyp;
-		yslope[y] = int((big(proj) << 32) / big dyp);
+		yslope[y] = int((big(projv) << 32) / big dyp);
 	}
 	distscale = array[w] of int;
 	# per-column fine view angle (vanilla xtoviewangle[x]>>ANGLETOFINESHIFT).
@@ -314,16 +376,8 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
 		distscale[x] = int(big(65536) * big(65536) / big cosadj);
 	}
 
-	# vanilla light tables (r_main.c: R_InitLightTables builds zlight,
-	# R_SetViewSize builds scalelight).  startmap = the dark/far base
-	# for light band i; plane distance (zlight) and wall scale
-	# (scalelight) subtract up to 31 (DISTMAP=2), so near = bright,
-	# far = startmap.  i = lightlevel>>LIGHTSEGSHIFT with extralight=0
-	# (no light-amp pickups): lightlevel 255 -> i=15 -> startmap 0 ->
-	# row 0 at EVERY distance (outdoors fullbright).  The old
-	# (lightlevel*31)/255 was INVERTED: 255 -> row 31, the DARKEST
-	# colormap row -> outdoors (lightlevel 255/224) rendered pitch
-	# black; the curves crossed at 128 so dim interiors looked fine.
+	# light tables: zlight is fixed at SCREENWIDTH/2 (R_InitLightTables);
+	# scalelight uses SCREENWIDTH/scaledviewwidth (R_SetViewSize).
 	zlight = array[LIGHTLEVELS] of array of int;
 	scalelight = array[LIGHTLEVELS] of array of int;
 	for (i := 0; i < LIGHTLEVELS; i++) {
@@ -333,9 +387,7 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
 		zlight[i] = array[MAXLIGHTZ] of int;
 		scalelight[i] = array[MAXLIGHTSCALE] of int;
 		for (j = 0; j < MAXLIGHTZ; j++) {
-			# scale = FixedDiv((w/2)*FRACUNIT, (j+1)<<LIGHTZSHIFT)
-			#         >> LIGHTSCALESHIFT; big: (w/2)<<(16+16) > int32
-			scale := int((big(w / 2) << 32) / big((j + 1) << LIGHTZSHIFT))
+			scale := int((big(160) << 32) / big((j + 1) << LIGHTZSHIFT))
 				>> LIGHTSCALESHIFT;
 			level = startmap - scale / DISTMAP;
 			if (level < 0)
@@ -345,9 +397,7 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
 			zlight[i][j] = level;
 		}
 		for (j = 0; j < MAXLIGHTSCALE; j++) {
-			# vanilla: startmap - j*SCREENWIDTH/viewwidth/DISTMAP
-			# (= startmap - j/2 at detailshift 0, w = SCREENWIDTH = 320)
-			level = startmap - j * 320 / w / DISTMAP;
+			level = startmap - j * 320 / sw / DISTMAP;
 			if (level < 0)
 				level = 0;
 			if (level >= NUMCOLORMAPS)
@@ -356,22 +406,77 @@ init(rr: ref Rend->Renderer, l: ref Map->Level, wf: ref Wad->File,
 		}
 	}
 
-	# visplane slots
-	vps = array[MAXVISPLANES] of Visplane;
-	for (i = 0; i < MAXVISPLANES; i++) {
-		vps[i] = Visplane(z := 0, light := 0, flatname := "",
-			minx := w, maxx := -1,
-			top := array[MAXVISW] of int,
-			bottom := array[MAXVISW] of int);
-		for (x = 0; x < MAXVISW; x++) {
-			vps[i].top[x] = -1;
-			vps[i].bottom[x] = -1;
+	# frame-history ring slots are sized by the view; a size change
+	# starts a fresh history
+	ring = array[RINGSZ] of ref RingRec;
+	for (rk := 0; rk < RINGSZ; rk++)
+		ring[rk] = allocrec();
+	scratch = allocrec();
+	ringhead = 0;
+	ringcount = 0;
+
+	buildborder();
+	return nil;
+}
+
+# ---- R_SetViewSize border (r_draw.c R_FillBackScreen) --------------
+# FLOOR7_2 tiled over the 320x168 area above the status bar, then the
+# BRDR_* bezel around the viewport, cached in bgfb.  The border is
+# re-blitted every world frame (vanilla redraws it for a few frames
+# after menu/view changes; redrawing always also wipes any menu pixels
+# left there, with identical steady-state pixels).
+borderpatch(name: string): array of byte
+{
+	i := wfile.find(name);
+	if (i < 0)
+		return nil;
+	(b, err) := wfile.read(i);
+	return b;
+}
+
+bpaint(x, y: int, pd: array of byte)
+{
+	if (pd != nil)
+		rend->rdrawpatch(r, x, y, pd);
+}
+
+buildborder()
+{
+	xx, yy, ii: int;
+	bgfb = nil;
+	if (sw >= 320)
+		return;
+	fb := r.fb8;
+	fl := rend->rflat(r, "FLOOR7_2");
+	if (fl == nil)
+		fl = rend->rflat(r, "floor7_2");
+	if (fl != nil) {
+		for (yy = 0; yy < 168; yy++) {
+			row := (yy & 63) * 64;
+			for (xx = 0; xx < 320; xx += 64)
+				for (kk := 0; kk < 64; kk++)
+					fb[yy*320 + xx + kk] = fl.data[row + kk];
 		}
+	} else {
+		for (ii = 0; ii < 320*168; ii++)
+			fb[ii] = byte 0;
 	}
- 	nvp = 0;
- 	curfloor = curceil = -1;
- 	return nil;
- }
+	for (xx = 0; xx < sw; xx += 8)
+		bpaint(vwx + xx, vwy - 8, borderpatch("BRDR_T"));
+	for (xx = 0; xx < sw; xx += 8)
+		bpaint(vwx + xx, vwy + h, borderpatch("BRDR_B"));
+	for (yy = 0; yy < h; yy += 8)
+		bpaint(vwx - 8, vwy + yy, borderpatch("BRDR_L"));
+	for (yy = 0; yy < h; yy += 8)
+		bpaint(vwx + sw, vwy + yy, borderpatch("BRDR_R"));
+	bpaint(vwx - 8, vwy - 8, borderpatch("BRDR_TL"));
+	bpaint(vwx + sw, vwy - 8, borderpatch("BRDR_TR"));
+	bpaint(vwx - 8, vwy + h, borderpatch("BRDR_BL"));
+	bpaint(vwx + sw, vwy + h, borderpatch("BRDR_BR"));
+	bgfb = array[320*168] of byte;
+	for (ii = 0; ii < 320*168; ii++)
+		bgfb[ii] = fb[ii];
+}
 
 setlevel(l: ref Map->Level)
 {
@@ -432,8 +537,35 @@ render(viewx, viewy, viewz, viewangle, viewcos, viewsin: int,
 	nsprites = 0;
 	ndrawsegs = 0;
 
-	# clear to black
-	rend->rclear(r, 0);
+	r.vx = vwx;
+	r.vy = vwy;
+	r.vh = h;
+	r.detail = detail;
+	biy, bix: int;
+
+	# border background outside the viewport (R_DrawViewBorder keeps
+	# the cached R_FillBackScreen pattern visible around small views)
+	if (bgfb != nil) {
+		fb := r.fb8;
+		for (biy = 0; biy < vwy; biy++)
+			for (bix := 0; bix < 320; bix++)
+				fb[biy*320 + bix] = bgfb[biy*320 + bix];
+		for (biy = vwy + h; biy < 168; biy++)
+			for (bix = 0; bix < 320; bix++)
+				fb[biy*320 + bix] = bgfb[biy*320 + bix];
+		for (biy = vwy; biy < vwy + h; biy++) {
+			for (bix = 0; bix < vwx; bix++)
+				fb[biy*320 + bix] = bgfb[biy*320 + bix];
+			for (bix = vwx + sw; bix < 320; bix++)
+				fb[biy*320 + bix] = bgfb[biy*320 + bix];
+		}
+	}
+	# clear the viewport to black
+	for (biy = 0; biy < h; biy++) {
+		base := (vwy + biy) * 320 + vwx;
+		for (bix = 0; bix < sw; bix++)
+			r.fb8[base + bix] = byte 0;
+	}
 
 	# reset occlusion: full screen open in every column.
 	# solid[2x] is the first open row (vanilla ceilingclip+1, init -1+1=0),
@@ -840,8 +972,8 @@ addline(segnum: int)
 		dd1 = FRACUNIT / 4;
 	if (dd2 < FRACUNIT / 4)
 		dd2 = FRACUNIT / 4;
-	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd1));
-	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(proj) / big(dd2));
+	s1 := int(big(FRACUNIT) * big(FRACUNIT) * big(projv) / big(dd1));
+	s2 := int(big(FRACUNIT) * big(FRACUNIT) * big(projv) / big(dd2));
 	tspan := ox2 - ox1;
 	# TEMP tripwire for the 1-frame wall-glitch hunt: log insane
 	# projection/scale basis values (near-plane singularities,
@@ -1588,14 +1720,23 @@ maskpost(x, yl, yh, light, tmid, iscale: int,
 		return;
 	cm := light * 256;
 	frac := tmid + (yl - r.centery) * iscale;
-	dest := yl * r.w + x;
+	# world-view viewport: offset into the frame and, in low detail,
+	# double horizontally like the column/span drawers
+	xd := r.vx + x;
+	if (r.detail != 0)
+		xd = r.vx + (x << 1);
+	dest := (yl + r.vy) * r.w + xd;
+	detail := r.detail;
 	for (i := yl; i <= yh; i++) {
 		k := frac >> 16;
 		if (k < 0)
 			k = 0;
 		if (k >= npx)
 			k = npx - 1;
-		r.fb8[dest] = r.colormap[cm + int src[soff + k]];
+		v := r.colormap[cm + int src[soff + k]];
+		r.fb8[dest] = v;
+		if (detail != 0)
+			r.fb8[dest+1] = v;
 		dest += r.w;
 		frac += iscale;
 	}
@@ -1755,7 +1896,7 @@ projectmo(mo: ref Game->Mobj)
 	vis.gz = mo.z;
 	vis.gzt = mo.z + sp.yoff;
 	vis.texturemid = vis.gzt - vz;
-	vis.scale = xscale;
+	vis.scale = xscale << detail;
 	iscale := int(16r100000000 / big(xscale));
 	if (flip != 0) {
 		vis.startfrac = (sp.w << 16) - 1;
@@ -1781,7 +1922,7 @@ projectmo(mo: ref Game->Mobj)
 			lnum = 0;
 		if (lnum >= LIGHTLEVELS)
 			lnum = LIGHTLEVELS - 1;
-		idx := xscale >> LIGHTSCALESHIFT;
+		idx := (xscale << detail) >> LIGHTSCALESHIFT;
 		if (idx >= MAXLIGHTSCALE)
 			idx = MAXLIGHTSCALE - 1;
 		vis.light = scalelight[lnum][idx];
@@ -1808,6 +1949,7 @@ drawvis(vis: ref Vissprite)
 	iscale := vis.xiscale;
 	if (iscale < 0)
 		iscale = -iscale;
+	iscale = iscale >> detail;
 	sprtop := (r.centery << 16) - rend->fixedmul(vis.texturemid, vis.scale);
 	# TEMP clip profile: 'o' drew, 'c' had screen content all clipped
 	# out, '.' no screen-visible post
@@ -1936,14 +2078,21 @@ drawpsprite(p: ref Game->Player, psi: int)
 	sp := sprpatch[lump];
 	if (sp == nil)
 		return;
-	# screen edges (vanilla: tx = sx - center, minus leftoffset)
-	tx := ps.sx - (centerx << 16);
+	# screen edges (vanilla R_DrawPSprite: tx = sx - 160*FRACUNIT,
+	# then x = centerxfrac + FixedMul(tx, pspritescale); vertical
+	# scale is pspritescale<<detailshift)
+	pscale := (w << 16) / 320;
+	pscalev := (sw << 16) / 320;
+	piscale := (320 << 16) / w;
+	pivscale := piscale >> detail;
+	tx := ps.sx - (160 << 16);
 	tx -= sp.xoff;
-	x1 := centerx + (tx >> 16);
+	cx := centerx << 16;
+	x1 := (cx + rend->fixedmul(tx, pscale)) >> 16;
 	if (x1 >= w)
 		return;
 	tx += sp.w << 16;
-	x2 := centerx + (tx >> 16) - 1;
+	x2 := ((cx + rend->fixedmul(tx, pscale)) >> 16) - 1;
 	if (x2 < 0)
 		return;
 	if (x1 < 0)
@@ -1978,12 +2127,12 @@ drawpsprite(p: ref Game->Player, psi: int)
 	# view: 16px more of the weapon hidden behind the bar.
 	tmid := (BASEYCENTER << 16) + (FRACUNIT >> 1) -
 		(ps.sy - sp.yoff);
-	sprtop := (r.centery << 16) - tmid;
+	sprtop := (r.centery << 16) - rend->fixedmul(tmid, pscalev);
 	frac := 0;
-	iscale := FRACUNIT;
+	iscale := piscale;
 	if (flip != 0) {
 		frac = (sp.w - 1) << 16;
-		iscale = -FRACUNIT;
+		iscale = -piscale;
 	}
 	for (x := x1; x <= x2; x++) {
 		tc := frac >> 16;
@@ -2000,8 +2149,8 @@ drawpsprite(p: ref Game->Player, psi: int)
 			ln := int sp.raw[pos + 1];
 			if (ln <= 0 || pos + 3 + ln > len sp.raw)
 				break;
-			topscreen := sprtop + td * FRACUNIT;
-			bottomscreen := topscreen + ln * FRACUNIT;
+			topscreen := sprtop + rend->fixedmul(td << 16, pscalev);
+			bottomscreen := topscreen + rend->fixedmul(ln << 16, pscalev);
 			yl := (topscreen + 65535) >> 16;
 			yh := (bottomscreen - 1) >> 16;
 			if (yl < 0)
@@ -2010,7 +2159,7 @@ drawpsprite(p: ref Game->Player, psi: int)
 				yh = h - 1;
 			if (yl <= yh)
 				maskpost(x, yl, yh, light,
-					tmid - (td << 16), FRACUNIT,
+					tmid - (td << 16), pivscale,
 					sp.raw, pos + 3, ln);
 			pos += ln + 4;
 		}
@@ -2241,7 +2390,7 @@ bamdeg(a: int): int
 allocrec(): ref RingRec
 {
 	rec := ref RingRec;
-	rec.fb = array[w * h] of byte;
+	rec.fb = array[r.w * r.h] of byte;
 	rec.vis = array[MAXVISSPRITES] of Vissprite;
 	rec.qx1 = array[MAXDRAWSEGS] of int;
 	rec.qx2 = array[MAXDRAWSEGS] of int;
@@ -2598,16 +2747,16 @@ snapshotfrom(path: string, htic: int, rec: ref RingRec): string
 		emit(s + "\n");
 	}
 
-	# framebuffer as hex rows
-	if (len rec.fb >= w * h) {
-		# dump the whole framebuffer (200 rows: world + status bar)
-		rows := len rec.fb / w;
-		emit(sys->sprint("FB8BEGIN w=%d h=%d\n", w, rows));
+	# framebuffer as hex rows (always the full 320x200 buffer; the
+	# view may be a smaller/low-detail viewport inside it)
+	if (len rec.fb >= r.w * r.h) {
+		rows := r.h;
+		emit(sys->sprint("FB8BEGIN w=%d h=%d\n", r.w, rows));
 		hex := "0123456789abcdef";
 		for (y := 0; y < rows; y++) {
 			row := "";
-			base := y * w;
-			for (x := 0; x < w; x++) {
+			base := y * r.w;
+			for (x := 0; x < r.w; x++) {
 				b := int rec.fb[base + x];
 				row += sys->sprint("%c%c", hex[b >> 4], hex[b & 15]);
 			}
@@ -2924,7 +3073,7 @@ drawplanes()
 						continue;
 					col := ((vangle >> ANGLETOFINESHIFT) + xtofine[x]) >> 3;
 					rend->rdrawcolumn(r, x, yl, vp.bottom[x], 0,
-						sky, col, SKYMID, FRACUNIT);
+						sky, col, SKYMID, skyiscale);
 				}
 			}
 			continue;

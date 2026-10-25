@@ -45,6 +45,9 @@ Menu: module {
 	# host polls and clears the pending action: (kind, episode, skill)
 	take:	fn(): (int, int, int);
 
+	# current Options values the view needs: (screenblocks, detail)
+	viewsize:	fn(): (int, int);
+
 	QuitReq:	con 16rF000;
 	Enter:	con 13;
 	Back:	con 127;

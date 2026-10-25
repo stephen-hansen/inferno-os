@@ -459,6 +459,12 @@ dopalette(r: ref Rend->Renderer, p: ref Game->Player)
 	}
 }
 
+palette(r: ref Rend->Renderer, p: ref Game->Player)
+{
+	if (p != nil)
+		dopalette(r, p);
+}
+
 drawer(r: ref Rend->Renderer, p: ref Game->Player)
 {
 	if (p == nil || sbar == nil)

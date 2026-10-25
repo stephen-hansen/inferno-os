@@ -401,6 +401,10 @@ animtic(r: ref Renderer, lvltime: int)
 
 Renderer.init(r: self ref Renderer, w: ref Wad->File, width, height: int): string
 {
+	r.vx = 0;
+	r.vy = 0;
+	r.vh = height;
+	r.detail = 0;
 	if (sys == nil)
 		sys = load Sys Sys->PATH;
 	if (wad == nil) {		# File methods dispatch through it
@@ -532,7 +536,6 @@ Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 	if (c < 0)
 		c += tex.width;
 	src := c * tex.height;
-	dest := yl * r.w + x;
 	fracstep := iscale;
 	frac := texturemid + (yl - r.centery) * fracstep;
 	th := tex.height;
@@ -542,13 +545,21 @@ Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 	cmap := r.colormap;
 	td := tex.data;
 	wd := r.w;
+	xd := r.vx + x;
+	if (r.detail != 0)
+		xd = r.vx + (x << 1);
+	dest := (yl + r.vy) * wd + xd;
+	detail := r.detail;
 	# fast path: power-of-two heights (100/125 TEXTURE1 entries are
 	# 128 tall) wrap with & instead of a per-pixel modulo division
 	if (th > 0 && (th & (th - 1)) == 0) {
 		m := th - 1;
 		for (i := 0; i <= count; i++) {
 			row := (frac >> 16) & m;
-			fb[dest] = cmap[cm + int td[src + row]];
+			v := cmap[cm + int td[src + row]];
+			fb[dest] = v;
+			if (detail != 0)
+				fb[dest+1] = v;
 			dest += wd;
 			frac += fracstep;
 		}
@@ -558,7 +569,10 @@ Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 		row := (frac >> 16) % th;
 		if (row < 0)
 			row += th;
-		fb[dest] = cmap[cm + int td[src + row]];
+		v := cmap[cm + int td[src + row]];
+		fb[dest] = v;
+		if (detail != 0)
+			fb[dest+1] = v;
 		dest += wd;
 		frac += fracstep;
 	}
@@ -567,20 +581,38 @@ Renderer.drawcolumn(r: self ref Renderer, x, yl, yh, light: int,
 # vanilla R_DrawSpan (flat is always 64x64)
 Renderer.drawspan(r: self ref Renderer, y, x1, x2, light: int,
 		fl: ref Flat, xfrac, yfrac, xstep, ystep: int)
-{	count := x2 - x1;
+{
+	count := x2 - x1;
 	if (count < 0)
 		return;
 	cm := light * 256;
-	dest := y * r.w + x1;
+	xd := r.vx + x1;
+	if (r.detail != 0)
+		xd = r.vx + (x1 << 1);
+	dest := (y + r.vy) * r.w + xd;
 	fx := xfrac;
 	fy := yfrac;
 	fb := r.fb8;
 	cmap := r.colormap;
 	fd := fl.data;
+	detail := r.detail;
+	if (detail == 0) {
+		for (i := 0; i <= count; i++) {
+			spot := ((fy >> 16) & 63) << 6 | ((fx >> 16) & 63);
+			fb[dest] = cmap[cm + int fd[spot]];
+			dest++;
+			fx += xstep;
+			fy += ystep;
+		}
+		return;
+	}
+	# R_DrawSpanLow: one texture sample per two dest pixels
 	for (i := 0; i <= count; i++) {
 		spot := ((fy >> 16) & 63) << 6 | ((fx >> 16) & 63);
-		fb[dest] = cmap[cm + int fd[spot]];
-		dest++;
+		v := cmap[cm + int fd[spot]];
+		fb[dest] = v;
+		fb[dest+1] = v;
+		dest += 2;
 		fx += xstep;
 		fy += ystep;
 	}
@@ -614,15 +646,25 @@ Renderer.drawfuzz(r: self ref Renderer, x, yl, yh: int)
 		initfuzz();
 	if (yl == 0)
 		yl = 1;
-	if (yh == r.h - 1)
-		yh = r.h - 2;
+	if (yh >= r.vh - 1)
+		yh = r.vh - 2;
 	if (yl > yh)
 		return;
-	dest := yl * r.w + x;
+	xd := r.vx + x;
+	if (r.detail != 0)
+		xd = r.vx + (x << 1);
+	dest := (yl + r.vy) * r.w + xd;
 	for (i := yl; i <= yh; i++) {
 		src := dest + fuzzsign[fuzzpos] * r.w;
-		if (src >= 0 && src < len r.fb8)
-			r.fb8[dest] = r.colormap[6*256 + int r.fb8[src]];
+		if (src >= 0 && src < len r.fb8) {
+			v := r.colormap[6*256 + int r.fb8[src]];
+			r.fb8[dest] = v;
+			if (r.detail != 0) {
+				src2 := dest + 1 + fuzzsign[fuzzpos] * r.w;
+				if (src2 >= 0 && src2 < len r.fb8)
+					r.fb8[dest+1] = r.colormap[6*256 + int r.fb8[src2]];
+			}
+		}
 		fuzzpos++;
 		if (fuzzpos == FUZZTABLE)
 			fuzzpos = 0;

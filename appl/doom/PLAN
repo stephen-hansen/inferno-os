@@ -883,10 +883,16 @@ Part D — presentation & game flow
          Messages gates HU display (showMessages) including the
          one-shot menu confirmation; the SFX slider drives
          S_SetSfxVolume (sound.setvolume, mixer uses it); music
-         volume is stored for M27.  Detail and Screen Size update the
-         vanilla state only: the renderer is still fixed at
-         screenblocks 10 (168-row view), so visual detail/viewport
-         changes need a renderer change (noted).
+         volume is stored for M27.  Detail and Screen Size are live:
+         the view implements R_SetViewSize (screenblocks 3..11,
+         detail 0/1) with viewwindow centring, the vanilla tiled
+         border/bezel for small views, full-screen 320x200 with the
+         bar hidden unless the automap is up, and blocky low detail
+         (half columns, doubled horizontally) with the vanilla
+         wall/plane/sprite/psprite/sky scale rules.  (The renderer
+         gained a viewport origin + low-detail doubling in
+         drawcolumn/drawspan/drawfuzz; see PLAN.done for the
+         validation.)
          VALIDATED (TEMP harnesses and hooks removed): 18 menu
          scenarios pixel-exact against a Python reconstruction from
          the WAD patches (main, episode, skill, options, sound,

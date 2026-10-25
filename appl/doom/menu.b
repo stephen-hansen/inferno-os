@@ -282,6 +282,11 @@ setaction(kind, e, sk: int)
 	actSkill = sk;
 }
 
+viewsize(): (int, int)
+{
+	return (screenblocks, detailLevel);
+}
+
 take(): (int, int, int)
 {
 	k := actKind;

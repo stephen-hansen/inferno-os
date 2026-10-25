@@ -13,16 +13,20 @@ View: module {
 
 	PATH:	con "/dis/doom/view.dis";
 
-	# allocate solid[] clip arrays for width w; call once after
-	# Renderer.init.  wf is the open WAD (sprite lumps); g is the
-	# loaded Game module (sprite rotations use its pointtoangle2);
-	# w,h are the render resolution.
+	# allocate renderer state for R_SetViewSize(blocks, detail);
+	# call once after Renderer.init.  wf is the open WAD (sprite
+	# lumps); g is the loaded Game module (sprite rotations use its
+	# pointtoangle2).  screenblocks 3..11, detail 0/1.
 	init:	fn(w: ref Rend->Renderer, l: ref Map->Level,
 				wf: ref Wad->File, g: Game,
-				width, height: int): string;
+				blocks, detail: int): string;
+
+	# R_SetViewSize: recompute viewport geometry, light tables, clip
+	# arrays and the border background (same arguments as init).
+	setsize:	fn(blocks, detail: int): string;
 
 	# swap the rendered map (level transitions reload geometry;
-	# clip tables are sized by w/h so only the level changes)
+	# clip tables are sized by the view geometry)
 	setlevel:	fn(l: ref Map->Level);
 
 	# render one frame from the given camera state (all 16.16
