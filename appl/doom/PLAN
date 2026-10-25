@@ -800,30 +800,52 @@ Part D — presentation & game flow
            flashes on map start.
          DEPS: 15, message hooks from 9-12.
 
-  [ ] 20 Automap (am_map.c)
-         WHY: navigation; also classic IDDTC? (map reveal from 25).
-         SOURCES: am_map.c (AM_Init/Drawer/Ticker/Responder/follow,
-           line draw with AMWIDTH scaling, player arrow, keys,
-           grid, zoom, overlay vs toggle), AM* patches (ARROW?,
-           STKEYS, crosshair? — verify by WAD scan), plus map-name
-           title pass-through from 19.
-         WORK:
-           - own draw context onto fb8 (lines as V_DrawLine-style
-             pixel writes — vanilla uses V_DrawPatch of the level
-             BUILT as a patch (amgraph)? derive: vanilla builds
-             the map image once into a patch buffer? No — vanilla
-             draws lines per frame with fb writes (drawline).
-             Derive from source exactly.)
-           - scale/offset vs player, ML_MAPPED marking (explored
-             lines), secret toggle (ML_SECRET display), follow
-             mode, zoom keys, rotate toggle (vanilla supports
-             rotate — keep)
-           - interplay with render: automap replaces world render
-           - IDDDT full-map cheat lands here (from 25)
-         DONE WHEN: TAB toggles map; player/level drawn; pan/zoom/
-           follow work.
-         DEPS: 15 (patches for keys/arrows), 13 (ML_SECRET flags
-           meaningful — line flags already exist on load).
+  [x] 20 Automap (am_map.c)
+         STATUS Oct 24: DONE (single-player; this tree's am_map.c has
+         no overlay mode, only the full-screen toggle).
+         am.b/am.m implement: AM_LevelInit (vertex bounds with
+         vanilla's else-if quirk; initial zoom min_scale/0.7 clamped,
+         marks cleared); AM_Start/Stop; AM_initVariables (recenter on
+         the player, keep the zoom); AM_Ticker (follow with the
+         FTOM(MTOF()) pixel-grid snap, continuous pan, fixed-point
+         zoom multiplier chain); AM_clipMline (Cohen-Sutherland,
+         exact C truncating divisions) and Bresenham AM_drawFline
+         into fb8 rows 0..167; AM_drawWalls colors (solid red, special
+         39 teleporter brighter red, ML_SECRET red/pink, floor/ceiling
+         change brown/yellow, two-sided gray only when cheating,
+         GRAYS+3 for the all-map power on unmapped non-hidden lines,
+         ML_DONTDRAW skipped unless cheating); player arrow and the
+         iddt cheat arrow; thin-triangle things when cheating==2; grid
+         aligned to the BLOCKMAP origin (new Level.bmaporgx/y, parsed
+         from the BLOCKMAP lump header in map.b); AMMNUM0..9 marks
+         (m/c keys) via r.drawpatch; the single-pixel crosshair; and
+         the AMSTR_* follow/grid/mark messages through
+         player->message/HS.
+         Keys: TAB toggle, arrow pan (only with follow off; consumed
+         so they don't also move the player), '-'/'=' zoom, '0'
+         max-zoom toggle, f/g/m/c.  Map keys are only routed while in
+         GS_LEVEL (TAB on intermission/victory does nothing, as
+         vanilla G_Responder).
+         Wiring: the automap replaces the world draw; status bar and
+         HUD messages still draw on top; the level title appears while
+         it is up (hu.setautomap); player death and GA_COMPLETED call
+         AM_Stop; a new level calls AM_LevelInit.  ML_MAPPED is set by
+         the world renderer exactly where vanilla R_StoreWallRange
+         does (view.b, after the fully-occluded early return).
+         The iddt cheat input itself waits for M25's cheat subsystem;
+         am.cheatcycle() is the hook and all three cheat states'
+         render paths are validated.
+         VALIDATED pixel-exact against a Python reimplementation of
+         am_map.c over E1M4: walls (all lines mapped), all-map power,
+         grid, marks, zoom+pan tick sequence, iddt walls, iddt things,
+         follow snap, and renderer-marked explored lines (one real
+         View::render frame marks 28 lines).  E1M8 walls/allmap cover
+         its 83 ML_DONTDRAW lines.  Nine E1M4 modes plus the E1M8 pair:
+         0 differing pixels.
+         Note: iddt things iterate the port's mobj array; vanilla uses
+         per-sector thinglists, so only tie order can differ (debug
+         view only).
+         DEPS: 15 (AMMNUM patches), 13 (line flags), 19 (title hook).
 
   [ ] 21 Menu + skill/episode select + title (m_menu.c)
          WHY: skill is hardcoded (doom.b:411/561); no New Game/

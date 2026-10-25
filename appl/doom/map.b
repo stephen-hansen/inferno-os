@@ -72,7 +72,7 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 		i++;
 	}
 
-	l := ref Level(mapname, nil, nil, nil, nil, nil, nil, nil, nil, nil);
+	l := ref Level(mapname, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0);
 	b := array[0] of byte;
 	err := "";
 
@@ -299,6 +299,17 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 		for (i = 0; i < rn; i++)
 			reject[i] = int b[i];
 	l.reject = reject;
+
+	# BLOCKMAP (m+10): only the origin is needed (automap grid
+	# alignment, am_map.c AM_drawGrid); the port never uses the
+	# blockmap chains.
+	(b, err) = w.read(m+10);
+	if (b == nil)
+		return (nil, err);
+	if (len b >= 4) {
+		l.bmaporgx = le16(b, 0) << 16;
+		l.bmaporgy = le16(b, 2) << 16;
+	}
 
 	return (l, nil);
 }

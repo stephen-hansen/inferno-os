@@ -1947,3 +1947,46 @@ Milestones (each independently testable)
           hash; all game.m consumers (view, wi, st, hu, doom, game)
           had to be rebuilt and installed together, otherwise module
           load fails the link typecheck.
+          M20 AUTOMAP (Oct 24): implemented am_map.c's full-screen
+          single-player path.  am.m/am.b: vertex-bound level init
+          (vanilla's else-if quirk included), initial zoom
+          min_scale/0.7 clamped to max, 16.16 map<->fb transforms,
+          follow (FTOM(MTOF()) snap; m_x2/m_y2), pan (F_PANINC per
+          tic, clamps to level bounds, clears follow), zoom multiplier
+          chain (1.02 / 1/1.02 per tic with min/max-out clamps), max
+          zoom toggle ('0' saves/restores scale+loc).  Drawing:
+          AM_clearFB, exact Cohen-Sutherland AM_clipMline with C
+          truncating division, exact Bresenham AM_drawFline, wall
+          color rules (solid/teleporter/secret/floor/ceiling/two-sided
+          cheating; GRAYS+3 all-map; ML_DONTDRAW hidden unless iddt),
+          player arrow/iddt arrow, iddt thing triangles (correct
+          thintriangle_guy table - the first cut mistakenly used
+          triangle_guy's vertices and the pixel oracle caught it),
+          blockmap-aligned grid (new Level.bmaporgx/bmaporgy from the
+          BLOCKMAP lump header), AMMNUM marks and the center
+          crosshair pixel.  Input/plumbing: TAB toggle; pan arrows
+          only with follow off and consumed so movement doesn't also
+          fire; '-'/'=' zoom; '0' max zoom; f/g/m/c with the vanilla
+          AMSTR_* messages through player->message; keys routed only
+          in GS_LEVEL; map replaces the world draw but the status bar,
+          HUD messages and title still draw; AM_Stop on death and on
+          GA_COMPLETED; AM_LevelInit per level.  ML_MAPPED marking was
+          added to view.b at vanilla r_segs.c:395's spot (a stored
+          wall range marks its linedef; fully occluded ranges return
+          before it, as in vanilla).  iddt text input is deferred to
+          M25; am.cheatcycle() advances 0->1->2.
+          VALIDATION (TEMP harness and Python oracle removed): nine
+          E1M4 modes - all-mapped walls, all-map power, grid, marks,
+          zoom+pan, iddt walls, iddt things, follow snap and
+          renderer-explored lines - plus E1M8 walls/allmap (83
+          ML_DONTDRAW lines): every mode matched a from-source Python
+          reimplementation pixel-for-pixel (0 diffs over 320x168).
+          The explored mode used one real View::render frame and
+          marked 28 linedefs, confirming the renderer->automap
+          handoff.  Oracle bugs found and fixed during validation
+          (last-lump WAD dict, signed 0xfffe sidenums) were oracle
+          only; the port had exactly one real bug (triangle table).
+          Boot smoke with audio passes; TAB key moves were not
+          scriptable headless (module behavior fully validated in the
+          harness).
+

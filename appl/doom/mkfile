@@ -12,6 +12,7 @@ TARG=\
 	wi.dis\
 	st.dis\
 	hu.dis\
+	am.dis\
 	doom.dis\
 
 MODULES=\

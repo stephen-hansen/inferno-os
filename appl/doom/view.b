@@ -805,6 +805,13 @@ addline(segnum: int)
 	if (shut)
 		return;
 
+	# vanilla R_StoreWallRange marks the linedef as explored as soon
+	# as its range is stored (ML_MAPPED, r_segs.c:395); the automap
+	# draws only explored lines unless the player has the all-map
+	# power or the iddt cheat.  Fully occluded ranges never reach
+	# R_StoreWallRange in vanilla either, hence the early return.
+	lev.lines[seg.linedef].flags |= Game->ML_MAPPED;
+
 	# vanilla light indices (r_segs.c R_StoreWallRange + r_plane.c).
 	# plane claims use the sector index i = lightlevel>>LIGHTSEGSHIFT
 	# with extralight = 0; wall columns additionally get the orientation

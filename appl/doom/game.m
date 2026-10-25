@@ -74,6 +74,8 @@ Game: module {
 	ML_TWOSIDED:	con 4;
 	ML_SECRET:	con 32;	# monsters never open secret doors
 	ML_SOUNDBLOCK:	con 64;	# sound does not cross (p_sight.c)
+	ML_DONTDRAW:	con 128;	# never shown on the automap (doomdata.h)
+	ML_MAPPED:	con 256;	# explored: set by the renderer, shown by AM
 
 	# weapon/ammo (doomdef.h); minimal for G_PlayerReborn
 	WP_FIST, WP_PISTOL, WP_SHOTGUN, WP_CHAINGUN, WP_MISSILE,

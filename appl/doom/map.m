@@ -85,6 +85,10 @@ Map: module {
 		reject:	array of int;	# REJECT bytes as ints (fast
 					# P_CheckSight reject test)
 
+		# BLOCKMAP header origin (used by the automap grid; the
+		# port itself never uses the blockmap chains)
+		bmaporgx, bmaporgy:	int;	# 16.16
+
 		# R_PointInSubsector: descend the BSP from node
 		# numnodes-1; always returns non-nil (node 0 if
 		# single-subsector map).  x,y are 16.16 fixed.

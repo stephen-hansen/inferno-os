@@ -33,6 +33,8 @@ include "st.m";
 	st: St;
 include "hu.m";
 	hu: Hu;
+include "am.m";
+	am: Am;
 
 Doom: module
 {
@@ -209,6 +211,14 @@ XK_Right:	con 114;
 XK_Down:	con 116;
 XK_F1:	con 67;	# evdev 59 + 8
 XK_F2:	con 68;	# evdev 60 + 8
+XK_Tab:	con 23;	# evdev 15 + 8 (automap toggle)
+XK_F:	con 41;	# evdev 33 + 8 (follow)
+XK_G:	con 42;	# evdev 34 + 8 (grid)
+XK_C:	con 54;	# evdev 46 + 8 (clear marks)
+XK_M:	con 58;	# evdev 50 + 8 (mark)
+XK_Minus: con 20;	# evdev 12 + 8 (zoom out)
+XK_Equal: con 21;	# evdev 13 + 8 (zoom in)
+XK_0:	con 19;	# evdev 11 + 8 (max zoom toggle)
 
 keystate:	array of int;
 keych:		chan of int;
@@ -225,6 +235,7 @@ doweapons:	int;	# TEST HOOK (pre-M25): -w grants IDKFA loadout at boot
 dogod:		int;	# TEST HOOK (pre-M25): -g sets CF_GODMODE at boot
 doperf:		int;	# -p: print tick/render frame timing every 70 tics
 perfticksum, perfrendsum, perfconvsum, perfpressum, perfmaxtick, perfmaxrend, perfmaxconv, perfmaxpres, perfframes: int;
+gslevel: int;	# in the level state (not intermission/victory): automap keys live here
 
 play(path: string, wmctxt: ref Draw->Context, doring: int)
 {
@@ -334,9 +345,21 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (err != nil)
 		fail(err);
 
+	# automap (am_map.c)
+	am = load Am Am->PATH;
+	if (am == nil)
+		am = load Am "am.dis";
+	if (am == nil)
+		fail(sys->sprint("can't load Am module: %r"));
+	err = am->init(w, game);
+	if (err != nil)
+		fail(err);
+
 	err = game->setuplevel(l, game->SK_MEDIUM);
 	if (err != nil)
 		fail(err);
+	if (am != nil)
+		am->setlevel(l);
 
 	v: ref Context;
 	wmkeys: chan of string;
@@ -375,7 +398,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (hu != nil)
 		hu->start(l.name);
 	mo := p.mo;
-	sys->print("play: E1M4 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
+	sys->print("play: E1M4 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, tab=map, F1=snapshot");
 	if (doring)
 		sys->print(", F2=review");
 	sys->print("\n");
@@ -390,10 +413,10 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		# vanilla IDKFA (st_stuff.c): all weapons, full ammo, all
 		# keys, 200% class-2 armor.  Ready weapon untouched (switch
 		# with 1-8 like the real cheat).
-		for (wi := 0; wi < game->NUMWEAPONS; wi++)
-			p.weaponowned[wi] = 1;
-		for (am := 0; am < game->NUMAMMO; am++)
-			p.ammo[am] = p.maxammo[am];
+		for (wa := 0; wa < game->NUMWEAPONS; wa++)
+			p.weaponowned[wa] = 1;
+		for (aa := 0; aa < game->NUMAMMO; aa++)
+			p.ammo[aa] = p.maxammo[aa];
 		for (ca := 0; ca < game->NUMCARDS; ca++)
 			p.cards[ca] = 1;
 		p.armortype = 2;
@@ -420,6 +443,9 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	intermission := 0;	# showing WI stats/entering (sim frozen)
 	victory := 0;		# E1M8 done (finale lands in 22; frozen)
 	for (; !quit;) {
+		# vanilla only routes AM_Responder in GS_LEVEL: TAB (and
+		# the map keys) do nothing on intermission/victory screens
+		gslevel = intermission == 0 && victory == 0;
 		# key events only update keystate; tics come SOLELY from the
 		# tick timer (key-driven tics made the game surge at
 		# auto-repeat rate and stutter between repeats).
@@ -527,6 +553,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 				fail(merr2);
 			l = l2;
 			view->setlevel(l);
+			if (am != nil)
+				am->setlevel(l);
 			err = game->setuplevel(l, game->SK_MEDIUM);
 			if (err != nil)
 				fail(err);
@@ -687,14 +715,25 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		sm := 0;
 		at := 0;
 		btn := 0;
-		if (keystate[Up] || keystate['w'])
+		# while the automap is up with follow off, the arrow keys
+		# pan the map (AM_Responder consumes them) instead of
+		# moving the player; WASD still moves, as vanilla lets
+		# unconsumed keys through to the game.
+		mapmove := am != nil && am->active() != 0 && am->following() == 0;
+		if (!mapmove) {
+			if (keystate[Up])
+				fm += fmstep;
+			if (keystate[Down])
+				fm -= fmstep;
+			if (keystate[Left])
+				at += atstep;
+			if (keystate[Right])
+				at -= atstep;
+		}
+		if (keystate['w'])
 			fm += fmstep;
-		if (keystate[Down] || keystate['s'])
+		if (keystate['s'])
 			fm -= fmstep;
-		if (keystate[Left])
-			at += atstep;
-		if (keystate[Right])
-			at -= atstep;
 		if (keystate['a'])
 			sm -= smstep;
 		if (keystate['d'])
@@ -727,8 +766,18 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		sp := game->consoleplayer();
 		if (st != nil && sp != nil)
 			st->ticker(sp);
+		if (am != nil)
+			am->ticker();
 		if (hu != nil && sp != nil)
 			hu->ticker(sp);
+
+		# vanilla P_KillMobj: dying with the automap up switches
+		# back to the view before the death animation
+		if (am != nil && am->active() != 0) {
+			dpl := game->consoleplayer();
+			if (dpl != nil && dpl.playerstate == game->PST_DEAD)
+				am->stop();
+		}
 
 		# vanilla P_UpdateSpecials animate block: advance flat/
 		# texture animation on the shared Renderer (game->ticker
@@ -740,6 +789,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		# finish the level, fill the WI snapshot, and switch the
 		# loop to intermission rendering (or freeze on victory)
 		if (game->gameaction() == game->GA_COMPLETED) {
+			if (am != nil)
+				am->stop();
 			r := game->docompleted();
 			review = -1;	# ring holds the old level's frames
 			if (r < 0) {
@@ -782,6 +833,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 					fail(merr2);
 				l = l2;
 				view->setlevel(l);
+				if (am != nil)
+					am->setlevel(l);
 				err = game->setuplevel(l, game->SK_MEDIUM);
 				if (err != nil)
 					fail(err);
@@ -802,14 +855,19 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		game->setview();
 		if (doperf)
 			perf0 = sys->millisec();
-		view->render(game->viewx, game->viewy, game->viewz,
-			game->viewangle, game->viewcos, game->viewsin,
-			game->mobjs);
+		if (am != nil && am->active() != 0)
+			am->drawer(rr);
+		else
+			view->render(game->viewx, game->viewy, game->viewz,
+				game->viewangle, game->viewcos, game->viewsin,
+				game->mobjs);
 		spd := game->consoleplayer();
 		if (st != nil && spd != nil)
 			st->drawer(rr, spd);
-		if (hu != nil)
+		if (hu != nil) {
+			hu->setautomap(am != nil && am->active() != 0);
 			hu->drawer(rr);
+		}
 		if (doperf) {
 			perft1 = sys->millisec();
 			perfdt = perft1 - perf0;
@@ -943,6 +1001,22 @@ keysym(code: int): int
 		return Snap;
 	XK_F2 =>
 		return Rev;
+	XK_Tab =>
+		return 9;	# automap toggle
+	XK_F =>
+		return 'f';	# follow on/off
+	XK_G =>
+		return 'g';	# grid on/off
+	XK_C =>
+		return 'c';	# clear marks
+	XK_M =>
+		return 'm';	# drop a mark
+	XK_Minus =>
+		return '-';	# zoom out
+	XK_Equal =>
+		return '=';	# zoom in
+	XK_0 =>
+		return '0';	# max zoom toggle
 	* =>
 		return -1;
 	}
@@ -1001,8 +1075,12 @@ handlekey(k: int): int
 		k &= ~16r10000;
 		if (k >= 0 && k < NKEYS)
 			keystate[k] = 0;
+		if (am != nil && gslevel != 0)
+			am->keyup(k);
 	} else if (k >= 0 && k < NKEYS) {
 		keystate[k] = 1;
+		if (am != nil && gslevel != 0)
+			am->keydown(k);
 		if (k == Snap)
 			snapreq = 1;	# edge: one snapshot per press
 		if (k == Rev)
