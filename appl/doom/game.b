@@ -737,7 +737,7 @@ spawnplayer(t: Thing)
 	np := ref Player(nil, Ticcmd(0, 0, 0, 0), PST_REBORN,
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		nil, nil, nil, nil, nil,
-		0, 0, nil, 0, 0, 0, nil, nil, 0, 0);
+		0, 0, nil, 0, 0, 0, "", nil, nil, 0, 0);
 		players[i] = np;
 	}
 	p := players[i];
@@ -758,6 +758,7 @@ spawnplayer(t: Thing)
 	p.refire = 0;
 	p.damagecount = 0;
 	p.bonuscount = 0;
+	p.message = "";
 	p.extralight = 0;
 }
 
@@ -792,6 +793,7 @@ playerreborn(p: ref Player)
 	p.backpack = 0;
 	p.bonuscount = 0;
 	p.damagecount = 0;
+	p.message = "";
 	p.attacker = nil;
 	p.psp = array[NUMPSPRITES] of ref Psp;
 	for (i := 0; i < NUMPSPRITES; i++)
@@ -1832,18 +1834,21 @@ evdolockeddoor(li: int, mo: ref Mobj): int
 		return 0;
 	if (ld.special == 26 || ld.special == 32) {
 		if (p.cards[IT_BLUECARD] == 0 && p.cards[IT_BLUESKULL] == 0) {
+			p.message = "You need a blue key to open this door";
 			sound->startsound(mo.x, mo.y, sound->SFX_OOF);
 			return 0;
 		}
 	}
 	if (ld.special == 27 || ld.special == 34) {
 		if (p.cards[IT_YELLOWCARD] == 0 && p.cards[IT_YELLOWSKULL] == 0) {
+			p.message = "You need a yellow key to open this door";
 			sound->startsound(mo.x, mo.y, sound->SFX_OOF);
 			return 0;
 		}
 	}
 	if (ld.special == 28 || ld.special == 33) {
 		if (p.cards[IT_REDCARD] == 0 && p.cards[IT_REDSKULL] == 0) {
+			p.message = "You need a red key to open this door";
 			sound->startsound(mo.x, mo.y, sound->SFX_OOF);
 			return 0;
 		}
@@ -4450,11 +4455,13 @@ ptouchspecialthing(special, toucher: ref Mobj)
 		matched = 1;
 		if (pgivearmor(player, 1) == 0)
 			return;
+		player.message = "Picked up the armor.";
 	}
 	if (spr == inf->SPR_ARM2) {
 		matched = 1;
 		if (pgivearmor(player, 2) == 0)
 			return;
+		player.message = "Picked up the MegaArmor!";
 	}
 	if (spr == inf->SPR_BON1) {
 		matched = 1;
@@ -4462,6 +4469,7 @@ ptouchspecialthing(special, toucher: ref Mobj)
 		if (player.health > 200)
 			player.health = 200;
 		player.mo.health = player.health;
+		player.message = "Picked up a health bonus.";
 	}
 	if (spr == inf->SPR_BON2) {
 		matched = 1;
@@ -4470,6 +4478,7 @@ ptouchspecialthing(special, toucher: ref Mobj)
 			player.armorpoints = 200;
 		if (player.armortype == 0)
 			player.armortype = 1;
+		player.message = "Picked up an armor bonus.";
 	}
 	if (spr == inf->SPR_SOUL) {
 		matched = 1;
@@ -4477,6 +4486,7 @@ ptouchspecialthing(special, toucher: ref Mobj)
 		if (player.health > 200)
 			player.health = 200;
 		player.mo.health = player.health;
+		player.message = "Supercharge!";
 		soundnum = sound->SFX_GETPOW;
 	}
 	if (spr == inf->SPR_MEGA) {
@@ -4485,42 +4495,60 @@ ptouchspecialthing(special, toucher: ref Mobj)
 	}
 	if (spr == inf->SPR_BKEY) {
 		matched = 1;
+		if (player.cards[IT_BLUECARD] == 0)
+			player.message = "Picked up a blue keycard.";
 		pgivecard(player, IT_BLUECARD);
 	}
 	if (spr == inf->SPR_YKEY) {
 		matched = 1;
+		if (player.cards[IT_YELLOWCARD] == 0)
+			player.message = "Picked up a yellow keycard.";
 		pgivecard(player, IT_YELLOWCARD);
 	}
 	if (spr == inf->SPR_RKEY) {
 		matched = 1;
+		if (player.cards[IT_REDCARD] == 0)
+			player.message = "Picked up a red keycard.";
 		pgivecard(player, IT_REDCARD);
 	}
 	if (spr == inf->SPR_BSKU) {
 		matched = 1;
+		if (player.cards[IT_BLUESKULL] == 0)
+			player.message = "Picked up a blue skull key.";
 		pgivecard(player, IT_BLUESKULL);
 	}
 	if (spr == inf->SPR_YSKU) {
 		matched = 1;
+		if (player.cards[IT_YELLOWSKULL] == 0)
+			player.message = "Picked up a yellow skull key.";
 		pgivecard(player, IT_YELLOWSKULL);
 	}
 	if (spr == inf->SPR_RSKU) {
 		matched = 1;
+		if (player.cards[IT_REDSKULL] == 0)
+			player.message = "Picked up a red skull key.";
 		pgivecard(player, IT_REDSKULL);
 	}
 	if (spr == inf->SPR_STIM) {
 		matched = 1;
 		if (pgivebody(player, 10) == 0)
 			return;
+		player.message = "Picked up a stimpack.";
 	}
 	if (spr == inf->SPR_MEDI) {
 		matched = 1;
 		if (pgivebody(player, 25) == 0)
 			return;
+		if (player.health < 25)
+			player.message = "Picked up a medikit that you REALLY need!";
+		else
+			player.message = "Picked up a medikit.";
 	}
 	if (spr == inf->SPR_PINV) {
 		matched = 1;
 		if (pgivepower(player, PW_INVULNERABILITY) == 0)
 			return;
+		player.message = "Invulnerability!";
 		soundnum = sound->SFX_GETPOW;
 	}
 	if (spr == inf->SPR_PSTR) {
@@ -4529,30 +4557,35 @@ ptouchspecialthing(special, toucher: ref Mobj)
 			return;
 		if (player.readyweapon != WP_FIST)
 			player.pendingweapon = WP_FIST;
+		player.message = "Berserk!";
 		soundnum = sound->SFX_GETPOW;
 	}
 	if (spr == inf->SPR_PINS) {
 		matched = 1;
 		if (pgivepower(player, PW_INVISIBILITY) == 0)
 			return;
+		player.message = "Partial Invisibility";
 		soundnum = sound->SFX_GETPOW;
 	}
 	if (spr == inf->SPR_SUIT) {
 		matched = 1;
 		if (pgivepower(player, PW_IRONFEET) == 0)
 			return;
+		player.message = "Radiation Shielding Suit";
 		soundnum = sound->SFX_GETPOW;
 	}
 	if (spr == inf->SPR_PMAP) {
 		matched = 1;
 		if (pgivepower(player, PW_ALLMAP) == 0)
 			return;
+		player.message = "Computer Area Map";
 		soundnum = sound->SFX_GETPOW;
 	}
 	if (spr == inf->SPR_PVIS) {
 		matched = 1;
 		if (pgivepower(player, PW_INFRARED) == 0)
 			return;
+		player.message = "Light Amplification Visor";
 		soundnum = sound->SFX_GETPOW;
 	}
 	if (spr == inf->SPR_CLIP) {
@@ -4562,41 +4595,49 @@ ptouchspecialthing(special, toucher: ref Mobj)
 				return;
 		} else if (pgiveammo(player, AM_CLIP, 1) == 0)
 			return;
+		player.message = "Picked up a clip.";
 	}
 	if (spr == inf->SPR_AMMO) {
 		matched = 1;
 		if (pgiveammo(player, AM_CLIP, 5) == 0)
 			return;
+		player.message = "Picked up a box of bullets.";
 	}
 	if (spr == inf->SPR_ROCK) {
 		matched = 1;
 		if (pgiveammo(player, AM_MISL, 1) == 0)
 			return;
+		player.message = "Picked up a rocket.";
 	}
 	if (spr == inf->SPR_BROK) {
 		matched = 1;
 		if (pgiveammo(player, AM_MISL, 5) == 0)
 			return;
+		player.message = "Picked up a box of rockets.";
 	}
 	if (spr == inf->SPR_CELL) {
 		matched = 1;
 		if (pgiveammo(player, AM_CELL, 1) == 0)
 			return;
+		player.message = "Picked up an energy cell.";
 	}
 	if (spr == inf->SPR_CELP) {
 		matched = 1;
 		if (pgiveammo(player, AM_CELL, 5) == 0)
 			return;
+		player.message = "Picked up an energy cell pack.";
 	}
 	if (spr == inf->SPR_SHEL) {
 		matched = 1;
 		if (pgiveammo(player, AM_SHELL, 1) == 0)
 			return;
+		player.message = "Picked up 4 shotgun shells.";
 	}
 	if (spr == inf->SPR_SBOX) {
 		matched = 1;
 		if (pgiveammo(player, AM_SHELL, 5) == 0)
 			return;
+		player.message = "Picked up a box of shotgun shells.";
 	}
 	if (spr == inf->SPR_BPAK) {
 		matched = 1;
@@ -4607,11 +4648,13 @@ ptouchspecialthing(special, toucher: ref Mobj)
 		}
 		for (i := 0; i < NUMAMMO; i++)
 			pgiveammo(player, i, 1);
+		player.message = "Picked up a backpack full of ammo!";
 	}
 	if (spr == inf->SPR_BFUG) {
 		matched = 1;
 		if (pgiveweapon(player, WP_BFG, 0) == 0)
 			return;
+		player.message = "You got the BFG9000!  Oh, yes.";
 		soundnum = sound->SFX_WPNUP;
 	}
 	if (spr == inf->SPR_MGUN) {
@@ -4621,24 +4664,28 @@ ptouchspecialthing(special, toucher: ref Mobj)
 			dropped = 1;
 		if (pgiveweapon(player, WP_CHAINGUN, dropped) == 0)
 			return;
+		player.message = "You got the chaingun!";
 		soundnum = sound->SFX_WPNUP;
 	}
 	if (spr == inf->SPR_CSAW) {
 		matched = 1;
 		if (pgiveweapon(player, WP_CHAINSAW, 0) == 0)
 			return;
+		player.message = "A chainsaw!  Find some meat!";
 		soundnum = sound->SFX_WPNUP;
 	}
 	if (spr == inf->SPR_LAUN) {
 		matched = 1;
 		if (pgiveweapon(player, WP_MISSILE, 0) == 0)
 			return;
+		player.message = "You got the rocket launcher!";
 		soundnum = sound->SFX_WPNUP;
 	}
 	if (spr == inf->SPR_PLAS) {
 		matched = 1;
 		if (pgiveweapon(player, WP_PLASMA, 0) == 0)
 			return;
+		player.message = "You got the plasma gun!";
 		soundnum = sound->SFX_WPNUP;
 	}
 	if (spr == inf->SPR_SHOT) {
@@ -4648,6 +4695,7 @@ ptouchspecialthing(special, toucher: ref Mobj)
 			dropped = 1;
 		if (pgiveweapon(player, WP_SHOTGUN, dropped) == 0)
 			return;
+		player.message = "You got the shotgun!";
 		soundnum = sound->SFX_WPNUP;
 	}
 	if (spr == inf->SPR_SGN2) {
@@ -4657,6 +4705,7 @@ ptouchspecialthing(special, toucher: ref Mobj)
 			dropped = 1;
 		if (pgiveweapon(player, WP_SUPERSHOTGUN, dropped) == 0)
 			return;
+		player.message = "You got the super shotgun!";
 		soundnum = sound->SFX_WPNUP;
 	}
 	if (matched == 0)

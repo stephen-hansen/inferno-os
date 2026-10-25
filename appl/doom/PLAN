@@ -757,7 +757,30 @@ Part D — presentation & game flow
            check: centery for h=168 vs source).
          DEPS: 11 (weapon state for face/arms), 15 (patches).
 
-  [ ] 19 HUD messages (hu_stuff.c + hu_lib.c)
+  [x] 19 HUD messages (hu_stuff.c + hu_lib.c)
+         STATUS Oct 24: DONE (single-player path).  hu.b/hu.m:
+         STCFN033..095 HUD font, one-line message window at the
+         top-left (HU_MSGHEIGHT 1, messages replace each other),
+         toupper drawing with 4px gaps for spaces/unknown glyphs and
+         screen-edge clipping exactly like HUlib_drawTextLine,
+         HU_MSGTIMEOUT 4*TICRATE expiry, level-title line built from
+         the vanilla E1Mx names and drawn only when the automap is
+         active (HU_Drawer guard; M20 wires setautomap).  Message
+         source is vanilla's player->message: game.m Player gained
+         `message` and all pickup sites set the exact GOT_* strings
+         (transcribed from d_englsh.h), locked doors set PD_*K, and
+         hu.ticker consumes the field per tic.  Obituaries are not
+         in this doomgeneric tree at all (no OB_ strings, no death
+         message path), so they are out of scope, as documented.
+         VALIDATED pixel-exact (TEMP harness removed): walk-into-
+         soulsphere end-to-end message "Supercharge!" (0 diffs vs a
+         font oracle that uppercases and follows HUlib widths/gaps),
+         title "E1M4: Command Control" at (0,160) (0 diffs), message
+         blank after 4s (141 tickers), locked E1M4 door without key
+         yields exactly "You need a blue key to open this door".
+         Note: game.m Player changed shape, so every game.m consumer
+         must be rebuilt together (stale typecheck hashes otherwise
+         fail module load).
          WHY: no pickup/obituary feedback; messages milestone after
            9/10/11 already emit hooks.
          SOURCES: hu_stuff.c (HU_init, HU_Drawer, HU_tick queue,

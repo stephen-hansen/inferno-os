@@ -1911,3 +1911,39 @@ Milestones (each independently testable)
           and the only observable edge is a pickup touched on the
           very first tic after boot (listener still 0,0 -> dropped);
           not reachable in normal play.
+
+          M19 HUD MESSAGES (Oct 24): implemented to completion
+          (single-player).  hu.m/hu.b: HUD font STCFN033..095, one
+          message line at (0,0) - vanilla HU_MSGHEIGHT is 1, so
+          messages replace each other rather than stacking -
+          HU_MSGTIMEOUT 4*TICRATE, uppercase folding with 4px gaps
+          for space/unknown and edge clipping per HUlib_drawTextLine.
+          Level title built at level start from the vanilla
+          HUSTR_E1Mx table (d_englsh.h transcribed) and drawn at
+          (0,167-fontheight) only while the automap is active
+          (vanilla HU_Drawer gate; hu.setautomap is the M20 hook).
+          Message storage follows vanilla: game.m Player gained a
+          `message` string; every pickup site in ptouchspecialthing
+          sets the exact GOT_* string (armor/mega/health/armor bonus/
+          supercharge/keys/megahealth?, stim/medikit with the
+          health<25 variant, powers, ammo types, backpack, weapons),
+          locked doors set PD_*K ("You need a X key to open this
+          door"), and hu.ticker consumes plr.message per tic like
+          HU_Ticker.  Obituaries: this doomgeneric tree has no OB_*
+          strings or death-message path at all, so they are out of
+          scope (noted rather than invented).
+          VALIDATION (TEMP harnesses removed): (1) end-to-end
+          soulsphere pickup produces "Supercharge!" and the drawn
+          text matches a Python font oracle pixel-for-pixel (0
+          diffs over the glyph rows); (2) the title line "E1M4:
+          Command Control" matches its oracle (0 diffs); (3) after
+          141 tickers the message area is blank (timeout honours
+          HU_MSGTIMEOUT=140); (4) using E1M4's blue-locked door with
+          no key yields exactly "You need a blue key to open this
+          door" (PD_BLUEK).  LEVEL-START detail: hu.start hides any
+          on-screen message (vanilla HU_Start message_on=false) while
+          keeping the pending text like vanilla.
+          GOTCHA: adding Player.message changed the Game module type
+          hash; all game.m consumers (view, wi, st, hu, doom, game)
+          had to be rebuilt and installed together, otherwise module
+          load fails the link typecheck.

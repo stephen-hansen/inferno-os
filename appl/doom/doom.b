@@ -31,6 +31,8 @@ include "view.m";
 	view: View;
 include "st.m";
 	st: St;
+include "hu.m";
+	hu: Hu;
 
 Doom: module
 {
@@ -322,6 +324,16 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (err != nil)
 		fail(err);
 
+	# HUD messages (hu_stuff.c)
+	hu = load Hu Hu->PATH;
+	if (hu == nil)
+		hu = load Hu "hu.dis";
+	if (hu == nil)
+		fail(sys->sprint("can't load Hu module: %r"));
+	err = hu->init(w);
+	if (err != nil)
+		fail(err);
+
 	err = game->setuplevel(l, game->SK_MEDIUM);
 	if (err != nil)
 		fail(err);
@@ -360,6 +372,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (p == nil || p.mo == nil)
 		fail("no player 1 after setuplevel");
 	st->start(p);
+	if (hu != nil)
+		hu->start(l.name);
 	mo := p.mo;
 	sys->print("play: E1M4 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, F1=snapshot");
 	if (doring)
@@ -521,6 +535,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 				mo = p.mo;
 			if (st != nil && p != nil)
 				st->start(p);
+			if (hu != nil)
+				hu->start(l.name);
 			review = -1;
 			continue;
 		}
@@ -711,6 +727,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		sp := game->consoleplayer();
 		if (st != nil && sp != nil)
 			st->ticker(sp);
+		if (hu != nil && sp != nil)
+			hu->ticker(sp);
 
 		# vanilla P_UpdateSpecials animate block: advance flat/
 		# texture animation on the shared Renderer (game->ticker
@@ -772,6 +790,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 					mo = p.mo;
 				if (st != nil && p != nil)
 					st->start(p);
+				if (hu != nil)
+					hu->start(l.name);
 				review = -1;
 				intermission = 0;
 			}
@@ -788,6 +808,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 		spd := game->consoleplayer();
 		if (st != nil && spd != nil)
 			st->drawer(rr, spd);
+		if (hu != nil)
+			hu->drawer(rr);
 		if (doperf) {
 			perft1 = sys->millisec();
 			perfdt = perft1 - perf0;

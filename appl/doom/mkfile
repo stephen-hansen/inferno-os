@@ -11,6 +11,7 @@ TARG=\
 	sound.dis\
 	wi.dis\
 	st.dis\
+	hu.dis\
 	doom.dis\
 
 MODULES=\
@@ -24,6 +25,7 @@ MODULES=\
 	sound.m\
 	wi.m\
 	st.m\
+	hu.m\
 
 SYSMODULES=\
 	sys.m\

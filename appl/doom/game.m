@@ -214,6 +214,7 @@ Game: module {
 		powers:	array of int;		# [NUMPOWERS]
 		backpack:	int;
 		bonuscount, damagecount:	int;	# HUD flashes (M15/18)
+		message:	string;		# pending HUD message (M19, hu_stuff)
 		attacker:	ref Mobj;	# last damager (M12 retaliation)
 		psp:	array of ref Psp;	# [NUMPSPRITES] weapon + flash
 		extralight:	int;	# muzzle-flash light boost (A_Light*)
