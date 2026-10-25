@@ -13,6 +13,65 @@ include "video.m";
 
 tk: Tk;
 
+newctx(display: ref Display, buf: ref Image, tkwin: ref Toplevel,
+	sw, sh, winw, winh: int): ref Context
+{
+	c := ref Context(display, buf, tkwin,
+		array[sw * sh * 4] of byte, sw, sh, winw, winh,
+		0, 0, 0, 0, nil, nil, nil);
+	c.resize(winw, winh);
+	return c;
+}
+
+# Largest 320:200 rectangle centred in w x h (integer arithmetic,
+# nearest-neighbour sampling; the letterbox stays black).
+Context.resize(c: self ref Context, w, h: int)
+{
+	if (w < 1)
+		w = 1;
+	if (h < 1)
+		h = 1;
+	dw := w;
+	dh := w * c.sh / c.sw;
+	if (dh > h) {
+		dh = h;
+		dw = h * c.sw / c.sh;
+	}
+	if (dw < 1)
+		dw = 1;
+	if (dh < 1)
+		dh = 1;
+	c.winw = w;
+	c.winh = h;
+	c.dw = dw;
+	c.dh = dh;
+	c.x0 = (w - dw) / 2;
+	c.y0 = (h - dh) / 2;
+
+	c.dst = array[dw * dh * 4] of byte;
+	c.xmap = array[dw] of int;
+	for (x := 0; x < dw; x++)
+		c.xmap[x] = (x * c.sw / dw) * 4;
+	c.ymap = array[dh] of int;
+	for (y := 0; y < dh; y++)
+		c.ymap[y] = (y * c.sh / dh) * c.sw * 4;
+
+	# wm mode: give the panel a fresh window-sized image (black
+	# fills the letterbox); the old image is released by GC
+	if (c.tkwin != nil) {
+		img := c.display.newimage(Rect((0, 0), (w, h)),
+			c.display.image.chans, 0, Draw->Black);
+		if (img == nil) {
+			sys->print("video: can't allocate %dx%d window image: %r\n",
+				w, h);
+			return;
+		}
+		c.buf = img;
+		tk->putimage(c.tkwin, ".p", img, nil);
+		tk->cmd(c.tkwin, ".p dirty; update");
+	}
+}
+
 open(width, height: int): (ref Context, string)
 {
 	if (sys == nil)
@@ -21,15 +80,23 @@ open(width, height: int): (ref Context, string)
 		draw = load Draw Draw->PATH;
 
 	display := Display.allocate(nil);
-	if (display == nil)
+	if (display == nil || display.image == nil)
 		return (nil, sys->sprint("can't allocate Display: %r"));
 
-	fb := array[width * height * 4] of byte;
-
-	return (ref Context(display, nil, nil, fb, width, height), nil);
+	# full-screen mode scales to the whole emu screen
+	w := display.image.r.dx();
+	h := display.image.r.dy();
+	if (w < 1 || h < 1) {
+		w = width;
+		h = height;
+	}
+	c := newctx(display, nil, nil, width, height, w, h);
+	# clear the screen once so the letterbox is black
+	display.image.draw(display.image.r, display.black, nil, (0, 0));
+	return (c, nil);
 }
 
-openwm(ctxt: ref Draw->Context, width, height: int, title: string):
+openwm(ctxt: ref Draw->Context, sw, sh, width, height: int, title: string):
 	(ref Context, chan of string, string)
 {
 	if (sys == nil)
@@ -46,7 +113,8 @@ openwm(ctxt: ref Draw->Context, width, height: int, title: string):
 	if (tk == nil)
 		return (nil, nil, sys->sprint("can't load Tk: %r"));
 
-	(win, menubut) := tkclient->toplevel(ctxt, "", title, 0);
+	(win, menubut) := tkclient->toplevel(ctxt, "", title,
+		Tkclient->Resize);
 	if (win == nil)
 		return (nil, nil, sys->sprint("openwm: can't create toplevel: %r"));
 	if (ctxt.display == nil)
@@ -89,8 +157,7 @@ openwm(ctxt: ref Draw->Context, width, height: int, title: string):
 	spawn wmpump(tk, win, menubut, rawkeys);
 	spawn keybuf(rawkeys, keys);
 
-	fb := array[pw * ph * 4] of byte;
-	return (ref Context(ctxt.display, buf, win, fb, pw, ph), keys, nil);
+	return (newctx(ctxt.display, buf, win, sw, sh, pw, ph), keys, nil);
 }
 
 # pump wm channels into Tk; forward window deletion as "quit" on keys
@@ -134,29 +201,76 @@ keybuf(src, dst: chan of string)
 	}
 }
 
+# nearest-neighbour upscale/downscale of the game frame
+scalefb(c: ref Context)
+{
+	src := c.fb;
+	dst := c.dst;
+	xm := c.xmap;
+	ym := c.ymap;
+	dw := c.dw;
+	dh := c.dh;
+	for (y := 0; y < dh; y++) {
+		so := ym[y];
+		doff := y * dw * 4;
+		for (x := 0; x < dw; x++) {
+			si := so + xm[x];
+			di := doff + x * 4;
+			dst[di] = src[si];
+			dst[di+1] = src[si+1];
+			dst[di+2] = src[si+2];
+			dst[di+3] = src[si+3];
+		}
+	}
+}
+
+# poll the panel size; the wm's resize button reshapes the window and
+# Tk repacks the panel at its actual size
+checkwmresize(c: ref Context)
+{
+	pw := int tk->cmd(c.tkwin, ".p cget -actwidth");
+	ph := int tk->cmd(c.tkwin, ".p cget -actheight");
+	if (pw > 0 && ph > 0 && (pw != c.winw || ph != c.winh))
+		c.resize(pw, ph);
+}
+
 Context.present(c: self ref Context)
 {
+	if (c.tkwin != nil)
+		checkwmresize(c);
 	img := c.buf;
 	if (img == nil)
 		img = c.display.image;
-	r := Rect((0, 0), (c.width, c.height));
-	n := img.writepixels(r, c.fb);
-	if (n < 0)
-		sys->print("present: writepixels failed: %r\n");
+	if (img == nil)
+		return;
+	o := img.r.min;
+	if (c.dw == c.sw && c.dh == c.sh && c.x0 == 0 && c.y0 == 0) {
+		n := img.writepixels(Rect(o, (o.x + c.sw, o.y + c.sh)), c.fb);
+		if (n < 0)
+			sys->print("present: writepixels failed: %r\n");
+	} else {
+		scalefb(c);
+		n := img.writepixels(
+			Rect((o.x + c.x0, o.y + c.y0),
+				(o.x + c.x0 + c.dw, o.y + c.y0 + c.dh)), c.dst);
+		if (n < 0)
+			sys->print("present: writepixels failed: %r\n");
+	}
 	if (c.tkwin != nil)
 		tk->cmd(c.tkwin, sys->sprint(".p dirty %d %d %d %d; update",
-			0, 0, c.width, c.height));
+			c.x0, c.y0, c.x0 + c.dw, c.y0 + c.dh));
 }
 
 Context.close(c: self ref Context)
 {
-	blank := array[c.width * c.height * 4] of byte;
+	blank := array[c.winw * c.winh * 4] of byte;
 	img := c.buf;
 	if (img == nil)
 		img = c.display.image;
+	if (img == nil)
+		return;
 	o := img.r.min;
-	r := Rect((o.x, o.y), (o.x + c.width, o.y + c.height));
-	img.writepixels(r, blank);
+	img.writepixels(Rect(o, (o.x + c.winw, o.y + c.winh)), blank);
 	if (c.tkwin != nil)
 		tk->cmd(c.tkwin, ".p dirty; update");
 }

@@ -1989,4 +1989,57 @@ Milestones (each independently testable)
           Boot smoke with audio passes; TAB key moves were not
           scriptable headless (module behavior fully validated in the
           harness).
+          VIDEO SCALING + BOOT MAP (Oct 25): the game was fixed at
+          320x200 in both video paths.  Video now scales its 320x200
+          XRGB frame to the destination with nearest-neighbour
+          sampling, preserving the 320:200 aspect and centring it
+          (black letterbox): open() fills the emu screen, openwm()
+          fills the resizable Tk panel.  Context gained sw/sh (source),
+          winw/winh (destination), x0/y0/dw/dh (game rect), a dw*dh*4
+          scaled buffer and per-column/row source offset maps;
+          Context.resize re-lays-out for any destination size and (in
+          wm mode) allocates/attaches the new panel image.  Present
+          takes a direct writepixels fast path when the destination is
+          exactly 320x200 at 0,0, otherwise scales.  The wm path polls
+          the panel's actwidth/actheight once per present, so the
+          titlebar's Resize button (Tkclient->Resize is now passed)
+          scales the game live; new images are black so the letterbox
+          is clean.  open() clears the emu screen once at startup so
+          its letterbox is black too.
+          doom.b: new -s N (wm window starts at 320N x 200N, default 2;
+          ignored in full-screen mode) and -m ExMy (boot map; default
+          remains E1M4; setuplevel derives gamemapnum from the name so
+          progression/par time/secret-exit logic is unchanged).  The
+          emu X11 window itself is fixed at startup (win-x11a sets
+          PMaxSize; no ConfigureNotify handling), so ~/bin/emu-audio
+          now passes -g ${EMU_GEOM:-1280x960} (a later user -g wins).
+          VALIDATION (TEMP harness and oracle removed): Video.open and
+          Video.openwm were driven with a deterministic BGRX pattern,
+          then the destination images read back with readpixels and
+          compared pixel-for-pixel against an oracle reimplementing the
+          nearest-neighbour mapping and centring.  Cases: emu screen
+          640x480 and 1280x960 (game 640x400 @0,40 and 1280x800 @0,80),
+          forced relayouts 500x340 / 320x200 (fast path) / 639x479,
+          wm panel 638x400 (initial) and a live wm resize to a 698x476
+          panel (requested 700x500 through the real wm channel, picked
+          up by present's poll).  All zero differing pixels.
+          Timings (JIT, -p): standalone 1280x960 pres ~15ms avg/max 22,
+          frame ~18ms avg (35Hz budget 28.6ms); wm 640x400 pres ~1-3ms,
+          frame ~5-7ms; -s 3 similar.  Standalone with audio still
+          boots clean after the wrapper change.  -m E1M5 verified to
+          boot E1M5 with the player spawned correctly.
+          VIDEO SCALING FOLLOW-UP (Oct 25): the first openwm API passed
+          the window size where the source (game frame) dimensions
+          belonged.  In wm mode the scaler therefore treated the
+          320x200 frame as 640x400, interleaving pairs of game rows and
+          producing the "two horizontally duplicated copies" seen live.
+          The first scaling harness shared the same mistake (it filled a
+          640x400 source), which is why it passed.  openwm now takes
+          sw/sh (the 320x200 game frame) plus width/height (window
+          size); doom.b passes both.  Re-validated with a corrected
+          harness on a real wm: panel 640x400 at 2x (fast 1:1 source
+          mapping) and a live wm resize to a 898x676 panel (game
+          898x561 centred at y=57), both pixel-exact against the
+          320x200 pattern oracle.  The standalone path was unaffected.
+          wm -p at 1280x960 screen: render 3ms, pres 3ms, frame 7ms.
 

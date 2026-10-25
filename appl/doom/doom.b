@@ -79,6 +79,22 @@ init(ctxt: ref Draw->Context, args: list of string)
 		} else if (hd args == "-p") {
 			doperf = 1;	# frame timing on stdout
 			args = tl args;
+		} else if (hd args == "-s") {
+			args = tl args;
+			if (args == nil)
+				usage();
+			winscale = int hd args;
+			if (winscale < 1)
+				winscale = 1;
+			if (winscale > 8)
+				winscale = 8;
+			args = tl args;
+		} else if (hd args == "-m") {
+			args = tl args;
+			if (args == nil)
+				usage();
+			startmap = hd args;
+			args = tl args;
 		} else
 			break;
 	}
@@ -118,7 +134,7 @@ init(ctxt: ref Draw->Context, args: list of string)
 	w.close();
 
 	# interactive play; -v: sprite diagnostics (PDROP/PROJ/CMISS/POFF)
-	play(path, ctxt, ringflag);
+	play(path, ctxt, ringflag, startmap);
 }
 
 checkread(w: ref Wad->File, name: string, expect: int)
@@ -147,12 +163,15 @@ SBARHEIGHT: con 32;
 
 usage()
 {
-	sys->fprint(sys->fildes(2), "usage: doom [-v] [-R] [-w] [-g] [doom.wad]\n");
+	sys->fprint(sys->fildes(2), "usage: doom [-v] [-R] [-w] [-g] [-p] [-s N] [-m ExMy] [doom.wad]\n");
 	sys->fprint(sys->fildes(2), "  -v  sprite/masked diagnostics on stdout\n");
 	sys->fprint(sys->fildes(2), "  -R  enable F2 frame-history review ring\n");
 	sys->fprint(sys->fildes(2), "      (off by default: the per-frame copy costs real play)\n");
 	sys->fprint(sys->fildes(2), "  -w  TEST HOOK: start with IDKFA loadout\n");
 	sys->fprint(sys->fildes(2), "  -g  TEST HOOK: god mode on\n");
+	sys->fprint(sys->fildes(2), "  -p  frame timing on stdout\n");
+	sys->fprint(sys->fildes(2), "  -s N  wm window starts at 320N x 200N (default 2, resizable)\n");
+	sys->fprint(sys->fildes(2), "  -m ExMy  start on that map (default E1M4)\n");
 	raise "fail:usage";
 }
 
@@ -236,8 +255,10 @@ dogod:		int;	# TEST HOOK (pre-M25): -g sets CF_GODMODE at boot
 doperf:		int;	# -p: print tick/render frame timing every 70 tics
 perfticksum, perfrendsum, perfconvsum, perfpressum, perfmaxtick, perfmaxrend, perfmaxconv, perfmaxpres, perfframes: int;
 gslevel: int;	# in the level state (not intermission/victory): automap keys live here
+winscale := 2;	# -s N: wm window opens at 320N x 200N (still resizable)
+startmap := "E1M4";	# -m ExMy: boot map (menu selection lands in M21)
 
-play(path: string, wmctxt: ref Draw->Context, doring: int)
+play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 {
 	game = load Game Game->PATH;
 	if (game == nil)
@@ -296,7 +317,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	viewh := vid_h - SBARHEIGHT;
 	rr.centery = viewh / 2;
 
-	(l, merr) := map->open(w, "E1M4");
+	(l, merr) := map->open(w, startmap);
 	if (l == nil)
 		fail(merr);
 
@@ -365,7 +386,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	wmkeys: chan of string;
 	verr: string;
 	if (wmctxt != nil) {
-		(v, wmkeys, verr) = video->openwm(wmctxt, vid_w, vid_h, "Doom");
+		(v, wmkeys, verr) = video->openwm(wmctxt, vid_w, vid_h,
+			vid_w * winscale, vid_h * winscale, "Doom");
 		if (v == nil)
 			fail(verr);
 	} else {
@@ -398,7 +420,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	if (hu != nil)
 		hu->start(l.name);
 	mo := p.mo;
-	sys->print("play: E1M4 skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, tab=map, F1=snapshot");
+	sys->print("play: %s skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, tab=map, F1=snapshot",
+		startmap);
 	if (doring)
 		sys->print(", F2=review");
 	sys->print("\n");
@@ -439,7 +462,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int)
 	tic := 0;
 	quit := 0;
 	nticks := 0;
-	curmap := "E1M4";
+	curmap := startmap;
 	intermission := 0;	# showing WI stats/entering (sim frozen)
 	victory := 0;		# E1M8 done (finale lands in 22; frozen)
 	for (; !quit;) {
