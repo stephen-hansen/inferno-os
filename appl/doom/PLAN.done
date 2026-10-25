@@ -1887,3 +1887,27 @@ Milestones (each independently testable)
           caps the queue at AQCAP = 4 game tics (~114ms) and drops the
           OLDEST audio on overflow, so latency stays bounded; boot
           verified with the pulse stream live at u8 1ch 11025Hz.
+          (5) "No sound picking up soulsphere": investigated end to
+          end - the pickup sound engine is correct (a probe playing
+          SFX_GETPOW through the mixer rendered 4582 non-silent
+          samples), and a walk-into-soulsphere harness shows health
+          100->200, itemcount++ and the GETPOW channel started
+          (vol 64).  One real fidelity bug found and fixed while
+          verifying: pickup sounds were started with origin (0,0)
+          (the "global" path) instead of vanilla's
+          S_StartSound(player->mo).  Consequences of the old origin:
+          (a) S_StopSound(origin) cut GLOBAL sounds (e.g. a door
+          that was opening) whenever an item was picked up; (b) with
+          origin 0 a pickup could never REUSE the player's own
+          channel - vanilla's same-origin loop reuses the weapon-fire
+          channel - so in a fight with all 8 channels holding
+          high-priority monster sounds the GETPOW (priority 60) could
+          be priority-dropped while vanilla's would still play.
+          Fixed: pickup sounds now start at player.mo.x/y (same
+          audible result - same-spot-as-listener is full volume - and
+          vanilla's stop/reuse semantics).  Note: startsound uses the
+          listener position from the previous tic (S_UpdateSounds
+          runs at tic end); 1 tic of movement is ~1 unit, inaudible,
+          and the only observable edge is a pickup touched on the
+          very first tic after boot (listener still 0,0 -> dropped);
+          not reachable in normal play.

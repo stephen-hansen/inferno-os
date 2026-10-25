@@ -4666,7 +4666,12 @@ ptouchspecialthing(special, toucher: ref Mobj)
 	removemobj(special);
 	player.bonuscount += BONUSADD;
 	if (player == players[0])
-		sound->startsound(0, 0, soundnum);
+		# vanilla S_StartSound(player->mo, ...): origin is the
+		# player (same-spot-as-listener: full volume, center), and
+		# S_StopSound(origin) then cuts only the player's own
+		# previous sound, not global door sounds.
+	if (player == players[0])
+		sound->startsound(player.mo.x, player.mo.y, soundnum);
 }
 
 # vanilla P_DropWeapon: put the gun away on death
