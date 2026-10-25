@@ -2042,4 +2042,74 @@ Milestones (each independently testable)
           898x561 centred at y=57), both pixel-exact against the
           320x200 pattern oracle.  The standalone path was unaffected.
           wm -p at 1280x960 screen: render 3ms, pres 3ms, frame 7ms.
+          M21 MENU + TITLE (Oct 25): implemented m_menu.c's shareware
+          path.  menu.m/menu.b: data-driven menus (main/episode/skill/
+          options/sound/read-this), vanilla navigation (wrap, skip
+          blanks, sliders left/right and Enter=right, hotkey scan
+          next-then-wrap, Backspace to previous menu, lastOn memory),
+          skull cursor animation (M_Ticker 8-tic toggle), thermometers,
+          centred HU-font messages with the exact d_englsh strings and
+          input gating (press a key vs y/n), and the menu SFX.
+          Options: End Game (usergame check + confirm), Messages
+          (gates HU messages and forces the MSGOFF/MSGON confirmation),
+          Detail (state + message; renderer fixed), Screen Size
+          (screenblocks/screenSize state only; the 168-row viewport is
+          unchanged - noted), Mouse Sensitivity (state for M25), Sound
+          submenu: SFX volume now drives S_SetSfxVolume (sound.setvolume
+          is used by the mixer), Music volume stored for M27.
+          Load/Save menus are omitted until optional M26 (deviation
+          documented); save F-keys/gamma not wired.
+          doom.b: new title state (TITLEPIC 170 -> CREDIT 200 -> HELP2
+          200 cycle; any key opens the menu), Esc now opens/closes the
+          in-game menu (no longer quits), the sim pauses while the menu
+          is up (P_Ticker menuactive rule) while ST/AM/HU tick, menus
+          draw last over world/automap/WI and over a saved victory
+          frame, New Game starts E1M1 at the chosen skill via
+          startgame (player reborn; view init/setlevel; st/hu/am
+          reset), the chosen skill now flows through death reloads and
+          intermission progression, End Game returns to the title, Quit
+          exits (window close = ev_quit two-step), -m still direct
+          starts, -w/-g apply at every game start.
+          VALIDATION (TEMP harnesses/hooks removed): 18 scenarios were
+          driven through menu.keydown and compared pixel-for-pixel to
+          a from-WAD Python reconstruction (all menu pages, thermos,
+          skulls, toggles, sliders, and every message), with state and
+          action assertions (NewGame(1,4), EndGame, Quit, dismissals,
+          exact message strings).  Skill spawn sets match the E1M1
+          THINGS MTF filter for all 5 skills (90/90/92/116/116).  An
+          end-to-end scripted run through handlekey did title -> menu
+          -> New Game -> E1M1 medium, Esc menu froze leveltime (pause)
+          and resumed, and End Game returned to the title; the title
+          page cycle was verified.  The oracle caught one real bug:
+          lastOn was written to a local MenuDef copy (Limbo adt value
+          semantics), so menu item memory was lost; writes now go to
+          menus[current].
+          M21 INPUT FIX (Oct 25, found in live play): menu navigation
+          did nothing because menu.b/am.m used the wrong arrow key
+          encoding (16rE002..5) while doom.b's /dev/scancode mapping
+          produces module/keyboard.m View keys (Spec|16r10|n =
+          16rE012..15).  Also doom.b's keysym table only mapped the
+          movement/hotkey subset of letters, so menu hotkeys such as
+          o/r/k/t/i/h/u never reached the game.  menu.b and am.m now
+          use 16rE012..15 (the automap's arrow panning had the same
+          latent bug), and keysym maps the full a-z alphabet plus
+          digit 9.  Validated with a temp harness using the exact
+          doom.b codes (Down+Enter reached Options, e+Enter opened the
+          End Game confirm, y produced the EndGame action) and a temp
+          keysym table dump (o=111 ... up=57362=16rE012, enter=13,
+          back=127); both temp hooks removed, installed .dis rebuilt.
+          Note: WASD is not vanilla menu navigation - menus use the
+          arrow keys, Enter/Backspace, hotkeys and y/n.
+          M21 MENU SFX FIX (Oct 25): menu sounds were started (pstop,
+          pistol, stnmov, swtchn, swtchx, oof) but never mixed, because
+          sound->updatesounds was only called inside game->ticker (and
+          the intermission branch); the title and paused-menu paths had
+          no pump.  doom.b now pumps one tic of audio in the title loop
+          (menu SFX are global, no listener), in the paused in-game
+          menu branch (player as listener), and per frame in the frozen
+          victory state.  Validated with the PCM fallback (no audio
+          device): injecting menu-open + two cursor moves at tic 36
+          produced 21 non-silent tics starting exactly at tic 36 in
+          both the title and the paused in-game menu (peak 36/127 at
+          the default SFX volume 8); temp injection hook removed.
 

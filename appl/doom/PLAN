@@ -847,37 +847,62 @@ Part D — presentation & game flow
          view only).
          DEPS: 15 (AMMNUM patches), 13 (line flags), 19 (title hook).
 
-  [ ] 21 Menu + skill/episode select + title (m_menu.c)
-         WHY: skill is hardcoded (doom.b:411/561); no New Game/
-           Options/Quit; no title state.
-         SOURCES: m_menu.c (M_Init/M_Drawer/M_Ticker/M_Responder
-           state machine + item defs), m_misc.c (defaults: mouse
-           sens, volume — wire what exists), doomdef.c menu keys,
-           title sequence: d_main.c (D_StartTitle/AdvanceTitle:
-           TITLEPIC / connect screens / demo handoff — shareware
-           shareware title lump = TITLEPIC; verify), M_* menu
-           patches + skull cursor.
-         WORK:
-           - menu state machine per source (read menus as data —
-             item lists are tables; transcribe mechanically)
-           - New Game -> skill 1-5 (replaces hardcoded SK_MEDIUM
-             at both call sites); episode: shareware only E1
-             (enforce per source's shareware branches)
-           - Options: screen size (uses 18), mouse sens (25),
-             sound volume (17), detail? (we render fixed — note),
-             gamma? (palette-based — optional)
-           - Read This (HELP1/HELP2/CREDIT patches), Quit confirm
-           - title screen state: M_Ticker/Advancedemo idle ->
-             TITLEPIC shown before first game (optional demo
-             integration comes with 23)
-           - ESC/keys routing: menu consumes keys before game —
-             restructure doom.b handlekey into responder layers
-             (menu responder, game responder) per vanilla order
-         DONE WHEN: full menu navigation; New Game on any skill
-           changes spawn counts (MTF bits); title screen shows at
-           startup.
-         DEPS: 15 (patches), 18 (options referencing view size),
-           17/25 (volume/sens entries can no-op until then).
+  [x] 21 Menu + skill/episode select + title (m_menu.c)
+         STATUS Oct 25: DONE (shareware single-player path).  Load and
+         Save menus belong to optional milestone 26 and are omitted
+         from the main menu for now (documented deviation); quicksave
+         F-keys and gamma are likewise later.
+         menu.b/menu.m: m_menu.c state machine transcribed from item
+         tables + menu descriptors - main (New Game, Options, Read
+         This, Quit), episode (E1-E3; E2/E3 show the SWSTRING message
+         then close the menu, exactly as vanilla shareware does),
+         skill (5 levels, nightmare confirm), options (End Game,
+         Messages, Detail, Screen Size, Mouse Sensitivity, Sound
+         submenu with SFX/Music sliders), Read This (HELP2 then HELP1,
+         skull in the vanilla spots), and the vanilla centred messages
+         (ENDGAME/NIGHTMARE/SWSTRING/MSGOFF/MSGON/DETAILHI/LO and the
+         doom1_endmsg[gametic%8]+DOSY quit prompt) with message input
+         gating, skull animation, thermometers, hotkeys (vanilla
+         next-then-wrap scan), persisted lastOn per menu, and the menu
+         SFX (pstop/stnmov/pistol/swtchn/swtchx/oof).  Text uses the
+         HU font (STCFN) with vanilla widths/4px gaps/centring.
+         doom.b: startup title state (TITLEPIC 170 -> CREDIT 200 ->
+         HELP2 200 -> TITLEPIC; demos arrive in M23), any key opens
+         the menu; Esc opens/closes the in-game menu instead of
+         quitting; while the menu is up the sim is paused (vanilla
+         P_Ticker menuactive check) but ST/AM/HU keep ticking; menus
+         draw over the world, automap, intermission and (via a saved
+         frame) victory screens.  New Game starts E1M1 at the chosen
+         skill through startgame (G_InitNew subset: player reborn,
+         view init or setlevel, st/hu/am reset); the selected skill is
+         now used by death reloads and map progression (the two
+         SK_MEDIUM hardcodes are gone).  End Game returns to the
+         title; Quit exits, and a window close does the vanilla ev_quit
+         two-step confirm.  -m ExMy still boots directly (skipping the
+         title) and -w/-g test hooks apply at every game start.
+         Messages gates HU display (showMessages) including the
+         one-shot menu confirmation; the SFX slider drives
+         S_SetSfxVolume (sound.setvolume, mixer uses it); music
+         volume is stored for M27.  Detail and Screen Size update the
+         vanilla state only: the renderer is still fixed at
+         screenblocks 10 (168-row view), so visual detail/viewport
+         changes need a renderer change (noted).
+         VALIDATED (TEMP harnesses and hooks removed): 18 menu
+         scenarios pixel-exact against a Python reconstruction from
+         the WAD patches (main, episode, skill, options, sound,
+         sound sliders, read1/read2, quit message, nightmare message,
+         shareware message, options toggles+sliders, skull animation,
+         end-game refused/accepted, window-close quit) plus state and
+         action assertions (NewGame(1,4) from nightmare-y, EndGame,
+         Quit, message dismissals) and the exact vanilla message
+         strings; spawn sets for all five skills match the E1M1 THINGS
+         lump MTF filter exactly (90/90/92/116/116 mobjs); scripted
+         keys through handlekey drove title -> menu -> New Game ->
+         E1M1 medium end to end, in-game Esc paused the sim (leveltime
+         frozen) and resumed, and End Game returned to the title;
+         title page cycling 0->1->2->0 verified.
+         DEPS: 15, 18 (screen size state only), 17, 25 (mouse sens is
+         state only until mouse input).
 
   [ ] 22 Finale + screen wipe (f_finale.c + f_wipe.c)
          WHY: E1M9 completion must show the ending text; state

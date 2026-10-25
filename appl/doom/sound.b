@@ -32,6 +32,7 @@ S_SWING: con 96*65536;		# S_STEREO_SWING
 NORM_PITCH: con 128;
 NORM_SEP: con 128;
 SFXVOL: con 64;			# vanilla default 8*8 on the 0-127 scale
+sfxvol := SFXVOL;		# menu SFX volume (S_SetSfxVolume, 0-127)
 MIXRATE: con 11025;
 TICNS: con 315;			# MIXRATE/35 samples per tic, exact
 LINKPITCH: con 150;		# chgun->pistol link pitch (vanilla SOUND_LINK)
@@ -355,9 +356,9 @@ adjust(lx, ly, lang, ox, oy: int): (int, int, int)
 	approx := adx + ady - (mn >> 1);
 	if (approx > S_CLIPDIST)
 		return (0, 0, NORM_SEP);
-	vol := SFXVOL;
+	vol := sfxvol;
 	if (approx >= S_CLOSEDIST)
-		vol = (SFXVOL * ((S_CLIPDIST - approx) >> 16)) / S_ATTEN;
+		vol = (sfxvol * ((S_CLIPDIST - approx) >> 16)) / S_ATTEN;
 	sep := NORM_SEP;
 	if (havemath) {
 		# source bearing minus listener heading -> stereo position
@@ -375,6 +376,15 @@ adjust(lx, ly, lang, ox, oy: int): (int, int, int)
 	return (1, vol, sep);
 }
 
+setvolume(v: int)
+{
+	if (v < 0)
+		v = 0;
+	if (v > 127)
+		v = 127;
+	sfxvol = v;
+}
+
 # vanilla S_StartSound (at the current tic volume/sep; per-tic
 # S_UpdateSounds re-tracks).  src (0,0) = global (vanilla nil).
 startsound(srcx, srcy, sfx: int)
@@ -386,7 +396,7 @@ startsound(srcx, srcy, sfx: int)
 	glob := 0;
 	if (srcx == 0 && srcy == 0)
 		glob = 1;
-	vol := SFXVOL;
+	vol := sfxvol;
 	sep := NORM_SEP;
 	pitch := NORM_PITCH;
 	if (sfxlink[sfx] >= 0) {
@@ -395,8 +405,8 @@ startsound(srcx, srcy, sfx: int)
 		pitch = LINKPITCH;
 		if (vol < 1)
 			return;
-		if (vol > SFXVOL)
-			vol = SFXVOL;
+		if (vol > sfxvol)
+			vol = sfxvol;
 	}
 	lid := sfx;
 	if (sfxlink[sfx] >= 0)
@@ -455,7 +465,7 @@ updatesounds(lx, ly, angle: int)
 			stopchannel(ci);	# finished: free it
 			continue;
 		}
-		vol := SFXVOL;
+		vol := sfxvol;
 		sep := NORM_SEP;
 		if (sfxlink[id] >= 0) {
 			vol = vol + LINKVOL;
@@ -463,8 +473,8 @@ updatesounds(lx, ly, angle: int)
 				stopchannel(ci);
 				continue;
 			}
-			if (vol > SFXVOL)
-				vol = SFXVOL;
+			if (vol > sfxvol)
+				vol = sfxvol;
 		}
 		if (!chglob[ci] && (chox[ci] != lx || choy[ci] != ly)) {
 			# same-spot-as-listener stays full/center (defaults)

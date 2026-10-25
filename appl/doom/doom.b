@@ -35,6 +35,8 @@ include "hu.m";
 	hu: Hu;
 include "am.m";
 	am: Am;
+include "menu.m";
+	menu: Menu;
 
 Doom: module
 {
@@ -79,6 +81,7 @@ init(ctxt: ref Draw->Context, args: list of string)
 		} else if (hd args == "-p") {
 			doperf = 1;	# frame timing on stdout
 			args = tl args;
+
 		} else if (hd args == "-s") {
 			args = tl args;
 			if (args == nil)
@@ -94,6 +97,7 @@ init(ctxt: ref Draw->Context, args: list of string)
 			if (args == nil)
 				usage();
 			startmap = hd args;
+			directstart = 1;
 			args = tl args;
 		} else
 			break;
@@ -213,9 +217,24 @@ XK_5:	con 14;
 XK_6:	con 15;
 XK_7:	con 16;
 XK_8:	con 17;
+XK_9:	con 18;	# evdev 10 + 8
 XK_Q:	con 24;
 XK_W:	con 25;
 XK_E:	con 26;
+XK_R:	con 27;
+XK_T:	con 28;
+XK_U:	con 30;
+XK_I:	con 31;
+XK_O:	con 32;
+XK_P:	con 33;
+XK_H:	con 43;
+XK_J:	con 44;
+XK_K:	con 45;
+XK_L:	con 46;
+XK_Z:	con 52;
+XK_X:	con 53;
+XK_V:	con 55;
+XK_B:	con 56;
 XK_LCtrl:	con 37;
 XK_LShift:	con 50;	# evdev LeftShift 42 + 8
 XK_RShift:	con 62;	# evdev RightShift 54 + 8
@@ -238,6 +257,10 @@ XK_M:	con 58;	# evdev 50 + 8 (mark)
 XK_Minus: con 20;	# evdev 12 + 8 (zoom out)
 XK_Equal: con 21;	# evdev 13 + 8 (zoom in)
 XK_0:	con 19;	# evdev 11 + 8 (max zoom toggle)
+XK_Enter: con 36;	# evdev 28 + 8
+XK_Backspace: con 22;	# evdev 14 + 8
+XK_Y:	con 29;	# evdev 21 + 8
+XK_N:	con 57;	# evdev 49 + 8
 
 keystate:	array of int;
 keych:		chan of int;
@@ -256,10 +279,26 @@ doperf:		int;	# -p: print tick/render frame timing every 70 tics
 perfticksum, perfrendsum, perfconvsum, perfpressum, perfmaxtick, perfmaxrend, perfmaxconv, perfmaxpres, perfframes: int;
 gslevel: int;	# in the level state (not intermission/victory): automap keys live here
 winscale := 2;	# -s N: wm window opens at 320N x 200N (still resizable)
-startmap := "E1M4";	# -m ExMy: boot map (menu selection lands in M21)
+startmap := "E1M4";	# -m ExMy: boot map; also implies direct start
+directstart:	int;	# -m given: skip the title and start the game
+intitle:	int;	# title page state (no game running)
+gameskill:	int;	# skill of the running game (setuplevel)
+curmap:		string;	# current map lump name
+page, pagetic:	int;	# title page index and remaining tics
+userring:	int;	# -R: view frame ring requested
+viewready:	int;	# view.init done (first level loaded)
+
+# title page patches (TITLEPIC / CREDIT / HELP2) and durations
+pagetimes := array[] of { 170, 200, 200 };
+gtitle, gcredit, ghelp2: array of byte;
+
+# victory freeze frame (menu draws over a saved copy)
+victoryfb:	array of byte;
+vmenushown:	int;
 
 play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 {
+	userring = doring;
 	game = load Game Game->PATH;
 	if (game == nil)
 		game = load Game "game.dis";
@@ -317,24 +356,13 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	viewh := vid_h - SBARHEIGHT;
 	rr.centery = viewh / 2;
 
-	(l, merr) := map->open(w, startmap);
-	if (l == nil)
-		fail(merr);
-
-	# load world view renderer
+	# load world view renderer (view.init happens at the first game
+	# start: the title state has no level loaded)
 	view = load View View->PATH;
 	if (view == nil)
 		view = load View "view.dis";
 	if (view == nil)
 		fail(sys->sprint("can't load View module: %r"));
-	err = view->init(rr, l, w, game, vid_w, viewh);
-	if (err != nil)
-		fail(err);
- 	if (verbose)
- 		view->dbgprints = 1;
- 	view->ringenable = doring;
-	if (doperf)
-		view->setperf(1);
 
 	# load intermission screens (stats + entering title)
 	wi = load Wi Wi->PATH;
@@ -376,11 +404,25 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	if (err != nil)
 		fail(err);
 
-	err = game->setuplevel(l, game->SK_MEDIUM);
+	# menu (m_menu.c)
+	menu = load Menu Menu->PATH;
+	if (menu == nil) {
+		e1 := sys->sprint("%r");
+		menu = load Menu "menu.dis";
+		if (menu == nil)
+			fail(sys->sprint("can't load Menu module: %s / %r", e1));
+	}
+	err = menu->init(w, game, sound, hu);
 	if (err != nil)
 		fail(err);
-	if (am != nil)
-		am->setlevel(l);
+
+	# title pages: shareware sequence without demos (M23 adds the
+	# demos): TITLEPIC -> CREDIT -> HELP2 -> TITLEPIC
+	gtitle = wadpatch(w, "TITLEPIC");
+	gcredit = wadpatch(w, "CREDIT");
+	ghelp2 = wadpatch(w, "HELP2");
+	if (gtitle == nil || gcredit == nil || ghelp2 == nil)
+		fail("missing title page lump");
 
 	v: ref Context;
 	wmkeys: chan of string;
@@ -413,42 +455,34 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	if (wmctxt != nil)
 		spawn wmquitshim(wmkeys, keych);
 
-	p := game->consoleplayer();
-	if (p == nil || p.mo == nil)
-		fail("no player 1 after setuplevel");
-	st->start(p);
-	if (hu != nil)
-		hu->start(l.name);
-	mo := p.mo;
-	sys->print("play: %s skill medium: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=quit, tab=map, F1=snapshot",
-		startmap);
-	if (doring)
+	p: ref Player;
+	mo: ref Mobj;
+	l: ref Level;
+	pagetic = 0;
+	page = 0;
+	curmap = "E1M1";
+	sys->print("doom: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=menu, tab=map, F1=snapshot");
+	if (userring != 0)
 		sys->print(", F2=review");
 	sys->print("\n");
-	sys->print("  player at %d,%d angle %d deg\n",
-		mo.x >> 16, mo.y >> 16, bamdegrees(mo.angle));
 
-	# TEST HOOKS (pre-M25; real typed cheats land in milestone 25).
-	# Applied once at boot after the initial setuplevel: death reload
-	# (PST_REBORN) and later maps behave vanilla from here (carry what
-	# you hold; god mode persists except E1M8's exit sector clears it).
-	if (doweapons != 0) {
-		# vanilla IDKFA (st_stuff.c): all weapons, full ammo, all
-		# keys, 200% class-2 armor.  Ready weapon untouched (switch
-		# with 1-8 like the real cheat).
-		for (wa := 0; wa < game->NUMWEAPONS; wa++)
-			p.weaponowned[wa] = 1;
-		for (aa := 0; aa < game->NUMAMMO; aa++)
-			p.ammo[aa] = p.maxammo[aa];
-		for (ca := 0; ca < game->NUMCARDS; ca++)
-			p.cards[ca] = 1;
-		p.armortype = 2;
-		p.armorpoints = 200;
-		sys->print("  test loadout -w: all weapons, max ammo, keys, 200%% armor\n");
-	}
-	if (dogod != 0) {
-		p.cheats = p.cheats | game->CF_GODMODE;
-		sys->print("  test god mode -g: on (telefrag still kills)\n");
+	if (directstart != 0) {
+		(sl, sp, gerr) := startgame(w, rr, game->SK_MEDIUM, startmap);
+		if (gerr != nil)
+			fail(gerr);
+		l = sl;
+		p = sp;
+		mo = p.mo;
+		gameskill = game->SK_MEDIUM;
+		curmap = startmap;
+		intitle = 0;
+		announce(startmap, gameskill);
+	} else {
+		intitle = 1;
+		page = 0;
+		pagetic = pagetimes[0];
+		menu->setusergame(0);
+		sys->print("title: TITLEPIC (any key opens the menu; -m ExMy starts directly)\n");
 	}
 
 	TICMS := 1000 / 35;
@@ -462,13 +496,12 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	tic := 0;
 	quit := 0;
 	nticks := 0;
-	curmap := startmap;
 	intermission := 0;	# showing WI stats/entering (sim frozen)
 	victory := 0;		# E1M8 done (finale lands in 22; frozen)
 	for (; !quit;) {
 		# vanilla only routes AM_Responder in GS_LEVEL: TAB (and
 		# the map keys) do nothing on intermission/victory screens
-		gslevel = intermission == 0 && victory == 0;
+		gslevel = intitle == 0 && intermission == 0 && victory == 0;
 		# key events only update keystate; tics come SOLELY from the
 		# tick timer (key-driven tics made the game surge at
 		# auto-repeat rate and stutter between repeats).
@@ -558,9 +591,70 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		perft1 := 0;
 		perfdt := 0;
 
+		# menu actions requested this frame (vanilla G_DeferedInitNew
+		# / D_StartTitle / I_Quit)
+		(ak, ae, ask) := menu->take();
+		if (ak != Menu->None) {
+			if (ak == Menu->NewGame) {
+				nm := "E1M1";
+				if (ae > 1)
+					nm = sys->sprint("E%dM1", ae);
+				(nl, np, nerr) := startgame(w, rr, ask, nm);
+				if (nerr != nil)
+					fail(nerr);
+				l = nl;
+				p = np;
+				mo = p.mo;
+				gameskill = ask;
+				curmap = nm;
+				intitle = 0;
+				intermission = 0;
+				victory = 0;
+				review = -1;
+				vmenushown = 0;
+				page = 0;
+				pagetic = 0;
+				announce(nm, gameskill);
+			} else if (ak == Menu->EndGame) {
+				if (am != nil)
+					am->stop();
+				intitle = 1;
+				page = 0;
+				pagetic = pagetimes[0];
+				intermission = 0;
+				victory = 0;
+				review = -1;
+				vmenushown = 0;
+				menu->setusergame(0);
+				sys->print("ending game: title\n");
+			} else if (ak == Menu->Quit) {
+				quit = 1;
+			}
+			if (quit)
+				break;
+		}
+
 		if (victory != 0) {
-			# E1M8 done, finale lands in 22: frozen last frame,
-			# Esc quits via the handling above.
+			# E1M8 done (finale lands in M22): frozen frame.  The
+			# menu can still be opened; draw it over a saved copy
+			# and restore the frozen frame when it closes.
+			menu->ticker();
+			if (sound != nil)
+				sound->updatesounds(0, 0, 0);
+			if (menu->active() != 0) {
+				for (vi := 0; vi < len victoryfb; vi++)
+					rr.fb8[vi] = victoryfb[vi];
+				menu->drawer(rr);
+				rr.convert(v.fb);
+				v.present();
+				vmenushown = 1;
+			} else if (vmenushown != 0) {
+				for (vi := 0; vi < len victoryfb; vi++)
+					rr.fb8[vi] = victoryfb[vi];
+				rr.convert(v.fb);
+				v.present();
+				vmenushown = 0;
+			}
 			continue;
 		}
 
@@ -568,8 +662,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		# checked before the sim runs).  Single-player reloads the
 		# current map from scratch.
 		pl := game->consoleplayer();
-		if (pl != nil && pl.playerstate == game->PST_REBORN &&
-		    intermission == 0) {
+		if (intitle == 0 && pl != nil &&
+		    pl.playerstate == game->PST_REBORN && intermission == 0) {
 			game->setsecretseen(0);	# reborn clears didsecret
 			(l2, merr2) := map->open(w, curmap);
 			if (l2 == nil)
@@ -578,7 +672,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			view->setlevel(l);
 			if (am != nil)
 				am->setlevel(l);
-			err = game->setuplevel(l, game->SK_MEDIUM);
+			err = game->setuplevel(l, gameskill);
 			if (err != nil)
 				fail(err);
 			p = game->consoleplayer();
@@ -597,7 +691,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		# snapshots the shown frame, F2/Esc resumes live play.
 		# (not during intermission/victory: the ring holds the old
 		# world's frames; drop the request)
-		if (revreq != 0 && intermission == 0 && victory == 0) {
+		if (revreq != 0 && intitle == 0 && intermission == 0 &&
+		    victory == 0 && menu->active() == 0) {
 			revreq = 0;
 			if (!doring) {
 				sys->print("review: ring disabled (restart with -R)\n");
@@ -700,6 +795,38 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			perf0 = sys->millisec();
 		for (ti := 0; ti < nticks; ti++) {
 		tic++;
+		menu->ticker();
+		if (intitle != 0) {
+			# title page timer (D_PageTicker); demos arrive in M23.
+			# The menu can be open here: pump its SFX (no player
+			# listener; menu sounds are global).
+			if (sound != nil)
+				sound->updatesounds(0, 0, 0);
+			if (--pagetic < 0) {
+				page = (page + 1) % len pagetimes;
+				pagetic = pagetimes[page];
+			}
+			continue;
+		}
+		if (menu->active() != 0) {
+			# vanilla P_Ticker pauses the sim while the menu is
+			# up; ST/AM/HU tickers keep running
+			sp := game->consoleplayer();
+			if (st != nil && sp != nil)
+				st->ticker(sp);
+			if (am != nil)
+				am->ticker();
+			if (hu != nil && sp != nil)
+				hu->ticker(sp);
+			if (sound != nil) {
+				if (sp != nil && sp.mo != nil)
+					sound->updatesounds(sp.mo.x, sp.mo.y,
+						sp.mo.angle);
+				else
+					sound->updatesounds(0, 0, 0);
+			}
+			continue;
+		}
 
 		# build ticcmd from key state — vanilla G_BuildTiccmd
 		# keyboard subset (g_game.c): walk/run tables selected by
@@ -818,6 +945,10 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			review = -1;	# ring holds the old level's frames
 			if (r < 0) {
 				victory = 1;
+				victoryfb = array[len rr.fb8] of byte;
+				for (vi := 0; vi < len victoryfb; vi++)
+					victoryfb[vi] = rr.fb8[vi];
+				vmenushown = 0;
 				sys->print("episode complete! (finale lands in M22)\n");
 			} else {
 				wi->start(game->getwistat(), game);
@@ -832,7 +963,18 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			continue;
 		}
 
+		if (intitle != 0) {
+			# GS_DEMOSCREEN: title page (+ menu on top)
+			drawtitlepage(rr, page);
+			if (menu->active() != 0)
+				menu->drawer(rr);
+			rr.convert(v.fb);
+			v.present();
+			continue;
+		}
+
 		if (intermission != 0) {
+			menu->ticker();
 			# intermission buttons: attack/use accelerate
 			# (like vanilla WI_checkForAccelerate)
 			ibtn := 0;
@@ -842,6 +984,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 				ibtn |= 1;	# BT_ATTACK
 			wi->ticker(ibtn);
 			wi->drawer(rr);
+			if (menu->active() != 0)
+				menu->drawer(rr);
 			rr.convert(v.fb);
 			v.present();
 			# tally-tick sounds: pump one frame's mix through the
@@ -858,7 +1002,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 				view->setlevel(l);
 				if (am != nil)
 					am->setlevel(l);
-				err = game->setuplevel(l, game->SK_MEDIUM);
+				err = game->setuplevel(l, gameskill);
 				if (err != nil)
 					fail(err);
 				p = game->consoleplayer();
@@ -891,6 +1035,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			hu->setautomap(am != nil && am->active() != 0);
 			hu->drawer(rr);
 		}
+		if (menu->active() != 0)
+			menu->drawer(rr);
 		if (doperf) {
 			perft1 = sys->millisec();
 			perfdt = perft1 - perf0;
@@ -951,7 +1097,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			perfmaxpres = 0;
 			perfframes = 0;
 		}
-		if (tic % 70 == 0) {
+		if (intitle == 0 && tic % 70 == 0) {
 			p = game->consoleplayer();
 			if (p != nil && p.mo != nil)
 				mo = p.mo;
@@ -966,6 +1112,115 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	v.close();
 	w.close();
 	sys->print("play: quit at t=%d\n", tic);
+}
+
+# load a patch lump by name (title pages)
+wadpatch(w: ref File, name: string): array of byte
+{
+	i := w.find(name);
+	if (i < 0)
+		return nil;
+	(b, err) := w.read(i);
+	if (b == nil)
+		return nil;
+	return b;
+}
+
+skillname(sk: int): string
+{
+	case sk {
+	Game->SK_BABY =>
+		return "baby";
+	Game->SK_EASY =>
+		return "easy";
+	Game->SK_MEDIUM =>
+		return "medium";
+	Game->SK_HARD =>
+		return "hard";
+	Game->SK_NIGHTMARE =>
+		return "nightmare";
+	}
+	return "?";
+}
+
+announce(mapname: string, skill: int)
+{
+	sys->print("play: %s skill %s: arrows/wasd move, shift=run, ctrl=fire, space=use, 1-8=weapons, esc=menu, tab=map, F1=snapshot",
+		mapname, skillname(skill));
+	if (userring != 0)
+		sys->print(", F2=review");
+	sys->print("\n");
+}
+
+# Start a fresh game on mapname at the given skill (G_InitNew subset):
+# the player is reborn (pistol/100 health) and the level reloaded.
+# Used by -m at boot and by New Game from the menu.
+startgame(w: ref File, rr: ref Renderer, skill: int, mapname: string):
+	(ref Level, ref Player, string)
+{
+	(l, merr) := map->open(w, mapname);
+	if (l == nil)
+		return (nil, nil, merr);
+	if (viewready == 0) {
+		verr := view->init(rr, l, w, game, vid_w, vid_h - SBARHEIGHT);
+		if (verr != nil)
+			return (nil, nil, verr);
+		viewready = 1;
+		if (verbose != 0)
+			view->dbgprints = 1;
+		view->ringenable = userring;
+		if (doperf != 0)
+			view->setperf(1);
+	} else
+		view->setlevel(l);
+	if (am != nil) {
+		am->setlevel(l);
+		am->stop();
+	}
+	p := game->consoleplayer();
+	if (p != nil)
+		p.playerstate = game->PST_REBORN;
+	game->setsecretseen(0);
+	gerr := game->setuplevel(l, skill);
+	if (gerr != nil)
+		return (nil, nil, gerr);
+	p = game->consoleplayer();
+	if (p == nil || p.mo == nil)
+		return (nil, nil, "no player after setuplevel");
+	st->start(p);
+	hu->start(l.name);
+	menu->setusergame(1);
+
+	# TEST HOOKS (pre-M25; real typed cheats land in milestone 25):
+	# applied at every game start so menu New Game keeps them.
+	if (doweapons != 0) {
+		for (wa := 0; wa < game->NUMWEAPONS; wa++)
+			p.weaponowned[wa] = 1;
+		for (aa := 0; aa < game->NUMAMMO; aa++)
+			p.ammo[aa] = p.maxammo[aa];
+		for (ca := 0; ca < game->NUMCARDS; ca++)
+			p.cards[ca] = 1;
+		p.armortype = 2;
+		p.armorpoints = 200;
+	}
+	if (dogod != 0)
+		p.cheats = p.cheats | game->CF_GODMODE;
+	return (l, p, nil);
+}
+
+drawtitlepage(r: ref Renderer, p: int)
+{
+	d: array of byte;
+	case p {
+	0 =>
+		d = gtitle;
+	1 =>
+		d = gcredit;
+	2 =>
+		d = ghelp2;
+	}
+	if (d != nil)
+		rend->rdrawpatch(r, 0, 0, d);
 }
 
 # map raw X11 evdev keycode to our keystate index; -1 = ignore
@@ -990,12 +1245,42 @@ keysym(code: int): int
 		return '7';
 	XK_8 =>
 		return '8';
+	XK_9 =>
+		return '9';
 	XK_Q =>
 		return 'q';
 	XK_W =>
 		return 'w';
 	XK_E =>
 		return 'e';
+	XK_R =>
+		return 'r';
+	XK_T =>
+		return 't';
+	XK_U =>
+		return 'u';
+	XK_I =>
+		return 'i';
+	XK_O =>
+		return 'o';
+	XK_P =>
+		return 'p';
+	XK_H =>
+		return 'h';
+	XK_J =>
+		return 'j';
+	XK_K =>
+		return 'k';
+	XK_L =>
+		return 'l';
+	XK_Z =>
+		return 'z';
+	XK_X =>
+		return 'x';
+	XK_V =>
+		return 'v';
+	XK_B =>
+		return 'b';
 	XK_LCtrl =>
 		return LCtrl;
 	XK_LShift =>
@@ -1040,6 +1325,14 @@ keysym(code: int): int
 		return '=';	# zoom in
 	XK_0 =>
 		return '0';	# max zoom toggle
+	XK_Enter =>
+		return 13;	# menu forward
+	XK_Backspace =>
+		return 127;	# menu back (doomkeys KEY_BACKSPACE)
+	XK_Y =>
+		return 'y';	# menu confirm
+	XK_N =>
+		return 'n';	# menu abort
 	* =>
 		return -1;
 	}
@@ -1052,7 +1345,7 @@ wmquitshim(src: chan of string, ch: chan of int)
 	for (;;) {
 		s := <-src;
 		if (s == "quit")
-			ch <-= Esc;
+			ch <-= Menu->QuitReq;
 	}
 }
 
@@ -1092,23 +1385,56 @@ wmquitshim(src: chan of string, ch: chan of int)
 # press = k, release = k | 16r10000 (the /dev/scancode encoding).
 handlekey(k: int): int
 {
-	if (k == Esc)
-		return 1;
+	# window close: vanilla ev_quit (first request opens the quit
+	# message, a second one confirms it)
+	if (k == Menu->QuitReq) {
+		if (menu != nil)
+			menu->keydown(Menu->QuitReq);
+		return 0;
+	}
 	if ((k & 16r10000) != 0) {	# release
 		k &= ~16r10000;
 		if (k >= 0 && k < NKEYS)
 			keystate[k] = 0;
-		if (am != nil && gslevel != 0)
+		if (menu != nil && menu->active() == 0 && gslevel != 0 &&
+		    am != nil)
 			am->keyup(k);
-	} else if (k >= 0 && k < NKEYS) {
-		keystate[k] = 1;
-		if (am != nil && gslevel != 0)
-			am->keydown(k);
-		if (k == Snap)
-			snapreq = 1;	# edge: one snapshot per press
-		if (k == Rev)
-			revreq = 1;	# edge: toggle review per press
+		return 0;
 	}
+	if (k < 0 || k >= NKEYS)
+		return 0;
+	keystate[k] = 1;
+	if (k == Snap)
+		snapreq = 1;	# edge: one snapshot per press
+	if (k == Rev)
+		revreq = 1;	# edge: toggle review per press
+	if (menu == nil)
+		return 0;
+	if (menu->active() != 0) {
+		# vanilla M_Responder: menu keys are consumed; unmatched
+		# ones fall through to the game responders
+		if (menu->keydown(k))
+			return 0;
+	} else if (review != -1) {
+		if (k == Esc) {
+			review = -1;
+			keystate[Esc] = 0;
+			sys->print("review: resumed live\n");
+			return 0;
+		}
+	} else if (intitle != 0) {
+		# vanilla GS_DEMOSCREEN: any key pops the menu open
+		menu->start();
+		snapreq = 0;
+		revreq = 0;
+		return 0;
+	} else if (k == Esc) {
+		# vanilla key_menu_activate in game
+		menu->start();
+		return 0;
+	}
+	if (gslevel != 0 && am != nil)
+		am->keydown(k);
 	return 0;
 }
 

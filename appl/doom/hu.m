@@ -24,4 +24,9 @@ Hu: module {
 
 	# M20: the title line shows while the automap is up
 	setautomap:	fn(on: int);
+
+	# M21: menu Messages option gates showMessages (vanilla HU_Ticker);
+	# forcemsg marks the next message as one-shot "dontfuckwithme"
+	setmessages:	fn(on: int);
+	forcemsg:	fn();
 };

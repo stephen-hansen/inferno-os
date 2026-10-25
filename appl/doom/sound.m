@@ -59,6 +59,9 @@ Sound: module {
 	# listener; global sounds play full/center.
 	startsound:	fn(srcx, srcy, sfx: int);
 
+	# vanilla S_SetSfxVolume: master SFX volume 0..127 (menu 0..15 x8)
+	setvolume:	fn(v: int);
+
 	# per-tic: S_UpdateSounds listener tracking (vol/sep recompute,
 	# stop inaudible/finished), then mix+emit one tic (315 samples).
 	# lx/ly 16.16 listener pos, angle BAM listener heading.

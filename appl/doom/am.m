@@ -38,9 +38,10 @@ Am: module {
 	cheatcycle:	fn();
 
 	# arrow key codes, same encoding as doom.b's keyboard constants
-	KU:	con 16rE002;
-	KD:	con 16rE003;
-	KL:	con 16rE004;
-	KR:	con 16rE005;
+	# (module/keyboard.m: View = Spec|16r10, Up = View|2)
+	KU:	con 16rE012;
+	KD:	con 16rE013;
+	KL:	con 16rE014;
+	KR:	con 16rE015;
 	Tab:	con 9;
 };

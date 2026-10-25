@@ -43,6 +43,8 @@ message_on:	int;
 message_counter:	int;
 title:		string;
 automapactive:	int;
+showmessages:	int;	# menu Messages option (vanilla showMessages)
+force:		int;	# one-shot message_dontfuckwithme (menu toggle)
 
 # vanilla HUSTR_E1M1..E1M9 (d_englsh.h)
 maptitles := array[] of {
@@ -89,6 +91,8 @@ init(w: ref Wad->File): string
 	message_counter = 0;
 	title = "";
 	automapactive = 0;
+	showmessages = 1;
+	force = 0;
 	return nil;
 }
 
@@ -121,12 +125,18 @@ ticker(p: ref Game->Player)
 		if (message_counter == 0)
 			message_on = 0;
 	}
-	# new message replaces the line (HU_MSGHEIGHT 1)
+	# new message replaces the line (HU_MSGHEIGHT 1).  Vanilla
+	# shows player messages only while showMessages is on, except
+	# one-shot messages marked message_dontfuckwithme (the menu's
+	# Messages toggle uses that to confirm MSGOFF/MSGON).
 	if (p.message != "") {
+		if (showmessages == 0 && force == 0)
+			return;
 		message = p.message;
 		p.message = "";
 		message_on = 1;
 		message_counter = MSGTIMEOUT;
+		force = 0;
 	}
 }
 
@@ -170,4 +180,14 @@ drawer(r: ref Rend->Renderer)
 setautomap(on: int)
 {
 	automapactive = on;
+}
+
+setmessages(on: int)
+{
+	showmessages = on;
+}
+
+forcemsg()
+{
+	force = 1;
 }

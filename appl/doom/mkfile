@@ -13,6 +13,7 @@ TARG=\
 	st.dis\
 	hu.dis\
 	am.dis\
+	menu.dis\
 	doom.dis\
 
 MODULES=\
@@ -27,6 +28,8 @@ MODULES=\
 	wi.m\
 	st.m\
 	hu.m\
+	am.m\
+	menu.m\
 
 SYSMODULES=\
 	sys.m\
