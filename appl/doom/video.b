@@ -263,14 +263,12 @@ Context.present(c: self ref Context)
 
 Context.close(c: self ref Context)
 {
-	blank := array[c.winw * c.winh * 4] of byte;
 	img := c.buf;
 	if (img == nil)
 		img = c.display.image;
 	if (img == nil)
 		return;
-	o := img.r.min;
-	img.writepixels(Rect(o, (o.x + c.winw, o.y + c.winh)), blank);
+	img.draw(img.r, c.display.black, nil, img.r.min);
 	if (c.tkwin != nil)
 		tk->cmd(c.tkwin, ".p dirty; update");
 }

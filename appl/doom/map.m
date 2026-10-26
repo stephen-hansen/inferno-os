@@ -24,6 +24,7 @@ Map: module {
 		floortexture, ceilingtexture:	string;
 		lightlevel, special, tag:	int;
 		specialdata:	int;	# active thinker index, -1 if none
+		bboxtop, bboxbottom, bboxright, bboxleft:	int;
 	};
 
 	Side: adt {
@@ -85,9 +86,12 @@ Map: module {
 		reject:	array of int;	# REJECT bytes as ints (fast
 					# P_CheckSight reject test)
 
-		# BLOCKMAP header origin (used by the automap grid; the
-		# port itself never uses the blockmap chains)
+		# BLOCKMAP origin/dimensions and raw word array (block line
+		# chains for collision/hitscan; origin also drives the
+		# automap grid)
 		bmaporgx, bmaporgy:	int;	# 16.16
+		bmapwidth, bmapheight:	int;
+		bmaplump:	array of int;
 
 		# R_PointInSubsector: descend the BSP from node
 		# numnodes-1; always returns non-nil (node 0 if

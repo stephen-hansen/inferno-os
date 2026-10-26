@@ -952,39 +952,55 @@ Part D — presentation & game flow
          G_DoCompleted.
          DEPS: 15, 16, 21.
 
-  [ ] 23 Demo playback (d_main.c / demo lump format)
-         WHY: DEMO1-3 ship with the wad; also title-loop content.
-         SOURCES: d_main.c (D_DoAdvanceTitle, G_DeferedPlayDemo),
-           g_game.c (G_DeferedPlayDemo/G_PlayDemo: lump header
-           version/skill/ep/map/flags/console/playeringame then
-           ticcmd stream), g_game ticcmd translation.
-         WORK:
-           - demo lump parser (format: version byte + skill +
-             episode + map + 4x playeringame + ticcmds (mom/turn/
-             buttons per player byte format — derive from
-             g_game.c read of raw bytes); record format is
-             symmetric but recording can be a dev extra
-           - playback loop: replace setcmd source with demo
-             stream; end-of-demo -> back to title (21) or exit
-           - demo timer + desync strategy: for single player,
-             watch for ticcmd overruns (vanilla consistancy is
-             netplay — note: for us, a mismatch just looks off;
-             add a debug hash of player x/y per tic to detect
-             breakage during porting)
-           - command-line -playdemo DEMOn (plumbing in doom.b)
-           - title-loop integration (21/22 state machine)
-         DONE WHEN: DEMO1 plays E1M1 exactly as vanilla
-         (side-by-side reference from the original exe? we have no
-           original — validate by the demo completing without
-           "desync debug" flag tripping).
-         DEPS: everything gameplay (8-13) or demos walk into
-           unfinished walls — run after 13 at least; menu entry 21.
-
-================================================================================
-Part E — infrastructure & polish
-================================================================================
+  [x] 23 Demo playback (d_main.c / demo lump format)
+         STATUS Oct 25: DONE.  demo.b/demo.m parse the IWAD demo
+         format: version 109, the 13-byte header (skill, episode, map,
+         flags, consoleplayer, playeringame[4]), 4-byte ticcmds
+         (signed forward/side, high-byte-only angleturn sign-extended,
+         buttons) and the 0x80 end marker; net demos are rejected.
+         doom.b feeds the stream through the normal game tick via
+         setcmd/ticker (with the -w/-g test loadout suppressed), so the
+         world/status/HUD/automap draw paths are unchanged, and
+         implements the vanilla title sequence: TITLEPIC 170 -> DEMO1
+         -> CREDIT 200 -> DEMO2 -> HELP2 200 -> DEMO3 -> repeat, with
+         wipes between pages and demos.  During a demo any key opens
+         the menu (vanilla G_Responder) and the demo keeps running
+         behind it (P_Ticker's !demoplayback pause exemption); New
+         Game aborts the demo, End Game is refused (usergame false),
+         Quit exits.  New -playdemo DEMOn plays a lump immediately and
+         quits at its marker (singledemo).  Quitting now terminates
+         the process group, since the spawned timer/keyboard/wm kprocs
+         otherwise kept emu alive after the loop.
+         NOTE: the PLAN's "DEMO1 plays E1M1" was wrong; the shareware
+         headers are DEMO1=E1M5, DEMO2=E1M3, DEMO3=E1M7.
+         VALIDATED (TEMP harnesses removed): the parser matches each
+         header, first ticcmds and tic count (5026/3836/2134 =
+         (size-14)/4); headless full replays of all three demos run
+         the complete streams through the sim with no errors (the
+         recorded players finish dead, as in vanilla); the normal
+         title page starts DEMO1 after 170 tics; a full
+         `-playdemo DEMO3` run reaches the marker at t=2134 and exits;
+         a forced sequence start at DEMO3 advances to the title page
+         and then starts DEMO1 after the demo ends.
+         SYNC VALIDATED against a headless doomgeneric reference
+         oracle (per-tic player state + P_Random index): all three
+         demos now replay tic-for-tic identical (DEMO1 5026, DEMO2
+         3836, DEMO3 2134 lines, zero divergences).  See PLAN.done
+         for the fidelity fixes this exposed (blockmap thing/line
+         chains, unified thinker order, sector blockboxes, unsigned
+         BAM turns, P_DeathThink attacker turn, missile trigger
+         exclusion, A_Scream sound grouping).
+         DEPS: 8-13, 21.
 
   [ ] 24 Blockmap + P_PathTraverse (perf infrastructure)
+         STATUS Oct 25: partial.  The WAD BLOCKMAP lump is now parsed
+         (origin/width/height/raw words, per-sector line blockboxes)
+         and vanilla cell walks/line chains are used for slides and
+         movement collision; blockmap thing sets (center-cell linking,
+         MF_NOBLOCKMAP filtering) are used for hitscan/movement/
+         radius/crush.  Hitscan line chains are still the global
+         scan+span gate (validated by the demos).  The remaining
+         perf/P_PathTraverse consolidation is still open.
          WHY: brute force is fine for E1M1 (475 lines) but later
            maps + sprites + specials grow tic cost; vanilla
            intercept machinery also underpins 8-13 paths.

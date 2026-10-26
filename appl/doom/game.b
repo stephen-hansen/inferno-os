@@ -386,7 +386,10 @@ init(snd: Sound): string
 	16r1feb96a0, 16r1fee24e0, 16r1ff0b2e0, 16r1ff34080, 16r1ff5cde0, 16r1ff85ae0, 16r1ffae7a0, 16r1ffd7400, 16r20000000
 		};
 	mobjs = array[0] of ref Mobj;
+	mobjseq = array[0] of int;
 	thinkers = array[0] of ref Thinker;
+	thinkseq = array[0] of int;
+	seqno = 0;
 	activeplats = array[0] of ref Thinker;
 	activeceilings = array[0] of ref Thinker;
 	buttonlist = array[MAXBUTTONS] of ref Button;
@@ -621,7 +624,10 @@ setuplevel(l: ref Map->Level, skill: int): string
 	totalitems = 0;
 	totalsecret = 0;
 	mobjs = array[0] of ref Mobj;
+	mobjseq = array[0] of int;
 	thinkers = array[0] of ref Thinker;
+	thinkseq = array[0] of int;
+	seqno = 0;
 	activeplats = array[0] of ref Thinker;
 	activeceilings = array[0] of ref Thinker;
 	for (bi := 0; bi < MAXBUTTONS; bi++)
@@ -839,6 +845,12 @@ spawnmobj(x, y, z, typ: int): ref Mobj
 		nm[0:] = mobjs;
 	nm[n] = mo;
 	mobjs = nm;
+	nsq := array[n + 1] of int;
+	if (n > 0)
+		nsq[0:] = mobjseq;
+	nsq[n] = seqno;
+	seqno = seqno + 1;
+	mobjseq = nsq;
 	return mo;
 }
 
@@ -904,9 +916,12 @@ doaction(mo: ref Mobj, act: int)
 		ds := mo.info.deathsound;
 		if (ds == 0)
 			return;
-		if (ds == sound->SFX_PODTH1)
+		# vanilla A_Scream groups all three podth sounds and both
+		# bgdth sounds; every member consumes P_Random (demo sync)
+		if (ds == sound->SFX_PODTH1 || ds == sound->SFX_PODTH2 ||
+		    ds == sound->SFX_PODTH3)
 			ds = sound->SFX_PODTH1 + prandom() % 3;
-		else if (ds == sound->SFX_BGDTH1)
+		else if (ds == sound->SFX_BGDTH1 || ds == sound->SFX_BGDTH2)
 			ds = sound->SFX_BGDTH1 + prandom() % 2;
 		sound->startsound(mo.x, mo.y, ds);
 		return;
@@ -1029,6 +1044,12 @@ evdofloortag(tag, fltype: int)
 			nt[0:] = thinkers;
 		nt[n] = th;
 		thinkers = nt;
+		ntsq1 := array[n + 1] of int;
+		if (n > 0)
+			ntsq1[0:] = thinkseq;
+		ntsq1[n] = seqno;
+		seqno = seqno + 1;
+		thinkseq = ntsq1;
 		sec.specialdata = n;
 	}
 }
@@ -1481,63 +1502,57 @@ mobjthinker(mo: ref Mobj)
 
 runthinkers()
 {
-	# snapshot the list: thinkers may spawn; removed are compacted
-	n := len mobjs;
-	if (n != 0) {
-		snap := array[n] of ref Mobj;
-		snap[0:] = mobjs;
-		for (i := 0; i < n; i++) {
-			mo := snap[i];
-			if (mo.removed)
-				continue;
-			mobjthinker(mo);
+	mi := 0;
+	ti := 0;
+	for (;;) {
+		while (mi < len mobjs && mobjs[mi].removed)
+			mi++;
+		while (ti < len thinkers && thinkers[ti].removed)
+			ti++;
+		mok := mi < len mobjs;
+		tok := ti < len thinkers;
+		if (!mok && !tok)
+			break;
+		dom := 0;
+		if (mok && tok) {
+			if (mobjseq[mi] < thinkseq[ti])
+				dom = 1;
+		} else if (mok)
+			dom = 1;
+		if (dom) {
+			mobjthinker(mobjs[mi]);
+			mi++;
+		} else {
+			th := thinkers[ti];
+			if (th.kind == THINK_DOOR)
+				tverticaldoor(th);
+			else if (th.kind == THINK_FLOOR)
+				tmovefloor(th);
+			else if (th.kind == THINK_PLAT)
+				tplatraise(th);
+			else if (th.kind == THINK_LIGHT)
+				tlightthink(th);
+			else if (th.kind == THINK_CEILING)
+				tmoveceiling(th);
+			ti++;
 		}
-		# compact removed (lazy unlink, vanilla P_RunThinkers free).
-		# thinkers spawned mid-pass live past snap (missiles, fogs,
-		# gibs): vanilla's linked list keeps them, so append live
-		# mobjs[n:] survivors after the filtered snapshot.
-		kept := 0;
-		for (i = 0; i < n; i++)
-			if (!snap[i].removed)
-				kept++;
-		keptx := 0;
-		for (i = n; i < len mobjs; i++)
-			if (!mobjs[i].removed)
-				keptx++;
-		nm := array[kept + keptx] of ref Mobj;
+	}
+	kept := 0;
+	for (i := 0; i < len mobjs; i++)
+		if (!mobjs[i].removed)
+			kept++;
+	if (kept != len mobjs) {
+		nm := array[kept] of ref Mobj;
+		nms := array[kept] of int;
 		k := 0;
-		for (i = 0; i < n; i++)
-			if (!snap[i].removed) {
-				nm[k] = snap[i];
-				k++;
-			}
-		for (i = n; i < len mobjs; i++)
+		for (i = 0; i < len mobjs; i++)
 			if (!mobjs[i].removed) {
 				nm[k] = mobjs[i];
+				nms[k] = mobjseq[i];
 				k++;
 			}
 		mobjs = nm;
-	}
-
-	# sector thinkers (doors for now).  No compaction here:
-	# sectors hold thinker indices (specialdata), so slots must
-	# stay stable; removed thinkers are just skipped (a level
-	# creates only a handful).
-	nt := len thinkers;
-	for (i := 0; i < nt; i++) {
-		th := thinkers[i];
-		if (th.removed)
-			continue;
-		if (th.kind == THINK_DOOR)
-			tverticaldoor(th);
-		else if (th.kind == THINK_FLOOR)
-			tmovefloor(th);
-		else 		if (th.kind == THINK_PLAT)
-			tplatraise(th);
-		else if (th.kind == THINK_LIGHT)
-			tlightthink(th);
-		else if (th.kind == THINK_CEILING)
-			tmoveceiling(th);
+		mobjseq = nms;
 	}
 }
 
@@ -1652,24 +1667,32 @@ pitchangesector(mo: ref Mobj, crush: int): int
 	return 0;
 }
 
-# vanilla P_ChangeSector (p_floor.c): refit every thing in sec;
-# returns nofit (1 = blocked/crushed).  crush damages stuck
-# shootables via PIT_ChangeSector (ceiling crushers; floors/plats
-# always pass 0).
+# vanilla P_ChangeSector (p_floor.c): refit every thing in the
+# sector's block box; returns nofit (1 = blocked/crushed).  crush
+# damages stuck shootables via PIT_ChangeSector (ceiling crushers;
+# floors/plats always pass 0).
 pchangesector(sec: ref Map->Sector, crush: int): int
 {
 	nofit := 0;
-	for (i := 0; i < len mobjs; i++) {
-		mo := mobjs[i];
-		if (mo.removed)
-			continue;
-		if (mo.subsector == nil)
-			continue;
-		if (!(mo.subsector.sector == sec))
-			continue;
-		if (pitchangesector(mo, crush) == 0)
-			nofit = 1;
-	}
+	for (by := sec.bboxbottom; by <= sec.bboxtop; by++)
+		for (bx := sec.bboxleft; bx <= sec.bboxright; bx++) {
+			if (bx < 0 || by < 0 || bx >= lev.bmapwidth ||
+			    by >= lev.bmapheight)
+				continue;
+			for (i := len mobjs - 1; i >= 0; i--) {
+				mo := mobjs[i];
+				if (mo.removed)
+					continue;
+				if ((mo.flags & inf->MF_NOBLOCKMAP) != 0)
+					continue;
+				mbx := (mo.x - lev.bmaporgx) >> (FRACBITS + 7);
+				mby := (mo.y - lev.bmaporgy) >> (FRACBITS + 7);
+				if (mbx != bx || mby != by)
+					continue;
+				if (pitchangesector(mo, crush) == 0)
+					nofit = 1;
+			}
+		}
 	return nofit;
 }
 
@@ -2194,6 +2217,16 @@ shfrac: array of int;	# intercept fracs, frac-sorted (vanilla order)
 shkind: array of int;	# 0 = linedef, 1 = mobj
 shidx: array of int;	# linedef # / mobjs index
 shn: int;		# intercept count
+shbkey: array of int;
+shbx, shby: array of int;
+shbn: int;
+linegen: array of int;
+glinegen: int;
+seqno: int;
+mobjseq: array of int;
+thinkseq: array of int;
+slline: array of int;
+slfrac: array of int;
 
 # point vs divline side, vanilla P_PointOnDivlineSide exactly
 # (p_maputl.c): sign-bit fast path, then FixedMul(dy>>8, dx>>8).
@@ -2205,9 +2238,70 @@ pointondivside(x, y, lx, ly, ldx, ldy: int): int
 	return pointondvlineside(x, y, lx, ly, ldx, ldy);
 }
 
-# brute-force P_PathTraverse intercept walk for shots: line
-# crossings (trace endpoints on opposite sides, uselines math) plus
-# thing bbox-diagonal crossings (corner-vs-trace), frac-sorted
+shootblocks(x1, y1, x2, y2: int)
+{
+	shbkey = array[64] of int;
+	shbx = array[64] of int;
+	shby = array[64] of int;
+	shbn = 0;
+	x1 = x1 - lev.bmaporgx;
+	y1 = y1 - lev.bmaporgy;
+	x2 = x2 - lev.bmaporgx;
+	y2 = y2 - lev.bmaporgy;
+	xt1 := x1 >> (FRACBITS + 7);
+	yt1 := y1 >> (FRACBITS + 7);
+	xt2 := x2 >> (FRACBITS + 7);
+	yt2 := y2 >> (FRACBITS + 7);
+	mapxstep, mapystep, partial, ystep, xstep, yintercept, xintercept: int;
+	if (xt2 > xt1) {
+		mapxstep = 1;
+		partial = FRACUNIT - ((x1 >> 7) & (FRACUNIT - 1));
+		ystep = fixeddivsat(y2 - y1, absi(x2 - x1));
+	} else if (xt2 < xt1) {
+		mapxstep = -1;
+		partial = (x1 >> 7) & (FRACUNIT - 1);
+		ystep = fixeddivsat(y2 - y1, absi(x2 - x1));
+	} else {
+		mapxstep = 0;
+		partial = FRACUNIT;
+		ystep = 256 * FRACUNIT;
+	}
+	yintercept = (y1 >> 7) + rend->fixedmul(partial, ystep);
+	if (yt2 > yt1) {
+		mapystep = 1;
+		partial = FRACUNIT - ((y1 >> 7) & (FRACUNIT - 1));
+		xstep = fixeddivsat(x2 - x1, absi(y2 - y1));
+	} else if (yt2 < yt1) {
+		mapystep = -1;
+		partial = (y1 >> 7) & (FRACUNIT - 1);
+		xstep = fixeddivsat(x2 - x1, absi(y2 - y1));
+	} else {
+		mapystep = 0;
+		partial = FRACUNIT;
+		xstep = 256 * FRACUNIT;
+	}
+	xintercept = (x1 >> 7) + rend->fixedmul(partial, xstep);
+	mapx := xt1;
+	mapy := yt1;
+	for (count := 0; count < 64; count++) {
+		shbkey[shbn] = (mapx + 4096) * 8192 + (mapy + 4096);
+		shbx[shbn] = mapx;
+		shby[shbn] = mapy;
+		shbn++;
+		if (mapx == xt2 && mapy == yt2)
+			break;
+		if ((yintercept >> FRACBITS) == mapy) {
+			yintercept = yintercept + ystep;
+			mapx = mapx + mapxstep;
+		} else if ((xintercept >> FRACBITS) == mapx) {
+			xintercept = xintercept + xstep;
+			mapy = mapy + mapystep;
+		}
+	}
+}
+
+# vanilla P_PathTraverse intercept walk for shots: blockmap line
+# chains over the visited cells plus block-linked things, frac-sorted
 # stable like vanilla P_TraverseIntercepts.
 collectshoot(x1, y1, dx, dy: int)
 {
@@ -2218,6 +2312,15 @@ collectshoot(x1, y1, dx, dy: int)
 	shn = 0;
 	x2 := x1 + dx;
 	y2 := y1 + dy;
+	if (((x1 - lev.bmaporgx) & (128 * FRACUNIT - 1)) == 0) {
+		x1 = x1 + FRACUNIT;
+		dx = dx - FRACUNIT;
+	}
+	if (((y1 - lev.bmaporgy) & (128 * FRACUNIT - 1)) == 0) {
+		y1 = y1 + FRACUNIT;
+		dy = dy - FRACUNIT;
+	}
+	shootblocks(x1, y1, x1 + dx, y1 + dy);
 	# vanilla PIT_AddLineIntercepts long/short-trace rule (same as
 	# slidetrace): long traces test line endpoints vs trace divline,
 	# short traces test trace endpoints vs the line.  Shooting (2048u)
@@ -2276,6 +2379,19 @@ collectshoot(x1, y1, dx, dy: int)
 	for (i = 0; i < len mobjs; i++) {
 		mo := mobjs[i];
 		if (mo.removed)
+			continue;
+		if ((mo.flags & inf->MF_NOBLOCKMAP) != 0)
+			continue;
+		mbx := (mo.x - lev.bmaporgx) >> (FRACBITS + 7);
+		mby := (mo.y - lev.bmaporgy) >> (FRACBITS + 7);
+		mkey := (mbx + 4096) * 8192 + (mby + 4096);
+		seen := 0;
+		for (q := 0; q < shbn; q++)
+			if (shbkey[q] == mkey) {
+				seen = 1;
+				break;
+			}
+		if (seen == 0)
 			continue;
 		r := mo.radius;
 		# corner-to-corner cross-section, diagonal picked by
@@ -2720,6 +2836,12 @@ sectorthinker(sec: ref Map->Sector, th: ref Thinker)
 		nt[0:] = thinkers;
 	nt[n] = th;
 	thinkers = nt;
+	ntsq2 := array[n + 1] of int;
+	if (n > 0)
+		ntsq2[0:] = thinkseq;
+	ntsq2[n] = seqno;
+	seqno = seqno + 1;
+	thinkseq = ntsq2;
 	sec.specialdata = n;
 }
 
@@ -2848,6 +2970,12 @@ evdofloor(li, fltype: int): int
 				nt[0:] = thinkers;
 			nt[n] = th;
 			thinkers = nt;
+			ntsq3 := array[n + 1] of int;
+			if (n > 0)
+				ntsq3[0:] = thinkseq;
+			ntsq3[n] = seqno;
+			seqno = seqno + 1;
+			thinkseq = ntsq3;
 			sec.specialdata = n;
 		}
 		secnum = findsectorfromlinetag(li, secnum);
@@ -3132,6 +3260,12 @@ evdoplat(li, pltype, amount: int): int
 				nt[0:] = thinkers;
 			nt[n] = th;
 			thinkers = nt;
+			ntsq4 := array[n + 1] of int;
+			if (n > 0)
+				ntsq4[0:] = thinkseq;
+			ntsq4[n] = seqno;
+			seqno = seqno + 1;
+			thinkseq = ntsq4;
 			sec.specialdata = n;
 			paddactiveplat(th);
 		}
@@ -3305,6 +3439,12 @@ evdoceiling(li, ctype: int): int
 				nt[0:] = thinkers;
 			nt[n] = th;
 			thinkers = nt;
+			ntsq5 := array[n + 1] of int;
+			if (n > 0)
+				ntsq5[0:] = thinkseq;
+			ntsq5[n] = seqno;
+			seqno = seqno + 1;
+			thinkseq = ntsq5;
 			sec.specialdata = n;
 			paddactiveceiling(th);
 		}
@@ -3439,6 +3579,12 @@ addlightthinker(sec: ref Map->Sector, ltype, count, minlight, maxlight,
 		nt[0:] = thinkers;
 	nt[n] = th;
 	thinkers = nt;
+	ntsq6 := array[n + 1] of int;
+	if (n > 0)
+		ntsq6[0:] = thinkseq;
+	ntsq6[n] = seqno;
+	seqno = seqno + 1;
+	thinkseq = ntsq6;
 }
 
 # vanilla P_SpawnFireFlicker (p_lights.c)
@@ -3580,12 +3726,17 @@ evlightturnon(li, bright: int): int
 
 # vanilla P_CrossSpecialLine walkover subset (p_spec.c): W1 36/2/8/5/22/16/39/125
 # (clear), WR 90/86/91/98/88/76/82/97/126 (retrigger).  The non-player gate allows
-# only teleport/door/plat specials (the missile-type inner gate comes
-# with weapons, milestone 9); secrets count in milestone 14.
+# only teleport/door/plat specials and excludes missiles; secrets
+# count in milestone 14.
 crossspecialline(mo: ref Mobj, li, side: int)
 {
 	ld := lev.lines[li];
 	if (mo.player == nil) {
+		if (mo.typ == inf->MT_ROCKET || mo.typ == inf->MT_PLASMA ||
+		    mo.typ == inf->MT_BFG || mo.typ == inf->MT_TROOPSHOT ||
+		    mo.typ == inf->MT_HEADSHOT ||
+		    mo.typ == inf->MT_BRUISERSHOT)
+			return;
 		if (ld.special != 39 && ld.special != 97 &&
 		    ld.special != 125 && ld.special != 126 &&
 		    ld.special != 4 && ld.special != 10 &&
@@ -3902,8 +4053,24 @@ deaththink(p: ref Player)
 		p.viewheight = 6 * FRACUNIT;
 	p.deltaviewheight = 0;
 	calcheight(p);
-	# vanilla P_DeathThink: use-button marks reborn; doom.b
-	# reloads the current map on PST_REBORN (G_DoReborn subset)
+	if (p.attacker != nil && p.attacker != p.mo) {
+		angle := pointtoangle2(p.mo.x, p.mo.y,
+			p.attacker.x, p.attacker.y);
+		delta := angle - p.mo.angle;
+		du := big(delta);
+		if (du < big(0))
+			du = du + big(16r100000000);
+		if (du < big(ANG90 / 18) ||
+		    du > big(16r100000000) - big(ANG90 / 18)) {
+			p.mo.angle = angle;
+			if (p.damagecount != 0)
+				p.damagecount--;
+		} else if (du < big(ANG90) + big(ANG90)) {
+			p.mo.angle = p.mo.angle + ANG90 / 18;
+		} else
+			p.mo.angle = p.mo.angle - ANG90 / 18;
+	} else if (p.damagecount != 0)
+		p.damagecount--;
 	if ((p.cmd.buttons & BT_USE) != 0)
 		p.playerstate = PST_REBORN;
 }
@@ -5184,7 +5351,8 @@ pmove(actor: ref Mobj): int
 		fail("pmove: bad movedir");
 	tryx := actor.x + actor.info.speed * xspeed[actor.movedir];
 	tryy := actor.y + actor.info.speed * yspeed[actor.movedir];
-	if (trymove(actor, tryx, tryy) == 0) {
+	ok := trymove(actor, tryx, tryy);
+	if (ok == 0) {
 		if ((actor.flags & inf->MF_FLOAT) != 0 && floatok != 0) {
 			if (actor.z < tmfloorz)
 				actor.z = actor.z + FLOATSPEED;
@@ -5320,7 +5488,11 @@ plookforplayers(actor: ref Mobj, allaround: int): int
 		if (allaround == 0) {
 			an := pointtoangle2(actor.x, actor.y,
 				pl.mo.x, pl.mo.y) - actor.angle;
-			if (an > ANG90 && an < ANG270) {
+			au := big(an);
+			if (au < big(0))
+				au = au + big(16r100000000);
+			if (au > big(ANG90) &&
+			    au < big(16r100000000) - big(ANG90)) {
 				dist := approxdistance(pl.mo.x - actor.x,
 					pl.mo.y - actor.y);
 				if (dist > MELEERANGE) {
@@ -5350,9 +5522,7 @@ alook(actor: ref Mobj)
 	if (targ != nil && (targ.flags & inf->MF_SHOOTABLE) != 0) {
 		actor.target = targ;
 		if ((actor.flags & inf->MF_AMBUSH) != 0) {
-			if (pchecksight(actor, actor.target) != 0) {
-				# seeyou below
-			} else
+			if (pchecksight(actor, actor.target) == 0)
 				return;
 		}
 	} else if (plookforplayers(actor, 0) == 0)
@@ -5360,9 +5530,10 @@ alook(actor: ref Mobj)
 	if (actor.info.seesound != 0) {
 		soundnum := actor.info.seesound;
 		if (soundnum == sound->SFX_POSIT1 || soundnum == sound->SFX_POSIT2 ||
-		    soundnum == sound->SFX_POSIT3)
+		    soundnum == sound->SFX_POSIT3) {
 			soundnum = sound->SFX_POSIT1 + prandom() % 3;
-		else if (soundnum == sound->SFX_BGSIT1 || soundnum == sound->SFX_BGSIT2)
+		} else if (soundnum == sound->SFX_BGSIT1 ||
+		    soundnum == sound->SFX_BGSIT2)
 			soundnum = sound->SFX_BGSIT1 + prandom() % 2;
 		if (actor.typ == inf->MT_SPIDER || actor.typ == inf->MT_CYBORG)
 			sound->startsound(0, 0, soundnum);
@@ -5594,12 +5765,29 @@ pradiusattack(spot, source: ref Mobj, damage: int)
 	bombspot = spot;
 	bombsource = source;
 	bombdamage = damage;
-	for (i := 0; i < len mobjs; i++) {
-		mo := mobjs[i];
-		if (mo.removed)
-			continue;
-		pitradiusattack(mo);
-	}
+	rdist := (damage + 32) * FRACUNIT;
+	yh := (spot.y + rdist - lev.bmaporgy) >> (FRACBITS + 7);
+	yl := (spot.y - rdist - lev.bmaporgy) >> (FRACBITS + 7);
+	xh := (spot.x + rdist - lev.bmaporgx) >> (FRACBITS + 7);
+	xl := (spot.x - rdist - lev.bmaporgx) >> (FRACBITS + 7);
+	for (by := yl; by <= yh; by++)
+		for (bx := xl; bx <= xh; bx++) {
+			if (bx < 0 || by < 0 || bx >= lev.bmapwidth ||
+			    by >= lev.bmapheight)
+				continue;
+			for (i := len mobjs - 1; i >= 0; i--) {
+				mo := mobjs[i];
+				if (mo.removed)
+					continue;
+				if ((mo.flags & inf->MF_NOBLOCKMAP) != 0)
+					continue;
+				mbx := (mo.x - lev.bmaporgx) >> (FRACBITS + 7);
+				mby := (mo.y - lev.bmaporgy) >> (FRACBITS + 7);
+				if (mbx != bx || mby != by)
+					continue;
+				pitradiusattack(mo);
+			}
+		}
 }
 
 pitcheckthing(thing: ref Mobj): int
@@ -5684,15 +5872,54 @@ checkposition(thing: ref Mobj, x, y: int): int
 	if ((tmflags & inf->MF_NOCLIP) != 0)
 		return 1;
 
+	xl := (tmbbox[3] - lev.bmaporgx - 32 * FRACUNIT) >> (FRACBITS + 7);
+	xh := (tmbbox[2] - lev.bmaporgx + 32 * FRACUNIT) >> (FRACBITS + 7);
+	yl := (tmbbox[1] - lev.bmaporgy - 32 * FRACUNIT) >> (FRACBITS + 7);
+	yh := (tmbbox[0] - lev.bmaporgy + 32 * FRACUNIT) >> (FRACBITS + 7);
 	# newest-first: vanilla block links prepend, so fresh drops are
 	# touched before the corpse underneath blocks (drop-on-corpse
 	# pickup needs this order)
-	for (i := len mobjs - 1; i >= 0; i--)
-		if (!pitcheckthing(mobjs[i]))
+	for (i := len mobjs - 1; i >= 0; i--) {
+		mm := mobjs[i];
+		if ((mm.flags & inf->MF_NOBLOCKMAP) != 0)
+			continue;
+		mbx := (mm.x - lev.bmaporgx) >> (FRACBITS + 7);
+		mby := (mm.y - lev.bmaporgy) >> (FRACBITS + 7);
+		if (mbx < xl || mbx > xh || mby < yl || mby > yh)
+			continue;
+		if (!pitcheckthing(mm))
 			return 0;
-	for (i = 0; i < len lev.lines; i++)
-		if (!pitcheckline(i))
-			return 0;
+	}
+	if (lev.bmaplump == nil)
+		return 1;
+	if (linegen == nil || len linegen != len lev.lines) {
+		linegen = array[len lev.lines] of int;
+		glinegen = 0;
+	}
+	glinegen = glinegen + 1;
+	lxl := (tmbbox[3] - lev.bmaporgx) >> (FRACBITS + 7);
+	lxh := (tmbbox[2] - lev.bmaporgx) >> (FRACBITS + 7);
+	lyl := (tmbbox[1] - lev.bmaporgy) >> (FRACBITS + 7);
+	lyh := (tmbbox[0] - lev.bmaporgy) >> (FRACBITS + 7);
+	for (lbx := lxl; lbx <= lxh; lbx++)
+		for (lby := lyl; lby <= lyh; lby++) {
+			if (lbx < 0 || lby < 0 || lbx >= lev.bmapwidth ||
+			    lby >= lev.bmapheight)
+				continue;
+			woff := lev.bmaplump[4 + lby * lev.bmapwidth + lbx];
+			for (lk := woff; lk >= 0 && lk < len lev.bmaplump; lk++) {
+				lli := lev.bmaplump[lk];
+				if (lli < 0)
+					break;
+				if (lli >= len lev.lines)
+					continue;
+				if (linegen[lli] == glinegen)
+					continue;
+				linegen[lli] = glinegen;
+				if (!pitcheckline(lli))
+					return 0;
+			}
+		}
 	return 1;
 }
 
@@ -5891,32 +6118,78 @@ slidetrace(cx, cy: int)
 {
 	tdx := slidemo.momx;
 	tdy := slidemo.momy;
-	# "avoid precision problems with two routines"
-	longtrace := tdx > 16 * FRACUNIT || tdy > 16 * FRACUNIT || tdx < -16 * FRACUNIT || tdy < -16 * FRACUNIT;
-	for (n := 0; n < len lev.lines; n++) {
-		ld := lev.lines[n];
-		v1 := lev.vertices[ld.v1];
-		v2 := lev.vertices[ld.v2];
-		s1: int;
-		s2: int;
-		if (longtrace) {
-			s1 = pointondvlineside(v1.x, v1.y, cx, cy, tdx, tdy);
-			s2 = pointondvlineside(v2.x, v2.y, cx, cy, tdx, tdy);
-		} else {
-			s1 = pointonlineside(cx, cy, n);
-			s2 = pointonlineside(cx + tdx, cy + tdy, n);
-		}
-		if (s1 == s2)
-			continue;		# line isn't crossed
-		frac := interceptvector(cx, cy, tdx, tdy, v1.x, v1.y, ld.dx, ld.dy);
-		if (frac < 0)
-			continue;		# behind source
-		if (frac > FRACUNIT)
-			continue;		# P_TraverseIntercepts maxfrac = FRACUNIT
-		if (!slidetraverse(n, frac))
-			return;
+	if (((cx - lev.bmaporgx) & (128 * FRACUNIT - 1)) == 0) {
+		cx = cx + FRACUNIT;
+		tdx = tdx - FRACUNIT;
 	}
+	if (((cy - lev.bmaporgy) & (128 * FRACUNIT - 1)) == 0) {
+		cy = cy + FRACUNIT;
+		tdy = tdy - FRACUNIT;
+	}
+	shootblocks(cx, cy, cx + tdx, cy + tdy);
+	if (len lev.lines == 0)
+		return;
+	if (linegen == nil || len linegen != len lev.lines) {
+		linegen = array[len lev.lines] of int;
+		glinegen = 0;
+	}
+	if (slline == nil || len slline != len lev.lines) {
+		slline = array[len lev.lines] of int;
+		slfrac = array[len lev.lines] of int;
+	}
+	glinegen = glinegen + 1;
+	longtrace := tdx > 16 * FRACUNIT || tdy > 16 * FRACUNIT ||
+		tdx < -16 * FRACUNIT || tdy < -16 * FRACUNIT;
+	n := 0;
+	for (c := 0; c < shbn; c++) {
+		bx := shbx[c];
+		by := shby[c];
+		if (bx < 0 || by < 0 || bx >= lev.bmapwidth ||
+		    by >= lev.bmapheight)
+			continue;
+		woff := lev.bmaplump[4 + by * lev.bmapwidth + bx];
+		for (k := woff; k >= 0 && k < len lev.bmaplump; k++) {
+			li := lev.bmaplump[k];
+			if (li < 0)
+				break;
+			if (li >= len lev.lines)
+				continue;
+			if (linegen[li] == glinegen)
+				continue;
+			linegen[li] = glinegen;
+			ld := lev.lines[li];
+			v1 := lev.vertices[ld.v1];
+			v2 := lev.vertices[ld.v2];
+			if (longtrace) {
+				if (pointondvlineside(v1.x, v1.y, cx, cy,
+				    tdx, tdy) == pointondvlineside(v2.x, v2.y,
+				    cx, cy, tdx, tdy))
+					continue;
+			} else {
+				if (pointonlineside(cx, cy, li) ==
+				    pointonlineside(cx + tdx, cy + tdy, li))
+					continue;
+			}
+			frac := interceptvector(cx, cy, tdx, tdy,
+				v1.x, v1.y, ld.dx, ld.dy);
+			if (frac < 0 || frac > FRACUNIT)
+				continue;
+			pos := n;
+			while (pos > 0 && slfrac[pos-1] > frac) {
+				slfrac[pos] = slfrac[pos-1];
+				slline[pos] = slline[pos-1];
+				pos--;
+			}
+			slfrac[pos] = frac;
+			slline[pos] = li;
+			n++;
+		}
+	}
+	for (i := 0; i < n; i++)
+		if (!slidetraverse(slline[i], slfrac[i]))
+			return;
 }
+
 
 # vanilla P_HitSlideLine (p_map.c): project the remainder move onto the
 # wall direction so the next TryMove slides along it
@@ -6121,6 +6394,7 @@ getleveltime(): int
 {
 	return lvltime;
 }
+
 
 fail(s: string)
 {

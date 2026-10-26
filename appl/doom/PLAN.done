@@ -2225,4 +2225,82 @@ Milestones (each independently testable)
           palr, resetpalette restores the base exactly, and a second
           shift applies again (test harness removed).  Intermission
           screens get the same reset.
+          M23 DEMO PLAYBACK (Oct 25): implemented the IWAD demo format
+          and the title demo loop.  demo.m/demo.b: parse version 109
+          demos (13-byte header: skill, episode, map, flags,
+          consoleplayer, playeringame[4]; 4-byte ticcmds with signed
+          moves, angleturn stored only in the high byte and
+          sign-extended, buttons; 0x80 marker; single-player only).
+          doom.b: the title/demo sequencer follows vanilla
+          D_DoAdvanceDemo's non-ultimate order (TITLEPIC 170, DEMO1,
+          CREDIT 200, DEMO2, HELP2 200, DEMO3, repeat) with the M22
+          wipe between states; demo tics feed game->setcmd directly
+          (test loadout hooks skipped, usergame false), so the normal
+          render/status/HUD/automap paths apply.  During demos any key
+          opens the menu and the demo keeps ticking behind it (P_Ticker
+          demoplayback exemption); New Game aborts the demo; End Game
+          is refused; -playdemo DEMOn boots into a demo and quits at
+          the marker (singledemo).  Added the missing process-group
+          exit: the timer/keyboard/wm kprocs kept emu alive after the
+          main loop, so quitting now writes killgrp to /prog/self/ctl
+          (tkclient's exit pattern; the host shell reports the emu
+          process as killed, which is the normal Inferno group exit).
+          VALIDATION (TEMP harnesses removed): the parser matches each
+          lump's header (DEMO1=E1M5, DEMO2=E1M3, DEMO3=E1M7), first
+          commands and tic counts (5026/3836/2134 = (size-14)/4).
+          Headless full replays of all three demos through the game
+          simulation completed their entire streams with no errors
+          (kills 7-8; the recorded players die near the end, as the
+          vanilla attract demos do).  The normal title boot ran
+          TITLEPIC then DEMO1; a full `-playdemo DEMO3` real-time run
+          reached the 0x80 marker at t=2134, printed the quit and
+          terminated; a forced sequence start at DEMO3 (temp hook,
+          removed) advanced to the TITLEPIC page and then to DEMO1,
+          confirming the demo->page transition and page timer.
+          Note: the PLAN's DEMO1/E1M1 claim was wrong (header says
+          E1M5).
+          M23 DEMO SYNC (Oct 25, later): built a headless doomgeneric
+          reference oracle (FEATURE_SOUND off, dg_null main, fake
+          clock) that dumps per-tic player state + P_Random index and
+          P_Random caller/backtraces.  All three shareware demos now
+          replay tic-for-tic identical to the reference (DEMO1 5026,
+          DEMO2 3836, DEMO3 2134 lines; all player fields and
+          prndindex).  Divergences found and fixed: A_Scream must
+          consume P_Random for every podth/bgdth member; hitscan,
+          movement, radius and crush scans must use vanilla blockmap
+          chains (center-cell thing linking, MF_NOBLOCKMAP things are
+          never linked; slides and movement lines use the WAD per-cell
+          line lists, replacing the span-gate approximation there;
+          hitscan lines remain the validated global scan); P_ChangeSector clips
+          things in the sector's MAXRADIUS-expanded line block box
+          (player riding moving floors), and sector block boxes are
+          cached at load from line vertex bounds; newly spawned
+          thinkers run in the same tic and mobjs/sector thinkers must
+          be processed in one creation-order list (a later-spawned
+          missile follows level-load lights/doors); P_LookForPlayers
+          and P_DeathThink need unsigned angle_t comparisons;
+          walkover specials exclude MT_ROCKET/PLASMA/BFG/TROOPSHOT/
+          HEADSHOT/BRUISERSHOT; P_RadiusAttack visits blockmap cells
+          in vanilla y/x order; P_DeathThink turns toward the
+          attacker by ANG5 and decrements damagecount.  The level
+          loader now retains BLOCKMAP width/height/raw words and
+          per-sector blockboxes.  TEMP per-tic traces, /-D fast-demo
+          mode and the oracle-only getters were removed after the
+          three full-trace validations; a normal window (title then
+          DEMO1) was smoke-tested after the clean rebuild.  The
+          earlier black screen was a stale/`-D` no-render instance,
+          not the level-loader changes.
+          DEMO END OOM (Oct 25): a full real-time `-playdemo DEMO1`
+          reached the end and then failed in Video.Context.close,
+          which allocated a fresh winw*winh*4 blank buffer (4.9 MB at
+          1280x960) just to clear the window; the Inferno heap was
+          already near its 32 MB limit, so the allocation failed with
+          "[Video] Broken: out of memory: heap".  close now clears
+          via Draw's black image (img.draw(...)) with no full-screen
+          allocation.  A full detached replay now logs "play: quit at
+          t=5027" and exits cleanly.  Heap use still grows to ~28.7 MB
+          over a full demo (32 MB limit); the remaining growth/
+          fragmentation is folded into M24 perf work.  Audio was
+          routed to a temporary null sink for the replay and the sink
+          removed afterwards.
 

@@ -41,6 +41,8 @@ include "wipe.m";
 	wipe: Wipe;
 include "finale.m";
 	fin: Finale;
+include "demo.m";
+	demo: Demo;
 
 Doom: module
 {
@@ -95,6 +97,12 @@ init(ctxt: ref Draw->Context, args: list of string)
 				winscale = 1;
 			if (winscale > 8)
 				winscale = 8;
+			args = tl args;
+		} else if (hd args == "-playdemo") {
+			args = tl args;
+			if (args == nil)
+				usage();
+			demostart = hd args;
 			args = tl args;
 		} else if (hd args == "-m") {
 			args = tl args;
@@ -180,6 +188,7 @@ usage()
 	sys->fprint(sys->fildes(2), "  -p  frame timing on stdout\n");
 	sys->fprint(sys->fildes(2), "  -s N  wm window starts at 320N x 200N (default 2, resizable)\n");
 	sys->fprint(sys->fildes(2), "  -m ExMy  start on that map (default E1M4)\n");
+	sys->fprint(sys->fildes(2), "  -playdemo DEMOn  play a demo lump and quit at its end\n");
 	raise "fail:usage";
 }
 
@@ -296,6 +305,13 @@ applieddetail := -1;
 
 # title page patches (TITLEPIC / CREDIT / HELP2) and durations
 pagetimes := array[] of { 170, 200, 200 };
+# vanilla title/demo sequence (non-ultimate): TITLE, DEMO1, CREDIT,
+# DEMO2, HELP2, DEMO3 (D_DoAdvanceDemo demosequence 0..5)
+seqstep:	int;
+stepadvance:	int;	# advance the title/demo sequence this frame
+demoactive:	int;	# a demo is driving the player
+singledemo:	int;	# -playdemo: quit when the demo ends
+demostart:	string;	# -playdemo lump name
 gtitle, gcredit, ghelp2: array of byte;
 
 # finale + screen-wipe state
@@ -445,6 +461,16 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	if (err != nil)
 		fail(err);
 
+	# demo lumps (d_main/g_game demo format)
+	demo = load Demo Demo->PATH;
+	if (demo == nil)
+		demo = load Demo "demo.dis";
+	if (demo == nil)
+		fail(sys->sprint("can't load Demo module: %r"));
+	err = demo->init(w);
+	if (err != nil)
+		fail(err);
+
 	# title pages: shareware sequence without demos (M23 adds the
 	# demos): TITLEPIC -> CREDIT -> HELP2 -> TITLEPIC
 	gtitle = wadpatch(w, "TITLEPIC");
@@ -495,8 +521,23 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		sys->print(", F2=review");
 	sys->print("\n");
 
-	if (directstart != 0) {
-		(sl, sp, gerr) := startgame(w, rr, game->SK_MEDIUM, startmap);
+	if (demostart != "") {
+		(dl, dp, dm, derr) := startdemo(w, rr, demostart);
+		if (derr != nil)
+			fail(derr);
+		l = dl;
+		p = dp;
+		mo = p.mo;
+		curmap = dm;
+		gameskill = demo->skill();
+		intitle = 0;
+		demoactive = 1;
+		singledemo = 1;
+		menu->setusergame(0);
+		sys->print("demo: %s %s skill %d\n", demostart, dm,
+			gameskill);
+	} else if (directstart != 0) {
+		(sl, sp, gerr) := startgame(w, rr, game->SK_MEDIUM, startmap, 1);
 		if (gerr != nil)
 			fail(gerr);
 		l = sl;
@@ -510,6 +551,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		intitle = 1;
 		page = 0;
 		pagetic = pagetimes[0];
+		seqstep = 0;
 		menu->setusergame(0);
 		sys->print("title: TITLEPIC (any key opens the menu; -m ExMy starts directly)\n");
 	}
@@ -626,10 +668,13 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		if (ak != Menu->None) {
 			if (ak == Menu->NewGame) {
 				wipereq(rr);
+				demoactive = 0;
+				singledemo = 0;
+				stepadvance = 0;
 				nm := "E1M1";
 				if (ae > 1)
 					nm = sys->sprint("E%dM1", ae);
-				(nl, np, nerr) := startgame(w, rr, ask, nm);
+				(nl, np, nerr) := startgame(w, rr, ask, nm, 1);
 				if (nerr != nil)
 					fail(nerr);
 				l = nl;
@@ -646,6 +691,10 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 				announce(nm, gameskill);
 			} else if (ak == Menu->EndGame) {
 				wipereq(rr);
+				demoactive = 0;
+				singledemo = 0;
+				stepadvance = 0;
+				seqstep = 0;
 				if (st != nil)
 					st->resetpalette(rr);
 				if (am != nil)
@@ -823,8 +872,8 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			if (sound != nil)
 				sound->updatesounds(0, 0, 0);
 			if (--pagetic < 0) {
-				page = (page + 1) % len pagetimes;
-				pagetic = pagetimes[page];
+				stepadvance = 1;
+				break;
 			}
 			continue;
 		}
@@ -836,9 +885,10 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 				sound->updatesounds(0, 0, 0);
 			continue;
 		}
-		if (menu->active() != 0) {
+		if (menu->active() != 0 && demoactive == 0) {
 			# vanilla P_Ticker pauses the sim while the menu is
-			# up; ST/AM/HU tickers keep running
+			# up; ST/AM/HU tickers keep running.  Demos are
+			# exempt (P_Ticker's !demoplayback condition).
 			sp := game->consoleplayer();
 			if (st != nil && sp != nil)
 				st->ticker(sp);
@@ -856,6 +906,20 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 			continue;
 		}
 
+		if (demoactive != 0) {
+			(df, ds, dat, dbt) := demo->next();
+			if (demo->done() != 0) {
+				demoactive = 0;
+				if (singledemo != 0) {
+					quit = 1;
+					break;
+				}
+				wipereq(rr);
+				stepadvance = 1;
+				break;
+			}
+			game->setcmd(df, ds, dat, dbt);
+		} else {
 		# build ticcmd from key state — vanilla G_BuildTiccmd
 		# keyboard subset (g_game.c): walk/run tables selected by
 		# the speed key, two-stage accelerative turning (slow 320
@@ -940,6 +1004,7 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 
 
 		game->setcmd(fm, sm, at, btn);
+		}
 		game->ticker();
 		sp := game->consoleplayer();
 		if (st != nil && sp != nil)
@@ -991,6 +1056,62 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 		}
 		}
 		}
+
+		# title/demo sequence step (D_DoAdvanceDemo): pages alternate
+		# with the shareware demos
+		if (stepadvance != 0) {
+			stepadvance = 0;
+			seqstep = (seqstep + 1) % 6;
+			dname := "";
+			case seqstep {
+			0 =>
+				intitle = 1;
+				page = 0;
+				pagetic = pagetimes[0];
+			2 =>
+				intitle = 1;
+				page = 1;
+				pagetic = pagetimes[1];
+			4 =>
+				intitle = 1;
+				page = 2;
+				pagetic = pagetimes[2];
+			1 =>
+				dname = "DEMO1";
+			3 =>
+				dname = "DEMO2";
+			5 =>
+				dname = "DEMO3";
+			}
+			if (dname != "") {
+				wipereq(rr);
+				(dl, dp, dm, derr) := startdemo(w, rr, dname);
+				if (derr != nil) {
+					sys->print("demo %s failed: %s\n", dname, derr);
+					intitle = 1;
+					page = 0;
+					pagetic = pagetimes[0];
+				} else {
+					l = dl;
+					p = dp;
+					mo = p.mo;
+					curmap = dm;
+					gameskill = demo->skill();
+					intitle = 0;
+					intermission = 0;
+					finale = 0;
+					review = -1;
+					demoactive = 1;
+					menu->setusergame(0);
+					page = 0;
+					pagetic = 0;
+					sys->print("demo: %s %s skill %d\n", dname,
+						dm, gameskill);
+				}
+			}
+		}
+		if (quit)
+			break;
 
 		if (intitle != 0) {
 			# GS_DEMOSCREEN: title page (+ menu on top)
@@ -1156,6 +1277,12 @@ play(path: string, wmctxt: ref Draw->Context, doring: int, startmap: string)
 	v.close();
 	w.close();
 	sys->print("play: quit at t=%d\n", tic);
+	# spawned kprocs (timer/kbd/wm pump) would otherwise keep emu
+	# alive after the game ends; terminate the process group like
+	# tkclient's exit path
+	ctl := sys->open("/prog/"+string sys->pctl(0, nil)+"/ctl", Sys->OWRITE);
+	if (ctl != nil)
+		sys->fprint(ctl, "killgrp");
 }
 
 # capture the displayed screen for the next state's wipe
@@ -1245,11 +1372,26 @@ announce(mapname: string, skill: int)
 	sys->print("\n");
 }
 
+# Start a demo lump: parse its header, then load its map/skill as a
+# non-user game.  Returns (level, player, mapname, error).
+startdemo(w: ref File, rr: ref Renderer, name: string):
+	(ref Level, ref Player, string, string)
+{
+	err := demo->open(name);
+	if (err != nil)
+		return (nil, nil, "", err);
+	nm := sys->sprint("E%dM%d", demo->episode(), demo->map());
+	(l, p, serr) := startgame(w, rr, demo->skill(), nm, 0);
+	if (serr != nil)
+		return (nil, nil, "", serr);
+	return (l, p, nm, nil);
+}
+
 # Start a fresh game on mapname at the given skill (G_InitNew subset):
 # the player is reborn (pistol/100 health) and the level reloaded.
 # Used by -m at boot and by New Game from the menu.
-startgame(w: ref File, rr: ref Renderer, skill: int, mapname: string):
-	(ref Level, ref Player, string)
+startgame(w: ref File, rr: ref Renderer, skill: int, mapname: string,
+	user: int): (ref Level, ref Player, string)
 {
 	(l, merr) := map->open(w, mapname);
 	if (l == nil)
@@ -1291,22 +1433,24 @@ startgame(w: ref File, rr: ref Renderer, skill: int, mapname: string):
 		return (nil, nil, "no player after setuplevel");
 	st->start(p);
 	hu->start(l.name);
-	menu->setusergame(1);
+	menu->setusergame(user);
 
 	# TEST HOOKS (pre-M25; real typed cheats land in milestone 25):
-	# applied at every game start so menu New Game keeps them.
-	if (doweapons != 0) {
-		for (wa := 0; wa < game->NUMWEAPONS; wa++)
-			p.weaponowned[wa] = 1;
-		for (aa := 0; aa < game->NUMAMMO; aa++)
-			p.ammo[aa] = p.maxammo[aa];
-		for (ca := 0; ca < game->NUMCARDS; ca++)
-			p.cards[ca] = 1;
-		p.armortype = 2;
-		p.armorpoints = 200;
+	# applied to user games only (demos play with their own loadout).
+	if (user != 0) {
+		if (doweapons != 0) {
+			for (wa := 0; wa < game->NUMWEAPONS; wa++)
+				p.weaponowned[wa] = 1;
+			for (aa := 0; aa < game->NUMAMMO; aa++)
+				p.ammo[aa] = p.maxammo[aa];
+			for (ca := 0; ca < game->NUMCARDS; ca++)
+				p.cards[ca] = 1;
+			p.armortype = 2;
+			p.armorpoints = 200;
+		}
+		if (dogod != 0)
+			p.cheats = p.cheats | game->CF_GODMODE;
 	}
-	if (dogod != 0)
-		p.cheats = p.cheats | game->CF_GODMODE;
 	return (l, p, nil);
 }
 
@@ -1499,7 +1643,7 @@ handlekey(k: int): int
 		if (k >= 0 && k < NKEYS)
 			keystate[k] = 0;
 		if (menu != nil && menu->active() == 0 && gslevel != 0 &&
-		    am != nil)
+		    demoactive == 0 && am != nil)
 			am->keyup(k);
 		return 0;
 	}
@@ -1530,12 +1674,16 @@ handlekey(k: int): int
 		snapreq = 0;
 		revreq = 0;
 		return 0;
+	} else if (demoactive != 0) {
+		# vanilla G_Responder: any key during a demo pops the menu
+		menu->start();
+		return 0;
 	} else if (k == Esc) {
 		# vanilla key_menu_activate in game
 		menu->start();
 		return 0;
 	}
-	if (gslevel != 0 && am != nil)
+	if (gslevel != 0 && am != nil && demoactive == 0)
 		am->keydown(k);
 	return 0;
 }

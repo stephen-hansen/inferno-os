@@ -307,6 +307,7 @@ Game: module {
 	nummobjs:	fn(): int;
 	consoleplayer:	fn(): ref Player;
 	getleveltime:	fn(): int;
+
 	prandom:	fn(): int;
 
 	# vanilla R_PointToAngle relative to (x1,y1) in BAM; used by the

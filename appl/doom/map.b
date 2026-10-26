@@ -72,7 +72,7 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 		i++;
 	}
 
-	l := ref Level(mapname, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0);
+	l := ref Level(mapname, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, 0, 0, nil);
 	b := array[0] of byte;
 	err := "";
 
@@ -102,7 +102,7 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 			le16(b, o) << 16, le16(b, o+2) << 16,
 			name8(b, o+4), name8(b, o+12),
 			le16(b, o+20), le16(b, o+22), le16(b, o+24),
-			-1);	# specialdata: no active thinker
+			-1, 0, 0, 0, 0);
 	}
 	l.sectors = sectors;
 
@@ -300,15 +300,102 @@ open(w: ref Wad->File, mapname: string): (ref Level, string)
 			reject[i] = int b[i];
 	l.reject = reject;
 
-	# BLOCKMAP (m+10): only the origin is needed (automap grid
-	# alignment, am_map.c AM_drawGrid); the port never uses the
-	# blockmap chains.
+	# BLOCKMAP (m+10): origin/dimensions + raw words (vanilla line
+	# chains for collision/hitscan; origin drives the automap grid).
 	(b, err) = w.read(m+10);
 	if (b == nil)
 		return (nil, err);
-	if (len b >= 4) {
+	if (len b >= 8) {
 		l.bmaporgx = le16(b, 0) << 16;
 		l.bmaporgy = le16(b, 2) << 16;
+		l.bmapwidth = le16(b, 4);
+		l.bmapheight = le16(b, 6);
+		nw := len b / 2;
+		l.bmaplump = array[nw] of int;
+		for (i = 0; i < nw; i++)
+			l.bmaplump[i] = le16(b, 2 * i);
+	}
+
+	if (l.sectors != nil && l.lines != nil && l.vertices != nil) {
+		mtop := array[ns] of int;
+		mbot := array[ns] of int;
+		mright := array[ns] of int;
+		mleft := array[ns] of int;
+		have := array[ns] of int;
+		for (i = 0; i < ns; i++) {
+			mtop[i] = 0;
+			mbot[i] = 0;
+			mright[i] = 0;
+			mleft[i] = 0;
+			have[i] = 0;
+		}
+		for (i = 0; i < len l.lines; i++) {
+			ld := l.lines[i];
+			v1 := l.vertices[ld.v1];
+			v2 := l.vertices[ld.v2];
+			for (snum := 0; snum < 2; snum++) {
+				sec := ld.frontsector;
+				if (snum == 1)
+					sec = ld.backsector;
+				if (sec == nil)
+					continue;
+				si := -1;
+				for (q := 0; q < ns; q++)
+					if (l.sectors[q] == sec) {
+						si = q;
+						break;
+					}
+				if (si < 0)
+					continue;
+				if (have[si] == 0) {
+					mtop[si] = v1.y;
+					mbot[si] = v1.y;
+					mright[si] = v1.x;
+					mleft[si] = v1.x;
+					have[si] = 1;
+				}
+				if (v1.y > mtop[si])
+					mtop[si] = v1.y;
+				if (v2.y > mtop[si])
+					mtop[si] = v2.y;
+				if (v1.y < mbot[si])
+					mbot[si] = v1.y;
+				if (v2.y < mbot[si])
+					mbot[si] = v2.y;
+				if (v1.x > mright[si])
+					mright[si] = v1.x;
+				if (v2.x > mright[si])
+					mright[si] = v2.x;
+				if (v1.x < mleft[si])
+					mleft[si] = v1.x;
+				if (v2.x < mleft[si])
+					mleft[si] = v2.x;
+			}
+		}
+		for (i = 0; i < ns; i++) {
+			if (have[i] == 0)
+				continue;
+			bt := (mtop[i] - l.bmaporgy + 32 * 65536) >>
+				(16 + 7);
+			if (bt >= l.bmapheight)
+				bt = l.bmapheight - 1;
+			bb := (mbot[i] - l.bmaporgy - 32 * 65536) >>
+				(16 + 7);
+			if (bb < 0)
+				bb = 0;
+			br := (mright[i] - l.bmaporgx + 32 * 65536) >>
+				(16 + 7);
+			if (br >= l.bmapwidth)
+				br = l.bmapwidth - 1;
+			bl := (mleft[i] - l.bmaporgx - 32 * 65536) >>
+				(16 + 7);
+			if (bl < 0)
+				bl = 0;
+			l.sectors[i].bboxtop = bt;
+			l.sectors[i].bboxbottom = bb;
+			l.sectors[i].bboxright = br;
+			l.sectors[i].bboxleft = bl;
+		}
 	}
 
 	return (l, nil);
